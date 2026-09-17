@@ -15,7 +15,11 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 ├── build.js                         ← 构建脚本：把 app/ 内联成 dist/ 单文件版
 │
 ├── docs/                            ← 文档：交付给后端 / 团队阅读的材料
-│   └── 前端页面与接口对接说明.md      主交付文档（23 个接口契约、字段表、错误码、三态）
+│   ├── 前端页面与接口对接说明.md      主交付文档（23 个接口契约、字段表、错误码、三态）
+│   └── Git 私密仓库操作指南.md        建仓 / 权限配置 / 私密性验证
+│
+├── scripts/                         ← 脚本：一次性或运维类操作，不混进 app/
+│   └── push-to-github.sh            创建 GitHub 私有仓库并推送（需 GITHUB_TOKEN）
 │
 ├── app/                             ← 开发版：直接改代码的地方（零构建，双击即跑）
 │   ├── index.html                   入口页面（页面骨架）
@@ -39,6 +43,7 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 | 文档只进 `docs/` | 面向人的阅读材料。新增接口相关文档一律放这里 |
 | 废弃只进 `legacy/` | 不直接删，先归档。`legacy/` 为空时即可删除整个目录 |
 | 目录名用 ASCII | `app` / `docs` / `dist` / `legacy` 保持英文，规避各类工具链的中文路径问题；**文件名**可以用中文 |
+| 脚本只进 `scripts/` | 一次性 / 运维类操作（如建仓推送）放这里，不混进 `app/` |
 | 根目录只留两文件 | `README.md` + `build.js`。其它任何文件都按上面的规则归位，不要堆在根目录 |
 
 > 运行应用**不需要** `docs/`、`dist/`、`legacy/`。要把应用单独拷给同事，只需带走 `app/` 这一个目录。
@@ -209,3 +214,24 @@ node build.js
 4. `POST /storyboards/import` → 新行出现
 5. `POST /storyboards/batch-submit` → 返回 `accepted` 后应能观察到 `GET /storyboards/progress` 被周期性调用
 6. 把 `queue.concurrency` 调到 1，确认轮询在有变化时不会退避、无变化时才退避
+
+---
+
+## 推送到 Git 仓库
+
+本地仓库已初始化（`main` 分支，`.gitignore` / `.gitattributes` 已就位），
+**远端仓库需要你自己的 GitHub 令牌来创建**——脚本不会也不能替你保管凭据。
+
+```bash
+  export GITHUB_TOKEN=ghp_你的令牌      # 命令前带空格，避免进入 shell 历史
+bash scripts/push-to-github.sh          # 可选仓库名：bash scripts/push-to-github.sh my-repo
+```
+
+一条命令完成：校验令牌 → 创建**私有**仓库 → 推送 → 回查私密性 → 检查协作者为空。
+令牌只在环境变量与临时远端 URL 里出现，推送后远端地址会重置为不含令牌的形式，**不会写进 `.git/config`**。
+
+令牌需要的权限、私有仓库的权限配置清单、以及私密性的四种验证方法，见
+**[`docs/Git 私密仓库操作指南.md`](docs/Git 私密仓库操作指南.md)**。
+
+> 网页建仓也可以，但**不要勾选任何初始化选项**（README / .gitignore / license），
+> 否则远端非空，首次推送会被拒。
