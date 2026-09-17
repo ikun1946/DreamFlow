@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>即梦批量生成控制台</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <!-- ========== 顶栏 ========== -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">
+        <svg width="18" height="18" viewBox="0 0 24 24"><rect x="2.5" y="2.5" width="19" height="19" rx="5.5" fill="#0066CC"/><path d="M10 8.5l6 3.5-6 3.5z" fill="#fff"/></svg>
+      </span>
+      <span class="brand-name">即梦批量生成控制台</span>
+    </div>
+    <span class="vdiv"></span>
+    <span class="proj" id="projName">雨夜归途</span>
+    <span class="chip" id="scopeChip">第 1 批 · 0 个分镜</span>
+
+    <span class="grow"></span>
+
+    <button class="pill" id="pillModel" title="默认模型">
+      <span id="pillModelTxt">模型 —</span>
+      <svg width="9" height="9" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" stroke="#7A7A7A" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="pill" id="pillRatio" title="默认画幅">
+      <span id="pillRatioTxt">画幅 —</span>
+      <svg width="9" height="9" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" stroke="#7A7A7A" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+
+    <span class="grow"></span>
+
+    <span class="runstate"><i class="dot" id="runDot"></i><span id="runText">—</span></span>
+    <button class="link" id="btnHistory">生成记录</button>
+    <button class="btn-outline" id="btnDensity" title="切换表格密度">紧凑视图</button>
+    <button class="btn-outline" id="btnImport">
+      <svg width="13" height="13" viewBox="0 0 24 24"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4.5 19.5h15" stroke="#0066CC" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      批量导入提示词
+    </button>
+    <button class="btn-dark" id="btnSettings">
+      <svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" stroke="#fff" stroke-width="1.9" fill="none"/><path d="M12 2.8v2.6M12 18.6v2.6M4.3 7.4l2.2 1.3M17.5 15.3l2.2 1.3M4.3 16.6l2.2-1.3M17.5 8.7l2.2-1.3" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/></svg>
+      设置
+    </button>
+  </header>
+
+  <!-- ========== 列头（JS 按列配置生成） ========== -->
+  <div class="colhead" id="colhead"></div>
+
+  <!-- ========== 主体 ========== -->
+  <main class="main">
+    <section class="tablecol">
+      <div class="table" id="table"></div>
+    </section>
+    <aside class="panel" id="panel"></aside>
+  </main>
+
+  <!-- ========== 底部状态栏 ========== -->
+  <footer class="statusbar" id="statusbar"></footer>
+</div>
+
+<!-- ========== P2 批量导入提示词 ========== -->
+<div class="mask" id="importMask" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2>批量导入提示词</h2>
+      <span class="grow"></span>
+      <button class="icon-btn" id="importClose" title="关闭">
+        <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#7A7A7A" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <label class="sec-title" for="importText">粘贴文本</label>
+      <textarea id="importText" placeholder="把多段提示词粘进来，用下面的分隔符分开。&#10;例：镜头推进…;;雨滴落在玻璃窗…;;收音机特写…"></textarea>
+
+      <div class="sec-title">分隔符（分段依据）</div>
+      <div class="chips" id="importChips"></div>
+
+      <div class="row-inline">
+        <span class="label-sm">自定义分隔符</span>
+        <input id="importCustom" class="input-sm" style="width:180px" value=";;" />
+        <span class="hint-sm">支持任意字符或多字符组合，留空表示按换行拆分</span>
+      </div>
+
+      <div class="banner ok" id="importDetect" hidden>
+        <svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="#248A3D" stroke-width="1.8" fill="none"/><path d="M8 12.4l2.8 2.8L16 9.6" stroke="#248A3D" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span id="importDetectTxt"></span>
+      </div>
+
+      <div class="sec-title">识别结果预览</div>
+      <div class="preview" id="importPreview"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-outline" id="importCancel">取消</button>
+      <span class="grow"></span>
+      <button class="btn-primary" id="importOk" disabled>导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== P3 设置 ========== -->
+<div class="mask drawer-mask" id="settingsMask" hidden></div>
+<aside class="drawer" id="settingsDrawer" aria-hidden="true">
+  <div class="drawer-head">
+    <h2>设置</h2>
+    <span class="grow"></span>
+    <button class="icon-btn" id="settingsClose" title="关闭">
+      <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#7A7A7A" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body" id="settingsBody"></div>
+  <div class="drawer-foot">
+    <button class="btn-outline" id="settingsReset">恢复默认</button>
+    <span class="grow"></span>
+    <button class="btn-primary" id="settingsSave">保存设置</button>
+  </div>
+</aside>
+
+<!-- ========== 详情 / 预览弹层 ========== -->
+<div class="mask" id="detailMask" hidden>
+  <div class="modal narrow" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2 id="detailTitle">详情</h2>
+      <span class="grow"></span>
+      <button class="icon-btn" id="detailClose" title="关闭">
+        <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#7A7A7A" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="detailBody"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# ── 行尾 ────────────────────────────────────────────────────────
+# 仓库内与工作区一律 LF。
+# 本项目由 build.js 把 app/ 内联成单文件 HTML，行尾漂移会改变产物字节，
+# 所以这里强制 LF，而不是交给各平台的默认值。
+* text=auto eol=lf
+
+# 明确按文本处理
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# ── 二进制：禁止任何行尾 / 编码转换 ──────────────────────────────
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.webp   binary
+*.gif    binary
+*.ico    binary
+*.mp4    binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
