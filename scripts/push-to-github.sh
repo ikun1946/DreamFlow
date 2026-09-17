@@ -77,12 +77,23 @@ echo "==> 已创建：$FULL_NAME（private = true）"
 
 # ── 5. 推送 ────────────────────────────────────────────────────
 REMOTE_CLEAN="https://github.com/$LOGIN/$REPO_NAME.git"
+
+# 安全兜底：无论脚本从哪里退出（包括 set -e 触发的中途退出），
+# 都把远端地址重置回不含令牌的形式，令牌绝不留在 .git/config。
+# 没有这段的话，git push 一旦失败，脚本会在重置 URL 之前就退出，令牌就留下了。
+restore_remote() {
+  if [[ -n "${REMOTE_CLEAN:-}" ]]; then
+    git remote set-url origin "$REMOTE_CLEAN" 2>/dev/null || true
+  fi
+}
+trap restore_remote EXIT
+
 git remote remove origin 2>/dev/null || true
 git remote add origin "https://$LOGIN:${GITHUB_TOKEN}@github.com/$LOGIN/$REPO_NAME.git"
 git branch -M main
 echo "==> 推送 main 分支 ..."
 git push -u origin main
-# 立刻把远端地址换回不含令牌的形式，令牌不会留在 .git/config
+# 立刻把远端地址换回不含令牌的形式（EXIT 兜底之外的正常路径）
 git remote set-url origin "$REMOTE_CLEAN"
 echo "==> 推送完成，远端地址已重置为：$REMOTE_CLEAN"
 
