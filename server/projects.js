@@ -18,6 +18,15 @@
    ============================================================ */
 const { ERR, ApiError, rid, nowIso } = require('./util');
 const { LEGACY_PROJECT_ID, LEGACY_WORKSPACE_ID } = require('./schema');
+const store = require('./store');
+
+/* ⚠ 本文件**所有会改动 db 的函数都必须调用 store.save()**。
+   漏掉的后果不是报错，而是"内存里改了、磁盘上没改" —— 接口读得到（同一进程读的是同一个对象），
+   重启就全丢。2026-09-19 实测踩到：软删除项目后 db.json 里 deletedAt 仍是 null，
+   而 /projects 列表却已经把它过滤掉了（因为过滤读的是内存）。
+   ⚠ 现有单测**抓不到这一类问题**：隔离测试把 store.save 换成了空实现，
+   所以"有没有请求落盘"必须单独断言（见 project-isolation.test.js 的落盘用例）。 */
+const save = () => store.save();
 
 const NAME_MAX = 60;
 
@@ -226,6 +235,7 @@ function createProject(db, b) {
   };
   db.projects.push(proj);
   db.workspaces.push(ws);
+  save();
   return { project: viewProject(db, proj), workspace: viewWorkspace(ws) };
 }
 
@@ -246,6 +256,7 @@ function patchProject(db, id, b) {
     }
   }
   p.updatedAt = nowIso();
+  save();
   return viewProject(db, p);
 }
 
@@ -263,6 +274,7 @@ function deleteProject(db, id) {
   const now = nowIso();
   p.deletedAt = now;
   p.updatedAt = now;
+  save();
   return { deleted: p.id, softDeleted: true, note: '项目及其工作区/分镜/素材/记录均未被物理删除，仅标记为已删除' };
 }
 
@@ -313,6 +325,7 @@ function createWorkspace(db, projectId, b) {
   db.workspaces.push(w);
   if (!p.defaultWorkspaceId) p.defaultWorkspaceId = w.id;
   p.updatedAt = now;
+  save();
   return viewWorkspace(w);
 }
 
@@ -323,6 +336,7 @@ function patchWorkspace(db, id, b) {
   if (body.name !== undefined) w.name = cleanName(body.name, '页面');
   if (body.description !== undefined) w.description = String(body.description || '').trim();
   w.updatedAt = nowIso();
+  save();
   /* 改名后旧记录仍显示生成时的名字 —— 靠记录里的 workspaceName 快照，这里不做任何回填 */
   return viewWorkspace(w);
 }
@@ -348,6 +362,7 @@ function deleteWorkspace(db, id) {
   w.deletedAt = now;
   w.updatedAt = now;
   if (p && p.defaultWorkspaceId === w.id) p.defaultWorkspaceId = others[0].id;
+  save();
   return { deleted: w.id, softDeleted: true, note: '页面内的分镜与项目资产均未被物理删除，仅标记为已删除' };
 }
 
@@ -356,12 +371,14 @@ function touchProject(db, projectId) {
   const p = projectOf(db, projectId);
   if (!p) return null;
   p.lastOpenedAt = nowIso();
+  save();
   return p;
 }
 function touchWorkspace(db, workspaceId) {
   const w = workspaceOf(db, workspaceId);
   if (!w) return null;
   w.lastOpenedAt = nowIso();
+  save();
   return w;
 }
 

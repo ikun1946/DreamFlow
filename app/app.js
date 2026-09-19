@@ -110,6 +110,18 @@
 
   /* ---------------------------------------------------------- 状态 */
   const S = {
+    /* ---------------- 多项目上下文（指令 §25：只有前端能有"当前项目"这个概念） ----------------
+       view 决定当前显示哪一层：
+         'home'      首页（项目列表）
+         'project'   项目主页（页面列表 + 资产库 + 记录 + 项目设置）
+         'workspace' 工作区视图（就是既有那张分镜表）
+       cur 是**唯一的**当前作用域来源，Api.setScope() 由它同步过去；
+       所有请求都显式带作用域，后端据此过滤（后端不存在"当前项目"全局变量）。 */
+    view: 'home',
+    cur: { projectId: '', workspaceId: '', project: null, workspace: null },
+    home: { loading: false, error: null, list: [], total: 0 },
+    proj: { loading: false, error: null, tab: 'pages', workspaces: [], assets: [], assetTab: 'character', assetKeyword: '' },
+
     list: [], stats: null, options: null, adapter: null, settings: null,
     sel: new Set(), filter: 'all', keyword: '',
     panelTab: 'character', panelKeyword: '', assets: [], assetCounts: { currentShot: 0, library: 0 },
@@ -126,8 +138,10 @@
     loading: true, error: null, busy: false,
     page: 1, pageSize: 50,
     /* lastSig：上一轮 /storyboards/progress 的载荷签名。服务端不再"读后清" dirty，
-       所以"有没有变化"改由前端按签名判断（详见 pollOnce）。 */
-    poll: { timer: null, idle: 0, lastSig: null },
+       所以"有没有变化"改由前端按签名判断（详见 pollOnce）。
+       gen：**轮询代际令牌**（指令 §38/§39）。切换项目/页面时 +1，
+       在飞的旧响应回来时代际已变，直接丢弃 —— 否则 A 页面的进度会画到 B 页面的表格上。 */
+    poll: { timer: null, idle: 0, lastSig: null, gen: 0 },
     imp: { raw: '', delimiter: { type: 'custom', value: ';;' }, preview: null, busy: false, timer: null },
     cliBusy: null, cliMsg: '', cliUrl: null, cliUserCode: null, cliRaw: null,
     settingsDirty: false,   // 抽屉本次打开期间用户是否已改动过设置（"先显示后刷新"的守卫）
@@ -141,7 +155,9 @@
        记录由后端在任务收尾时落盘（成功/失败/取消/干跑各一条），前端只读+删。 */
     rec: { loading: false, list: [], page: 1, pageSize: 20, total: 0, pageCount: 1, stats: null, kept: 0, capacity: 0 },
     recF: { action: 'all', outcome: 'all', engine: 'all', keyword: '', from: '', to: '' },
-    recSel: null, recDetail: null, recDetailLoading: false, recTimer: null, recPoll: null
+    recSel: null, recDetail: null, recDetailLoading: false, recTimer: null, recPoll: null,
+    /* 模块级计时器（不在 S 里的那些）也要能在切换时清掉，这里统一收口 */
+    patchTimers: {}, panelTimer: null
   };
   const opts = () => S.options || Api.META;
   const rowById = (id) => S.list.find((r) => r.id === id);
@@ -160,8 +176,12 @@
   /* ---------------------------------------------------------- 顶栏 */
   function renderTopbar() {
     const st = S.stats || {};
-    $('#projName').textContent = (opts().projectName) || '未命名项目';
-    $('#scopeChip').textContent = '第 1 批 · ' + (st.total || 0) + ' 个分镜';
+    /* 项目名与页面名改由面包屑呈现（多项目架构）：项目名来自 S.cur.project（真实数据），
+       不再是后端 META 里的模块级常量。 */
+    renderCrumb();
+    /* 「第 N 批」这个概念已被 Workspace 取代（batchId 一直是硬编码的 'bt_21'，
+       界面上从来没有设置入口）。页面名已经在面包屑里，这里只留分镜数。 */
+    $('#scopeChip').textContent = (st.total || 0) + ' 个分镜';
     const d = S.settings && S.settings.defaults;
     /* 模型与画幅合并为一处纯文本（2026-09-20）：原先两个胶囊各带一个下拉箭头，但点了只弹一句
        "可在设置里修改"，并没有真正的下拉列表 —— 去掉假的下拉外观，合并成「模型 · 画幅」一行。
@@ -413,6 +433,33 @@
   }
 
   /* ---------------------------------------------------------- 素材面板 */
+  /* 素材卡片的**唯一渲染处**（素材面板 与 项目资产库 共用）。
+     ⚠ 为什么提到模块级：它原来嵌在 renderPanel 里面，项目资产库够不着，
+     很容易就写成"再抄一份卡片 HTML"—— 而卡片上有 data-asset / data-assetdel
+     这两个事件契约，抄一份就多一处会忘记同步的地方（表现为"点了没反应"）。
+     改成显式传选项（selected / used），不再读环境的 S.assetSelMode。 */
+  function assetCardHTML(a, o) {
+    const opt = o || {};
+    const hasPic = a.url && !/^(mock|cli):/.test(a.url) && a.type !== 'audio';
+    const mediaBg = hasPic
+      ? 'background-image:url(' + a.url + ');background-size:cover;background-position:center;'
+      : '';
+    const glyph = a.type === 'audio' ? '<span class="note">' + I.note + '</span>' : '';
+    /* 无图素材（提示词导入的那批）不再用按 id 派生的随机渐变占位 —— 那只是个没有含义的
+       色块，看不出"这里该有一张图"。改铺半透明的图片样式空槽位（浅底 + 虚线框 + 淡图标），
+       和素材详情弹窗的图片区同一套视觉语言。音频有自己的音符图标，不走这条。 */
+    const noPic = !hasPic && a.type !== 'audio';
+    const phGlyph = noPic ? '<span class="ph-ico">' + I.img + '</span>' : '';
+    const picStyle = noPic ? '' : ' style="--g:' + a.grad + (mediaBg ? ';' + mediaBg : '') + '"';
+    return '<div class="acard' + (opt.used ? ' used' : '') + (opt.selected ? ' sel' : '') +
+      '" data-asset="' + a.id + '" title="' + esc(a.name) + '">' +
+      '<span class="pic' + (noPic ? ' no-pic' : '') + '"' + picStyle + '>' + glyph + phGlyph +
+      '<span class="tick">' + I.tickSm + '</span>' +
+      '<button class="rm" data-assetdel="' + a.id + '" title="删除素材">' + I.x + '</button></span>' +
+      '<span class="nm">' + esc(a.name) + '</span>' +
+    '</div>';
+  }
+
   function renderPanel() {
     const tabs = ASSET_TABS;
     const tabLabel = ASSET_TAB_LABEL;
@@ -467,24 +514,10 @@
       '</div>';
 
     function cardHTML(a) {
-      const hasPic = a.url && !/^(mock|cli):/.test(a.url) && a.type !== 'audio';
-      const mediaBg = hasPic
-        ? 'background-image:url(' + a.url + ');background-size:cover;background-position:center;'
-        : '';
-      const glyph = a.type === 'audio' ? '<span class="note">' + I.note + '</span>' : '';
-      /* 无图素材（提示词导入的那批）不再用按 id 派生的随机渐变占位 —— 那只是个没有含义的
-         色块，看不出"这里该有一张图"。改铺半透明的图片样式空槽位（浅底 + 虚线框 + 淡图标），
-         和素材详情弹窗的图片区同一套视觉语言。音频有自己的音符图标，不走这条。 */
-      const noPic = !hasPic && a.type !== 'audio';
-      const phGlyph = noPic ? '<span class="ph-ico">' + I.img + '</span>' : '';
-      const selCls = (S.assetSelMode && S.assetSel.has(a.id)) ? ' sel' : '';
-      const picStyle = noPic ? '' : ' style="--g:' + a.grad + (mediaBg ? ';' + mediaBg : '') + '"';
-      return '<div class="acard' + (a.inCurrentShot ? ' used' : '') + selCls + '" data-asset="' + a.id + '" title="' + esc(a.name) + '">' +
-        '<span class="pic' + (noPic ? ' no-pic' : '') + '"' + picStyle + '>' + glyph + phGlyph +
-        '<span class="tick">' + I.tickSm + '</span>' +
-        '<button class="rm" data-assetdel="' + a.id + '" title="删除素材">' + I.x + '</button></span>' +
-        '<span class="nm">' + esc(a.name) + '</span>' +
-      '</div>';
+      return assetCardHTML(a, {
+        selected: !!(S.assetSelMode && S.assetSel.has(a.id)),
+        used: !!a.inCurrentShot
+      });
     }
 
     // 搜索时保留焦点与光标位置，避免每敲一个字就失焦
@@ -949,6 +982,19 @@
       t: pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds())
     };
   }
+  /* 单行短时间戳（项目卡片 / 页面行用）。
+     ⚠ 与记录列表的 fmtAt 分开：fmtAt 返回 {d,t} 两段，是为了在表格里对齐成两行单元格；
+     这里要的是一句话，直接拼成字符串。 */
+  function fmtWhen(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    if (sameDay) return '今天 ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    if (d.getFullYear() === now.getFullYear()) return pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
   /* 产物地址是后端相对路径（/files/…）：页面由后端托管时直接用，
      以 file:// 打开单文件版时补成绝对地址，否则点了会 404。 */
   function absUrl(u) {
@@ -1368,6 +1414,549 @@
     });
   }
 
+  /* ============================================================
+     多项目导航：首页 → 项目主页 → 工作区视图
+     ------------------------------------------------------------
+     层级与显示（指令 §20/§23/§25）：
+       首页      #homeView（全屏覆盖，z-index 65）—— 项目列表
+       项目主页  #projView（全屏覆盖，z-index 65）—— 页面列表 / 资产库
+       工作区    #app（既有的分镜表）—— 不覆盖，靠两个覆盖层隐藏来"露出来"
+     #recView（记录页）与设置抽屉都是 z-index 70，压在项目主页之上，因此从项目主页
+     能正常打开它们。**只有前端**持有"当前项目/页面"（S.cur）；后端一律 request-scoped。
+     ============================================================ */
+
+  /* 当前作用域同步到 Api 层（所有请求据此带上 projectId/workspaceId） */
+  function applyScope() {
+    Api.setScope({ projectId: S.cur.projectId, workspaceId: S.cur.workspaceId });
+  }
+
+  /* 清空一切**项目/页面级**的界面状态（指令 §37）。
+     ⚠ 刻意不清 adapter / cli* / dCli* —— 那些是**整机**状态（CLI 账号、积分、登录流程），
+     清掉会让引擎读数无缘无故变空。
+     ⚠ 不清掉的话会出真事故：S.sel 里残留上一个页面的分镜 id，切过去后点「提交所选」
+     就会把**别的页面**的分镜提交出去；S.autoIds / S.durIds 同理会把预览应用到错误的页面。 */
+  function resetScopeState() {
+    // 计时器先停：晚到的回调会把旧作用域的数据写进新界面
+    stopPolling();
+    stopRecPoll();
+    if (S.imp.timer) clearTimeout(S.imp.timer);
+    if (S.panelTimer) clearTimeout(S.panelTimer);
+    if (S.recTimer) clearTimeout(S.recTimer);
+    Object.keys(S.patchTimers || {}).forEach((k) => clearTimeout(S.patchTimers[k]));
+    S.patchTimers = {};
+    S.panelTimer = null;
+
+    // 分镜列表与选择
+    S.list = []; S.stats = null;
+    S.sel = new Set();               // ⚠ 必须赋新 Set（多处是整体重新赋值，不是 .clear()）
+    S.selRange = { from: '', to: '' };
+    S.page = 1; S.filter = 'all'; S.keyword = '';
+    S.loading = true; S.error = null; S.busy = false;
+    S.bindTarget = null; S.detailFull = null;
+
+    // 素材面板
+    S.assets = []; S.assetCounts = { currentShot: 0, library: 0 };
+    S.assetIndex = new Map(); S.assetBusy = null; S.assetMsg = '';
+    S.assetSel = new Set(); S.assetSelMode = false;
+    S.assetRange = { from: '', to: '' };
+    S.panelTab = 'character'; S.panelKeyword = '';
+
+    // 导入 / 干跑 / 自动匹配 / 时长重算 的中间态
+    S.imp = { raw: '', delimiter: S.imp.delimiter, preview: null, busy: false, timer: null };
+    S.cmdRows = []; S.dryBusy = false;
+    S.autoBusy = false; S.autoRows = []; S.autoStats = null; S.autoIds = []; S.autoScopeAll = false; S.autoPending = false;
+    S.durBusy = false; S.durRows = []; S.durStats = null; S.durIds = []; S.durScopeAll = false;
+
+    // 记录视图
+    S.rec = { loading: false, list: [], page: 1, pageSize: S.rec.pageSize, total: 0, pageCount: 1, stats: null, kept: 0, capacity: 0 };
+    S.recF = { action: 'all', outcome: 'all', engine: 'all', keyword: '', from: '', to: '' };
+    S.recSel = null; S.recDetail = null; S.recDetailLoading = false;
+
+    // 关掉所有从旧作用域打开的弹层：它们的内容是按旧数据渲染的，留着会误导
+    ['importMask', 'detailMask', 'cmdMask', 'autoMask', 'durMask'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.hidden = true;
+    });
+    closeMenu();
+    closeDetail();      // 含 <video> 的暂停与释放，不能只 hidden
+  }
+
+  /* 切换显示层。只负责显隐与面包屑，不管数据加载（那是 enter* 的职责） */
+  function setView(name) {
+    S.view = name;
+    const home = $('#homeView'), proj = $('#projView'), app = $('#app');
+    if (home) { home.hidden = name !== 'home'; home.setAttribute('aria-hidden', name === 'home' ? 'false' : 'true'); }
+    if (proj) { proj.hidden = name !== 'project'; proj.setAttribute('aria-hidden', name === 'project' ? 'false' : 'true'); }
+    /* 控制台只在工作区视图里露出来；首页/项目主页期间整体藏起（避免首屏闪一下空表格） */
+    if (app) app.classList.toggle('hidden-view', name !== 'workspace');
+    renderTopbar();
+    /* 轮询只在工作区视图里跑（指令 §39）：离开工作区就停，回来时 ensurePolling 会重新拉起。
+       代际令牌在 stopPolling 里 +1，所以在飞的旧响应也会被丢弃。 */
+    if (name === 'workspace') ensurePolling(); else stopPolling();
+  }
+
+  /* URL 状态（指令 §35 的最低成本方案）：?project=…&workspace=…
+     用 replaceState 而不是 pushState —— 需求只要求"刷新能回到原处"，
+     而视图内的返回按钮（首页 / 返回项目列表）已经覆盖了层级导航，
+     引入 popstate 反而会和那些按钮形成两套语义。 */
+  function syncUrl() {
+    try {
+      const u = new URL(window.location.href);
+      if (S.cur.projectId) u.searchParams.set('project', S.cur.projectId); else u.searchParams.delete('project');
+      if (S.cur.workspaceId) u.searchParams.set('workspace', S.cur.workspaceId); else u.searchParams.delete('workspace');
+      window.history.replaceState(null, '', u.pathname + (u.search || ''));
+    } catch (e) { /* 非 http(s) 环境（如 file://）下改 URL 会抛错，忽略即可 */ }
+  }
+
+  /* ---------------- 首页（项目列表） ---------------- */
+  async function enterHome() {
+    resetScopeState();
+    S.cur = { projectId: '', workspaceId: '', project: null, workspace: null };
+    applyScope();
+    setView('home');
+    syncUrl();
+    await loadProjects();
+  }
+
+  async function loadProjects() {
+    S.home.loading = true; S.home.error = null;
+    renderHome();
+    try {
+      const res = await Api.listProjects();
+      S.home.list = res.list || [];
+      S.home.total = res.total || 0;
+      S.home.error = null;
+    } catch (e) {
+      S.home.error = e;
+      S.home.list = []; S.home.total = 0;
+    } finally {
+      S.home.loading = false;
+      renderHome();
+    }
+  }
+
+  /* ---------------- 项目主页 ---------------- */
+  async function enterProject(projectId, opts2) {
+    const o = opts2 || {};
+    resetScopeState();
+    S.cur = { projectId: projectId, workspaceId: '', project: null, workspace: null };
+    applyScope();
+    S.proj.tab = o.tab || 'pages';
+    setView('project');
+    syncUrl();
+    await loadProjectHome();
+  }
+
+  async function loadProjectHome() {
+    S.proj.loading = true; S.proj.error = null;
+    renderProjHome();
+    try {
+      /* 三个请求并行：项目详情（拿名字与计数）、页面列表、项目资产。
+         项目详情与页面列表都必须成功；资产失败只让资产 tab 空着，不阻断整页。 */
+      const [pj, ws] = await Promise.all([
+        Api.getProject(S.cur.projectId),
+        Api.listWorkspaces(S.cur.projectId)
+      ]);
+      S.cur.project = pj;
+      S.proj.workspaces = ws.list || [];
+      S.proj.error = null;
+      /* options / settings 是项目级的，顺手取一次：项目设置抽屉要用它渲染
+         默认模型下拉与分隔符（否则只能退回 api.js 里的静态兜底列表）。 */
+      try {
+        const [o, st] = await Promise.all([Api.getOptions(), Api.getSettings()]);
+        S.options = o; S.settings = st;
+      } catch (e) { /* 不影响项目主页本身 */ }
+      try {
+        const a = await Api.listAssets({ type: S.proj.assetTab, keyword: S.proj.assetKeyword || undefined });
+        S.proj.assets = a.library || [];
+      } catch (e) { S.proj.assets = []; }
+    } catch (e) {
+      /* 项目不存在或已被删除 → 安全降级回首页（指令 §36：不能崩） */
+      S.proj.error = e;
+      S.proj.workspaces = [];
+      if (e && (e.code === Api.ERR.NOTFOUND || e.code === 40400)) {
+        toast('该项目不存在或已被删除，已返回项目列表', 'err');
+        S.proj.loading = false;
+        return enterHome();
+      }
+    } finally {
+      S.proj.loading = false;
+      renderProjHome();
+      renderTopbar();
+    }
+  }
+
+  /* ---------------- 工作区视图（既有分镜表） ---------------- */
+  async function enterWorkspace(projectId, workspaceId, opts2) {
+    const o = opts2 || {};
+    resetScopeState();
+    S.cur = { projectId: projectId, workspaceId: workspaceId, project: null, workspace: null };
+    applyScope();
+    setView('workspace');
+    syncUrl();
+    /* 先把作用域相关的元数据与列表拉起来（options/settings 都是项目级的，必须重取） */
+    try {
+      const [meta, st, ad, ws] = await Promise.all([
+        Api.getOptions(), Api.getSettings(), Api.getAdapter(), Api.getWorkspace(workspaceId)
+      ]);
+      S.options = meta; S.settings = st; S.adapter = ad;
+      S.cur.workspace = ws;
+      /* 项目名从 meta 里取（后端已按作用域下发），避免为了面包屑再多打一次请求 */
+      S.cur.project = meta.project || (ws.project ? { id: ws.project.id, name: ws.project.name } : null);
+    } catch (e) {
+      /* 页面/项目不存在或已删除 → 降级：有项目就回项目主页，否则回首页（§36） */
+      toast('该页面不存在或已被删除', 'err');
+      if (projectId) return enterProject(projectId);
+      return enterHome();
+    }
+    if (o.workspace) S.cur.workspace = o.workspace;
+    renderTopbar();
+    await Promise.all([loadList({ skeleton: true }), loadAssets()]);
+  }
+
+  /* ---------------- 启动时按 URL 恢复（指令 §36） ---------------- */
+  async function bootFromUrl() {
+    let projectId = '', workspaceId = '';
+    try {
+      const u = new URL(window.location.href);
+      projectId = u.searchParams.get('project') || '';
+      workspaceId = u.searchParams.get('workspace') || '';
+    } catch (e) { /* file:// 下取不到参数，走默认 */ }
+
+    /* 只预取**整机级**的适配器状态（与项目无关，任何视图都可能用到）。
+       options / settings 是**项目级**的，等作用域确定后由各自的 enter* 去取 ——
+       在这里提前取会用默认作用域打一次无用请求。 */
+    await loadAdapterOnly();
+
+    if (projectId && workspaceId) {
+      /* URL 指向具体的页面 → 直接进工作区；enterWorkspace 内部对"不存在"有降级 */
+      try {
+        await enterWorkspace(projectId, workspaceId);
+        return;
+      } catch (e) { /* 落到下面的降级 */ }
+    }
+    if (projectId) {
+      try {
+        await enterProject(projectId);
+        return;
+      } catch (e) { /* 落到首页 */ }
+    }
+    /* 默认进首页（指令 §20：根入口进项目列表，而不是直接进旧分镜工作区） */
+    await enterHome();
+  }
+
+  async function loadAdapterOnly() {
+    try { S.adapter = await Api.getAdapter(); } catch (e) { /* 探测失败不影响首页 */ }
+  }
+
+  /* ---------------- 面包屑（顶栏，静态节点只改文本） ---------------- */
+  function renderCrumb() {
+    const home = $('#crumbHome'), sep1 = $('#crumbSep1'), pj = $('#projName'), sep2 = $('#crumbSep2'), ws = $('#crumbWs');
+    if (!home || !pj) return;
+    const inWorkspace = S.view === 'workspace';
+    const name = (S.cur.project && S.cur.project.name) || '—';
+    pj.textContent = name;
+    pj.disabled = !S.cur.projectId || inWorkspace === false;
+    pj.title = S.cur.projectId ? '返回项目主页' : '';
+    if (sep2) sep2.hidden = !inWorkspace;
+    if (ws) {
+      ws.hidden = !inWorkspace;
+      ws.textContent = (S.cur.workspace && S.cur.workspace.name) || '—';
+    }
+    if (sep1) sep1.hidden = false;
+    home.disabled = false;
+  }
+
+  /* ---------------- 首页渲染 ---------------- */
+  function renderHome() {
+    const sum = $('#homeSummary');
+    const body = $('#homeBody');
+    if (!body) return;
+    if (sum) sum.textContent = S.home.loading ? '加载中…' : ('共 ' + S.home.total + ' 个项目');
+
+    if (S.home.loading && !S.home.list.length) {
+      body.innerHTML = '<div class="pv-empty"><span class="s">加载中…</span></div>';
+      return;
+    }
+    if (S.home.error) {
+      body.innerHTML = '<div class="pv-empty">' +
+        '<span class="t">项目列表加载失败</span>' +
+        '<span class="s">' + esc(errText(S.home.error)) + '</span>' +
+        '<button class="btn-outline" id="homeRetry">重试</button></div>';
+      const b = $('#homeRetry'); if (b) b.addEventListener('click', () => loadProjects());
+      return;
+    }
+    if (!S.home.list.length) {
+      body.innerHTML = '<div class="pv-empty">' +
+        '<span class="t">还没有项目</span>' +
+        '<span class="s">项目是数据隔离的边界：不同项目的页面、分镜、素材与生成记录互不可见。<br>同一项目下的多个页面共享一份素材库。</span>' +
+        '<button class="btn-primary" id="homeNew2">+ 创建第一个项目</button></div>';
+      const b = $('#homeNew2'); if (b) b.addEventListener('click', () => onNewProject());
+      return;
+    }
+    body.innerHTML = '<div class="pj-grid">' + S.home.list.map(pjCardHTML).join('') + '</div>';
+  }
+
+  function pjCardHTML(p) {
+    const c = p.counts || {};
+    const at = p.lastOpenedAt || p.updatedAt || p.createdAt;
+    return '<div class="pj-card" data-pj="' + esc(p.id) + '" title="打开项目">' +
+      '<span class="nm">' + esc(p.name) + '</span>' +
+      '<span class="ds">' + (p.description ? esc(p.description) : '<span style="opacity:.6">（无描述）</span>') + '</span>' +
+      '<span class="mt">' +
+        '<span>页面 <b>' + (c.workspaces || 0) + '</b></span>' +
+        '<span>分镜 <b>' + (c.storyboards || 0) + '</b></span>' +
+        '<span>素材 <b>' + (c.assets || 0) + '</b></span>' +
+        '<span>' + (at ? esc(fmtWhen(at)) : '') + '</span>' +
+      '</span>' +
+      '<span class="acts">' +
+        '<button class="btn-mini" data-pjact="rename" data-pjid="' + esc(p.id) + '">重命名</button>' +
+        '<button class="btn-mini btn-danger" data-pjact="del" data-pjid="' + esc(p.id) + '">删除</button>' +
+      '</span>' +
+    '</div>';
+  }
+
+  /* ---------------- 项目主页渲染 ---------------- */
+  const PROJ_TABS = [
+    { key: 'pages', label: '页面' },
+    { key: 'assets', label: '资产库' },
+    { key: 'records', label: '生成记录', act: true },
+    { key: 'settings', label: '项目设置', act: true }
+  ];
+
+  function renderProjHome() {
+    const t = $('#projTitle'), s = $('#projSummary'), tabs = $('#projTabs'), body = $('#projBody');
+    if (!body) return;
+    const p = S.cur.project;
+    if (t) t.textContent = p ? p.name : (S.proj.loading ? '加载中…' : '—');
+    if (s) {
+      const c = (p && p.counts) || {};
+      s.textContent = S.proj.loading ? '加载中…' : ('页面 ' + (c.workspaces || 0) + ' · 分镜 ' + (c.storyboards || 0) + ' · 素材 ' + (c.assets || 0));
+    }
+    if (tabs) {
+      tabs.innerHTML = PROJ_TABS.map((x) =>
+        '<button class="pv-tab' + (x.act ? ' act' : '') + (S.proj.tab === x.key ? ' on' : '') + '" data-ptab="' + x.key + '">' + esc(x.label) + '</button>'
+      ).join('');
+    }
+    if (S.proj.error && S.proj.error.code !== Api.ERR.NOTFOUND && S.proj.error.code !== 40400) {
+      body.innerHTML = '<div class="pv-empty"><span class="t">项目加载失败</span><span class="s">' + esc(errText(S.proj.error)) + '</span></div>';
+      return;
+    }
+    if (S.proj.tab === 'assets') return renderProjAssets();
+    renderProjPages();
+  }
+
+  function renderProjPages() {
+    const body = $('#projBody');
+    if (!body) return;
+    if (S.proj.loading && !S.proj.workspaces.length) {
+      body.innerHTML = '<div class="pv-empty"><span class="s">加载中…</span></div>';
+      return;
+    }
+    if (!S.proj.workspaces.length) {
+      body.innerHTML = '<div class="pv-empty">' +
+        '<span class="t">还没有页面</span>' +
+        '<span class="s">页面（工作区）是分镜的容器。同一项目下的所有页面共享本项目的素材库。</span>' +
+        '<button class="btn-primary" id="projNewWs2">+ 新建页面</button></div>';
+      const b = $('#projNewWs2'); if (b) b.addEventListener('click', () => onNewWorkspace());
+      return;
+    }
+    body.innerHTML = '<div class="ws-list">' + S.proj.workspaces.map((w) =>
+      '<div class="ws-row" data-ws="' + esc(w.id) + '" title="打开这个页面">' +
+        '<span class="nm">' + esc(w.name) + '</span>' +
+        (w.isDefault ? '<span class="def">默认</span>' : '') +
+        '<span class="grow"></span>' +
+        '<span class="meta">' + (w.storyboardCount || 0) + ' 个分镜' + (w.lastOpenedAt ? ' · ' + esc(fmtWhen(w.lastOpenedAt)) : '') + '</span>' +
+        '<button class="btn-mini" data-wsact="rename" data-wsid="' + esc(w.id) + '">重命名</button>' +
+        '<button class="btn-mini btn-danger" data-wsact="del" data-wsid="' + esc(w.id) + '">删除</button>' +
+      '</div>'
+    ).join('') + '</div>';
+  }
+
+  function renderProjAssets() {
+    const body = $('#projBody');
+    if (!body) return;
+    const tabs = ASSET_TABS.map((k) =>
+      '<button class="pv-tab' + (S.proj.assetTab === k ? ' on' : '') + '" data-atab="' + k + '">' + esc(ASSET_TAB_LABEL[k]) + '</button>'
+    ).join('');
+    const cards = S.proj.assets.length
+      ? '<div class="pv-grid">' + S.proj.assets.map((a) => assetCardHTML(a, {})).join('') + '</div>'
+      : '<div class="pv-empty"><span class="t">这个分类下还没有素材</span><span class="s">素材属于<strong>项目</strong>，本项目下所有页面都能使用它；绑定到具体分镜的操作在工作区里做。</span></div>';
+    body.innerHTML =
+      '<div class="pv-toolbar">' + tabs +
+        '<span class="grow"></span>' +
+        '<label class="panel-search" style="margin:0"><input id="projAssetKw" class="input-sm" placeholder="搜索素材" value="' + esc(S.proj.assetKeyword) + '" /></label>' +
+        '<button class="btn-primary" id="projAssetUp">+ 上传素材</button>' +
+      '</div>' + cards;
+  }
+
+  /* ---------------- 项目 / 页面 的增删改 ---------------- */
+
+  async function onNewProject() {
+    const name = await uiPrompt('创建项目', '给项目起个名字。项目之间数据完全隔离，同一项目下的多个页面共享素材库。', '');
+    if (name === null) return;
+    const nm = String(name).trim();
+    if (!nm) { toast('项目名称不能为空', 'err'); return; }
+    try {
+      const res = await Api.createProject({ name: nm });
+      toast('项目「' + res.project.name + '」已创建', 'ok');
+      /* 指令 §22：创建成功后进入项目主页（后端已自动建好一个「默认页面」） */
+      await enterProject(res.project.id);
+    } catch (e) { fail(e); }
+  }
+
+  async function onRenameProject(id, cur) {
+    const name = await uiPrompt('重命名项目', '改名不会影响分镜、素材与生成记录；生成记录里仍显示生成当时的名字。', cur || '');
+    if (name === null) return;
+    const nm = String(name).trim();
+    if (!nm) { toast('项目名称不能为空', 'err'); return; }
+    try {
+      await Api.patchProject(id, { name: nm });
+      toast('已重命名', 'ok');
+      if (S.view === 'project') await loadProjectHome(); else await loadProjects();
+    } catch (e) { fail(e); }
+  }
+
+  async function onDeleteProject(id, name) {
+    const okd = await uiConfirm('删除项目', '确定删除项目「' + name + '」？\n\n' +
+      '这是**软删除**：项目、页面、分镜、素材与生成记录都不会被物理销毁，只是不再出现在列表里。' +
+      '如果项目下还有生成中的任务，删除会被拒绝。');
+    if (!okd) return;
+    try {
+      await Api.deleteProject(id);
+      toast('项目已删除（软删除，数据仍保留）', 'ok');
+      if (S.view === 'project' && S.cur.projectId === id) await enterHome();
+      else await loadProjects();
+    } catch (e) { fail(e); }
+  }
+
+  async function onNewWorkspace() {
+    if (!S.cur.projectId) return;
+    const name = await uiPrompt('新建页面', '页面（工作区）是分镜的容器。同一项目下的页面共享素材库，但分镜互相独立。', '');
+    if (name === null) return;
+    const nm = String(name).trim();
+    if (!nm) { toast('页面名称不能为空', 'err'); return; }
+    try {
+      const w = await Api.createWorkspace(S.cur.projectId, { name: nm });
+      toast('页面「' + w.name + '」已创建', 'ok');
+      await loadProjectHome();
+    } catch (e) { fail(e); }
+  }
+
+  async function onRenameWorkspace(id, cur) {
+    const name = await uiPrompt('重命名页面', '改名后旧的分镜、素材与生成记录都不受影响；生成记录里仍显示生成当时的名字。', cur || '');
+    if (name === null) return;
+    const nm = String(name).trim();
+    if (!nm) { toast('页面名称不能为空', 'err'); return; }
+    try {
+      await Api.patchWorkspace(id, { name: nm });
+      toast('已重命名', 'ok');
+      await loadProjectHome();
+    } catch (e) { fail(e); }
+  }
+
+  async function onDeleteWorkspace(id, name) {
+    const okd = await uiConfirm('删除页面', '确定删除页面「' + name + '」？\n\n' +
+      '这是**软删除**：页面里的分镜与生成记录都保留，本项目的**素材库不受影响**（素材属于项目，不属于页面）。' +
+      '如果页面下还有生成中的任务，或这是项目下最后一个页面，删除会被拒绝。');
+    if (!okd) return;
+    try {
+      await Api.deleteWorkspace(id);
+      toast('页面已删除（软删除）', 'ok');
+      await loadProjectHome();
+    } catch (e) { fail(e); }
+  }
+
+  /* 首页与项目主页的事件委托（内容每次重绘，所以挂在容器上委托） */
+  function bindPageViews() {
+    const home = $('#homeView');
+    if (home) {
+      home.addEventListener('click', (e) => {
+        const act = e.target.closest('[data-pjact]');
+        if (act) {
+          const id = act.dataset.pjid;
+          const p = S.home.list.find((x) => x.id === id);
+          if (act.dataset.pjact === 'rename') return onRenameProject(id, p && p.name);
+          if (act.dataset.pjact === 'del') return onDeleteProject(id, (p && p.name) || id);
+          return;
+        }
+        const card = e.target.closest('[data-pj]');
+        if (card) return enterProject(card.dataset.pj);
+      });
+    }
+    const proj = $('#projView');
+    if (proj) {
+      proj.addEventListener('click', (e) => {
+        /* 素材卡片：删除钮必须先于卡片点击处理（与素材面板同一套顺序），
+           否则会被卡片处理器吞掉，表现为"点 × 却打开了素材详情"。
+           这里直接复用 onAssetDelete / onAssetClick —— 进入项目主页时
+           resetScopeState 已把 assetSelMode / bindTarget 清空，
+           所以 onAssetClick 会走到"打开素材设置"这一条，正是项目资产库要的行为。 */
+        const assetDel = e.target.closest('[data-assetdel]');
+        if (assetDel) return onAssetDelete(assetDel.dataset.assetdel);
+        const assetEl = e.target.closest('[data-asset]');
+        if (assetEl) return onAssetClick(assetEl.dataset.asset);
+
+        const tab = e.target.closest('[data-ptab]');
+        if (tab) {
+          const k = tab.dataset.ptab;
+          /* 生成记录 / 项目设置 是"离开本页"的动作：直接打开既有的全屏视图与抽屉，
+             不切换 tab 选中态（它们没有内联内容，切成选中会让用户以为还在本页）。 */
+          if (k === 'records') return openRecords();
+          if (k === 'settings') return openSettings();
+          S.proj.tab = k;
+          renderProjHome();
+          if (k === 'assets') loadProjAssets();
+          return;
+        }
+        const wsact = e.target.closest('[data-wsact]');
+        if (wsact) {
+          const id = wsact.dataset.wsid;
+          const w = S.proj.workspaces.find((x) => x.id === id);
+          if (wsact.dataset.wsact === 'rename') return onRenameWorkspace(id, w && w.name);
+          if (wsact.dataset.wsact === 'del') return onDeleteWorkspace(id, (w && w.name) || id);
+          return;
+        }
+        const atab = e.target.closest('[data-atab]');
+        if (atab) { S.proj.assetTab = atab.dataset.atab; renderProjAssets(); loadProjAssets(); return; }
+        if (e.target.id === 'projAssetUp') return openAssetImport();
+        const row = e.target.closest('[data-ws]');
+        if (row) return enterWorkspace(S.cur.projectId, row.dataset.ws);
+      });
+      // 资产搜索：250ms 防抖，与素材面板一致
+      proj.addEventListener('input', (e) => {
+        if (e.target.id !== 'projAssetKw') return;
+        S.proj.assetKeyword = e.target.value;
+        if (S.panelTimer) clearTimeout(S.panelTimer);
+        S.panelTimer = setTimeout(() => loadProjAssets(true), 250);
+      });
+    }
+    // 首页 / 项目主页 的按钮
+    const on = (id, fn) => { const el = $(id); if (el) el.addEventListener('click', fn); };
+    on('#homeNew', () => onNewProject());
+    on('#homeRefresh', () => loadProjects());
+    on('#projBack', () => enterHome());
+    on('#projNewWs', () => onNewWorkspace());
+    on('#projRename', () => { if (S.cur.project) onRenameProject(S.cur.project.id, S.cur.project.name); });
+    on('#projDelete', () => { if (S.cur.project) onDeleteProject(S.cur.project.id, S.cur.project.name); });
+    on('#crumbHome', () => enterHome());
+    on('#projName', () => { if (S.cur.projectId && S.view !== 'project') enterProject(S.cur.projectId); });
+  }
+
+  /* 项目主页的资产列表（按当前分类/关键词重取） */
+  async function loadProjAssets(keepFocus) {
+    try {
+      const a = await Api.listAssets({ type: S.proj.assetTab, keyword: S.proj.assetKeyword || undefined });
+      S.proj.assets = a.library || [];
+    } catch (e) { S.proj.assets = []; }
+    const pos = keepFocus ? (($('#projAssetKw') || {}).value || '').length : null;
+    renderProjAssets();
+    if (pos !== null) {
+      const el = $('#projAssetKw');
+      if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) { /* noop */ } }
+    }
+  }
+
   function render() { renderTopbar(); renderTable(); renderPanel(); renderStatusbar(); }
 
   /* 素材面板窄屏抽屉化（模块层助手）：
@@ -1438,8 +2027,17 @@
   }
   const POLL_BASE = () => 3000;   // 契约：基线 3s，无变化退避至 10s 封顶
 
-  function stopPolling() { if (S.poll.timer) { clearTimeout(S.poll.timer); S.poll.timer = null; } }
+  /* 停止轮询。**同时把代际令牌 +1**（指令 §38）：只 clearTimeout 拦不住已经发出、
+     正在等响应的那一轮 —— 它回来时会照常 Object.assign 到 S.list 并重绘，
+     把上一个页面的进度画到新页面的表格上。代际变了，那一轮自己就作废了。 */
+  function stopPolling() {
+    if (S.poll.timer) { clearTimeout(S.poll.timer); S.poll.timer = null; }
+    S.poll.gen++;
+  }
   function ensurePolling() {
+    /* 轮询只在工作区视图里有意义（指令 §39）：首页/项目主页没有分镜表，
+       继续轮询只是后台空转，还会在切回来时把过期数据写进界面。 */
+    if (S.view !== 'workspace') return;
     if (S.poll.timer) return;
     if (document.hidden) return;
     if (!activeIds().length) return;
@@ -1450,6 +2048,12 @@
 
   async function pollOnce() {
     S.poll.timer = null;
+    /* 本轮的身份快照。每次 await 之后都要重新比对：
+       代际（切换过项目/页面）或视图（离开了工作区）变了，就丢弃这一轮的结果。 */
+    const gen = S.poll.gen;
+    const ws = S.cur.workspaceId;
+    const stale = () => gen !== S.poll.gen || ws !== S.cur.workspaceId || S.view !== 'workspace';
+
     const ids = activeIds();
     if (!ids.length) return;                       // 全部终态 → 停止轮询
 
@@ -1457,6 +2061,7 @@
     let delay = base;
     try {
       const changed = await Api.getProgress(ids.slice(0, 50));
+      if (stale()) return;                         // 响应已属于上一轮 → 一个字段都不写
       /* 服务端已不再"读后清" dirty（原因见 services.getProgress：那会让第二个标签页
          永远收不到更新）。代价是它每轮都会把仍是 dirty 的行再回一遍，所以"有没有变化"
          改由这里按**载荷签名**判断：内容与上一轮完全相同就算无变化，照常退避。
@@ -1480,19 +2085,26 @@
           if (wasActive && c.status !== 'generating' && c.status !== 'queued') terminal = true;
         });
         renderRowsOnly();
-        if (terminal) await loadList({ skeleton: false });   // 收口时以服务端统计为准
+        if (terminal) {
+          await loadList({ skeleton: false });   // 收口时以服务端统计为准
+          if (stale()) return;
+        }
       }
     } catch (e) {
+      if (stale()) return;
       S.poll.idle++;
       delay = Math.min(30000, base * Math.pow(2, S.poll.idle));   // 429 / 网络异常 → 指数退避，不打扰用户
       if (!e || e.code !== Api.ERR.RATELIMIT) fail(e);
     }
+    /* 续期前再验一次身份：视图已切换就不要再排下一轮（stopPolling 已经 +1 代际，
+       这里若还排下去就会留下一条"幽灵轮询链"）。 */
+    if (stale()) return;
     if (activeIds().length && !document.hidden) S.poll.timer = setTimeout(pollOnce, delay);
   }
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopPolling();            // 页面隐藏暂停
-    else ensurePolling();                          // 恢复时立即拉一次
+    else ensurePolling();                          // 恢复时立即拉一次（非工作区视图会被 ensurePolling 拦下）
   });
 
   /* ---------------------------------------------------------- 行内交互 */
@@ -3619,6 +4231,11 @@
 
   /* ---------------------------------------------------------- 事件绑定 */
   function bindStatic() {
+    /* 首页 / 项目主页 的事件委托与静态按钮（多项目架构）。
+       两页的内容都是整体重绘的，所以事件一律挂在容器上委托，
+       与 #recView / #panel 的做法一致。 */
+    bindPageViews();
+
     /* 快速多选：素材网格与分镜列表各挂一次框选引擎。
        两边共用同一套拖拽/区间逻辑，差异只在「项选择器」与「选择态怎么落地」。
        普通点击（没超过 4px 阈值）不拦，卡片编辑弹窗照常打开，不影响既有习惯。
@@ -3862,8 +4479,13 @@
     bindStatic();
     renderColhead();
     render();
-    // 并行加载：列表/素材不等 meta——adapter 探测在冷启动时较慢，不应拖累首屏数据
-    await Promise.all([loadMeta(), loadList(), loadAssets()]);
+    /* 启动顺序（多项目架构，指令 §20/§36）：
+       先按 URL 解析出"应该进哪一层"，再加载那一层需要的数据。
+       ⚠ 不能像以前那样无条件 loadList() —— 列表是**页面级**数据，
+       没有确定当前页面之前拉它只会拿到旧项目的分镜（或空）。
+       bootFromUrl 内部：?project&workspace → 工作区；?project → 项目主页；
+       都没有 → 首页（项目列表）。目标不存在时逐级安全降级，不会崩。 */
+    await bootFromUrl();
     // adapter 状态若仍在后台探测/刷新中，2.5s 后补拉一次纠正引擎状态显示
     setTimeout(async () => {
       try {

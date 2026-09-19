@@ -25,11 +25,33 @@
     ? '/api/v1'
     : 'http://127.0.0.1:8787/api/v1';
 
+  /* ---------------------------------------------------------- 当前作用域
+     多项目架构（2026-09-19）：前端持有 currentProjectId / currentWorkspaceId
+     （指令 §25 明确允许——**只有前端**能有这个概念，后端一律 request-scoped）。
+     这里把它们放在 CFG 上，与既有的 projectId 用法一脉相承：
+     每个业务请求都显式带上作用域，后端据此过滤并校验父子关系。
+     setScope() 是唯一的写入口，避免各处零散改写。 */
   const CFG = (global.APP_CONFIG = Object.assign({
     baseUrl: DEFAULT_BASE,
     token: '',
-    projectId: 'pj_1'
+    projectId: 'pj_1',
+    workspaceId: ''
   }, global.APP_CONFIG || {}));
+
+  function setScope(o) {
+    const s = o || {};
+    if (s.projectId !== undefined) CFG.projectId = s.projectId || '';
+    if (s.workspaceId !== undefined) CFG.workspaceId = s.workspaceId || '';
+    return { projectId: CFG.projectId, workspaceId: CFG.workspaceId };
+  }
+  /* 业务请求的作用域参数。后端支持"路径 / 查询串"两种来源，这里统一走查询串，
+     好处是旧式扁平路径与新的作用域化路径共用同一套拼接。 */
+  function scopeQuery(extra) {
+    const q = Object.assign({}, extra || {});
+    if (CFG.projectId) q.projectId = CFG.projectId;
+    if (CFG.workspaceId) q.workspaceId = CFG.workspaceId;
+    return q;
+  }
 
   /* ---------------------------------------------------------- 错误 */
   const ERR = {
@@ -156,9 +178,9 @@
   /* ---------------------------------------------------------- 对外 API */
   const api = {
     CFG, META, ERR, ApiError,
-    grad,
+    grad, setScope, scopeQuery,
 
-    getOptions:   ()          => request('GET', '/meta/options'),
+    getOptions:   ()          => request('GET', '/meta/options', { query: scopeQuery() }),
     me:           ()          => request('GET', '/auth/me'),
     getAdapter:   ()          => request('GET', '/system/adapter'),
     adapterCheck: ()          => request('POST', '/system/adapter/check'),
@@ -166,55 +188,74 @@
     dreaminaLogin: ()         => request('POST', '/system/adapter/dreamina/login'),
     dreaminaSwitch:()         => request('POST', '/system/adapter/dreamina/switch'),
 
-    listStoryboards: (query)  => request('GET', '/projects/' + CFG.projectId + '/storyboards', { query }),
-    getProgress:  (ids)       => request('GET', '/storyboards/progress', { query: { ids: ids.join(',') } }),
-    getStoryboard:(id)        => request('GET', '/storyboards/' + id),
-    createStoryboard: (body)  => request('POST', '/storyboards', { body }),
-    patchStoryboard: (id, body) => request('PATCH', '/storyboards/' + id, { body }),
-    batchDuration:(ids, durationSec) => request('POST', '/storyboards/batch-duration', { body: { ids, durationSec } }),
-    // dryRun=true：只组装命令、不派发给即梦（提交后在页面核对真实命令）
-    batchSubmit:  (ids, concurrency, dryRun) => request('POST', '/storyboards/batch-submit', { body: { ids, concurrency, dryRun: !!dryRun }, idempotencyKey: submitKey(ids, dryRun) }),
-    // 干跑校验（不提交、不改状态）：返回各引擎完整命令 + 画布 CLI 本地校验结果
-    dryRun:       (id)           => request('POST', '/storyboards/' + id + '/dry-run', { body: {} }),
-    cancel:       (id)        => request('POST', '/storyboards/' + id + '/cancel', { body: {} }),
-    retry:        (id)        => request('POST', '/storyboards/' + id + '/retry', { body: { resetProgress: true } }),
-    batchDelete:  (ids, force) => request('POST', '/storyboards/batch-delete', { body: { ids, force: !!force } }),
-    reorder:      (id, direction) => request('POST', '/storyboards/' + id + '/reorder', { body: { direction } }),
+    /* ---------------- Project / Workspace（多项目架构） ---------------- */
+    listProjects: ()          => request('GET', '/projects'),
+    createProject:(body)      => request('POST', '/projects', { body }),
+    getProject:   (id)        => request('GET', '/projects/' + id),
+    patchProject: (id, body)  => request('PATCH', '/projects/' + id, { body }),
+    // 软删除：后端只打 deletedAt，不级联销毁数据
+    deleteProject:(id)        => request('DELETE', '/projects/' + id),
+    listWorkspaces:(projectId) => request('GET', '/projects/' + projectId + '/workspaces'),
+    createWorkspace:(projectId, body) => request('POST', '/projects/' + projectId + '/workspaces', { body }),
+    getWorkspace: (id)        => request('GET', '/workspaces/' + id),
+    patchWorkspace:(id, body) => request('PATCH', '/workspaces/' + id, { body }),
+    deleteWorkspace:(id)      => request('DELETE', '/workspaces/' + id),
 
-    listAssets:   (query)     => request('GET', '/assets', { query }),
+    /* 分镜列表：有工作区作用域时走作用域化路径，否则回落到项目级路径（兼容旧行为） */
+    listStoryboards: (query)  => request('GET',
+      CFG.workspaceId ? '/workspaces/' + CFG.workspaceId + '/storyboards'
+        : '/projects/' + CFG.projectId + '/storyboards',
+      { query }),
+    getProgress:  (ids)       => request('GET', '/storyboards/progress', { query: scopeQuery({ ids: ids.join(',') }) }),
+    getStoryboard:(id)        => request('GET', '/storyboards/' + id, { query: scopeQuery() }),
+    createStoryboard: (body)  => request('POST', '/storyboards', { body }),
+    patchStoryboard: (id, body) => request('PATCH', '/storyboards/' + id, { body: body, query: scopeQuery() }),
+    batchDuration:(ids, durationSec) => request('POST', '/storyboards/batch-duration', { body: { ids, durationSec }, query: scopeQuery() }),
+    // dryRun=true：只组装命令、不派发给即梦（提交后在页面核对真实命令）
+    batchSubmit:  (ids, concurrency, dryRun) => request('POST', '/storyboards/batch-submit', { body: { ids, concurrency, dryRun: !!dryRun }, idempotencyKey: submitKey(ids, dryRun), query: scopeQuery() }),
+    // 干跑校验（不提交、不改状态）：返回各引擎完整命令 + 画布 CLI 本地校验结果
+    dryRun:       (id)           => request('POST', '/storyboards/' + id + '/dry-run', { body: {}, query: scopeQuery() }),
+    cancel:       (id)        => request('POST', '/storyboards/' + id + '/cancel', { body: {}, query: scopeQuery() }),
+    retry:        (id)        => request('POST', '/storyboards/' + id + '/retry', { body: { resetProgress: true }, query: scopeQuery() }),
+    batchDelete:  (ids, force) => request('POST', '/storyboards/batch-delete', { body: { ids, force: !!force }, query: scopeQuery() }),
+    reorder:      (id, direction) => request('POST', '/storyboards/' + id + '/reorder', { body: { direction }, query: scopeQuery() }),
+
+    // 素材属于**项目**：同一项目下所有页面共享一份素材库
+    listAssets:   (query)     => request('GET', '/assets', { query: scopeQuery(query) }),
     // 素材设置：更新名称 / 文生图提示词（body: { name?, prompt? }，至少一项）/ 更换文件（更换保留素材 id 与全部分镜绑定）
-    updateAsset:  (id, body)  => request('PATCH', '/assets/' + id, { body: body || {} }),
-    replaceAsset: (id, file, name) => request('POST',
-      '/assets/' + id + '/file?filename=' + encodeURIComponent(file.name) + (name ? '&name=' + encodeURIComponent(name) : ''),
-      { raw: true, mime: file.type, body: file }),
-    uploadAsset:  (file, type) => request('POST', '/assets/upload?type=' + encodeURIComponent(type) + '&name=' + encodeURIComponent(file.name), { raw: true, mime: file.type, body: file }),
+    updateAsset:  (id, body)  => request('PATCH', '/assets/' + id, { body: body || {}, query: scopeQuery() }),
+    replaceAsset: (id, file, name) => request('POST', '/assets/' + id + '/file',
+      { raw: true, mime: file.type, body: file, query: scopeQuery({ filename: file.name, name: name || undefined }) }),
+    uploadAsset:  (file, type) => request('POST', '/assets/upload',
+      { raw: true, mime: file.type, body: file, query: scopeQuery({ type: type, name: file.name }) }),
     // 删除素材（同时解除所有分镜绑定并清理磁盘文件）
-    deleteAsset:  (id) => request('DELETE', '/assets/' + id),
+    deleteAsset:  (id) => request('DELETE', '/assets/' + id, { query: scopeQuery() }),
     // 提示词文本导入资产：@ 分段自动识别 场景/道具/角色；apply=false 仅解析预览，true 落库
-    importAssetPrompts: (rawText, apply) => request('POST', '/assets/import-prompts', { body: { rawText, apply: !!apply } }),
-    bindAsset:    (id, assetId, role) => request('POST', '/storyboards/' + id + '/assets', { body: { assetId, role } }),
-    unbindAsset:  (id, assetId) => request('DELETE', '/storyboards/' + id + '/assets/' + assetId),
+    importAssetPrompts: (rawText, apply) => request('POST', '/assets/import-prompts', { body: { rawText, apply: !!apply }, query: scopeQuery() }),
+    bindAsset:    (id, assetId, role) => request('POST', '/storyboards/' + id + '/assets', { body: { assetId, role }, query: scopeQuery() }),
+    unbindAsset:  (id, assetId) => request('DELETE', '/storyboards/' + id + '/assets/' + assetId, { query: scopeQuery() }),
     // 自动匹配参考图（v1 只按素材名称）：apply=false 仅预览不写库；overwrite 控制是否替换该类型已有绑定
-    autoMatchAssets: (body) => request('POST', '/storyboards/auto-assets', { body }),
+    autoMatchAssets: (body) => request('POST', '/storyboards/auto-assets', { body, query: scopeQuery() }),
     // 按提示词里的「总时长」标注重算时长（向上进位）：apply 缺省 true 直接生效，传 false 只预览
-    autoDuration: (body) => request('POST', '/storyboards/auto-duration', { body }),
+    autoDuration: (body) => request('POST', '/storyboards/auto-duration', { body, query: scopeQuery() }),
 
     // 生成记录：追加式快照，分镜被改/被删都不影响已落盘的记录
     //   query: { page, pageSize, action, outcome, engine, model, keyword, from, to }
-    listRecords:  (query)     => request('GET', '/records', { query }),
-    getRecord:    (id)        => request('GET', '/records/' + id),
-    deleteRecord: (id)        => request('DELETE', '/records/' + id),
-    // 清空必须显式给口径：{ ids:[…] } / { before: ISO } / { all:true }
-    clearRecords: (body)      => request('POST', '/records/clear', { body }),
+    listRecords:  (query)     => request('GET', '/records', { query: scopeQuery(query) }),
+    getRecord:    (id)        => request('GET', '/records/' + id, { query: scopeQuery() }),
+    deleteRecord: (id)        => request('DELETE', '/records/' + id, { query: scopeQuery() }),
+    // 清空必须显式给口径：{ ids:[…] } / { before: ISO } / { all:true }（后端只清当前项目）
+    clearRecords: (body)      => request('POST', '/records/clear', { body, query: scopeQuery() }),
     // 导出：format = md（默认，含完整提示词与命令）| csv（表格）| json（全量）
-    exportRecords:(query)     => request('GET', '/records/export', { query }),
+    exportRecords:(query)     => request('GET', '/records/export', { query: scopeQuery(query) }),
 
-    importPreview:(rawText, delimiter) => request('POST', '/storyboards/import/preview', { body: { rawText, delimiter, trimEmpty: true, dedupe: true } }),
-    importConfirm:(rawText, delimiter, defaults) => request('POST', '/storyboards/import', { body: { rawText, delimiter, defaults, insertPosition: 'top' }, idempotencyKey: rid('') }),
+    importPreview:(rawText, delimiter) => request('POST', '/storyboards/import/preview', { body: { rawText, delimiter, trimEmpty: true, dedupe: true }, query: scopeQuery() }),
+    importConfirm:(rawText, delimiter, defaults) => request('POST', '/storyboards/import', { body: { rawText, delimiter, defaults, insertPosition: 'top' }, idempotencyKey: rid(''), query: scopeQuery() }),
 
-    getSettings:  ()          => request('GET', '/settings'),
-    putSettings:  (s)         => request('PUT', '/settings', { body: s }),
-    resetSettings:(scopes)    => request('POST', '/settings/reset', { body: { scopes } })
+    // 设置：delimiter / defaults 属项目级（项目覆盖 ⊕ 全局默认），queue 属系统级
+    getSettings:  ()          => request('GET', '/settings', { query: scopeQuery() }),
+    putSettings:  (s)         => request('PUT', '/settings', { body: s, query: scopeQuery() }),
+    resetSettings:(scopes)    => request('POST', '/settings/reset', { body: { scopes }, query: scopeQuery() })
   };
 
   global.Api = api;

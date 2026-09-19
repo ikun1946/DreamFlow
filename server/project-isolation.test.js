@@ -22,7 +22,13 @@ const store = require('./store');
 let DB = null;
 store.load = () => DB;          // 路由里的 store.load() 全部指向内存假库
 store.pushLog = () => {};
-store.save = () => {};
+/* ⚠ 把 save 换成**可观测**的空实现而不是纯粹的空函数：
+   "有没有请求落盘"必须能被断言 —— 2026-09-19 实测踩到的缺陷正是这一类：
+   projects.js 里 8 个改动 db 的函数全都漏了 store.save()，
+   结果是"内存里改了、磁盘上没改"，接口读得到（同进程读同一对象）但重启就丢。
+   当时的隔离测试完全看不见它，因为 save 是个静默的空函数。 */
+let SAVE_CALLS = 0;
+store.save = () => { SAVE_CALLS++; };
 store.saveNow = () => {};
 store.flush = () => {};
 
@@ -591,6 +597,52 @@ test('多项目 Dry Run：各工作区组装出的命令只含自己的提示词
   const bad = '/storyboards/' + sbA1.id + '/dry-run?workspaceId=' + B1.id;
   try { await dryDispatch(mockReq('POST', bad, {}), res, decodeURIComponent(bad.split('?')[0])); } catch (e) { require('./util').fail(res, e); }
   assert.equal(JSON.parse(res.raw).code, 40400, '用 B1 的作用域干跑 A1 的分镜必须 404');
+});
+
+/* ============================================================
+   17. 落盘契约：每个写操作都必须请求 store.save()
+   ------------------------------------------------------------
+   为什么单独测这个：上面的隔离用例把 store.save 换成了静默的空实现，
+   所以"改了内存但没请求落盘"在那些用例里**完全不可见**。
+   这类缺陷的表现是接口一切正常、重启数据回退 —— 2026-09-19 实际踩到过
+   （projects.js 的 8 个写函数全漏了 save，软删除的项目在 db.json 里 deletedAt 仍是 null）。
+   ============================================================ */
+test('落盘契约：项目/页面的每个写操作都必须请求 store.save()', async () => {
+  const { A, A1, A2 } = await buildScenario();
+  const sb = await dataOf('POST', '/workspaces/' + A1.id + '/storyboards', { prompt: 'x' });
+  const asset = seedAsset(DB, A.id, '落盘素材', 'character');
+
+  /* 每个操作前后数一次 save 调用次数。用 >=1 而不是 ==1：
+     一次写可能同时触发别处的 save（如 pushLog），只要"确实请求过"就算过。 */
+  const mustSave = async (label, fn) => {
+    const before = SAVE_CALLS;
+    await fn();
+    assert.ok(SAVE_CALLS > before, label + ' 必须调用 store.save()（否则重启后这次改动会丢）');
+  };
+
+  await mustSave('创建项目', () => dataOf('POST', '/projects', { name: '落盘测试项目' }));
+  await mustSave('重命名项目', () => dataOf('PATCH', '/projects/' + A.id, { name: '落盘测试项目-改名' }));
+  await mustSave('新建页面', () => dataOf('POST', '/projects/' + A.id + '/workspaces', { name: '落盘页面' }));
+  await mustSave('重命名页面', () => dataOf('PATCH', '/workspaces/' + A2.id, { name: '落盘页面-改名' }));
+  await mustSave('删除页面（软删）', () => dataOf('DELETE', '/workspaces/' + A2.id));
+  await mustSave('保存项目设置', () => dataOf('PUT', '/settings?projectId=' + A.id, { defaults: { durationSec: 7 } }));
+  await mustSave('绑定素材', () => dataOf('POST', '/storyboards/' + sb.id + '/assets?workspaceId=' + A1.id, { assetId: asset.id, role: 'character' }));
+  await mustSave('新建分镜', () => dataOf('POST', '/workspaces/' + A1.id + '/storyboards', { prompt: 'y' }));
+  await mustSave('删除分镜', () => dataOf('POST', '/storyboards/batch-delete?workspaceId=' + A1.id, { ids: [sb.id], force: true }));
+  await mustSave('删除项目（软删）', () => dataOf('DELETE', '/projects/' + A.id));
+});
+
+test('软删除的语义是"打标记"而不是"物理销毁"：底层对象仍在，且标记确实写进了数据', async () => {
+  const { A, B } = await buildScenario();
+  await dataOf('DELETE', '/projects/' + B.id);
+
+  const p = DB.projects.find((x) => x.id === B.id);
+  assert.ok(p, '软删的项目对象必须还在库里');
+  assert.ok(p.deletedAt, '必须打上 deletedAt 标记（这一条同时守着上面的落盘契约）');
+  assert.equal(p.name, B.name, '名称等底层数据不得被清空');
+
+  const list = await dataOf('GET', '/projects');
+  assert.equal(list.list.some((x) => x.id === B.id), false, '但默认查询不再返回它');
 });
 
 /* ============================================================

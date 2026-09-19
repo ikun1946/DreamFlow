@@ -8,7 +8,9 @@
 </head>
 <body>
 
-<div class="app" id="app">
+<!-- hidden-view：启动时先藏起来，等 setView() 按 URL 决定该显示哪一层再放开。
+     不藏的话首屏会先闪一下控制台（空表格骨架）再跳到首页。 -->
+<div class="app hidden-view" id="app">
 
   <!-- ========== 顶栏 ========== -->
   <header class="topbar">
@@ -19,7 +21,14 @@
       <span class="brand-name">即梦批量生成控制台</span>
     </div>
     <span class="vdiv"></span>
-    <span class="proj" id="projName">雨夜归途</span>
+    <!-- 面包屑（多项目架构）：首页 › 项目 › 页面。
+         三段都是**静态节点、只改文本/显隐**，沿用顶栏既有做法（不重建 DOM，
+         否则会打断进行中的点击与 hover）。点「首页」回项目列表，点项目名回项目主页。 -->
+    <button class="crumb-link" id="crumbHome" title="返回项目列表">首页</button>
+    <span class="crumb-sep" id="crumbSep1">›</span>
+    <button class="crumb-link" id="projName" title="返回项目主页">—</button>
+    <span class="crumb-sep" id="crumbSep2" hidden>›</span>
+    <span class="crumb-cur" id="crumbWs" hidden>—</span>
     <span class="chip" id="scopeChip">第 1 批 · 0 个分镜</span>
 
     <span class="vdiv"></span>
@@ -154,6 +163,42 @@
     <div class="modal-body" id="detailBody"></div>
   </div>
 </div>
+
+<!-- ========== 首页：项目列表（多项目架构的根入口） ==========
+     与 #recView 同构：作为 #app 的**兄弟节点**、position:fixed 铺满、靠 [hidden] 切换。
+     z-index 取 65 —— 在弹层遮罩（60）之上、记录页与设置抽屉（70）之下，
+     因此从项目主页能正常打开「生成记录」与「项目设置」，而弹层不会盖住本页。 -->
+<section class="pageview" id="homeView" hidden aria-hidden="true">
+  <header class="pv-head">
+    <span class="brand-mark">
+      <svg width="18" height="18" viewBox="0 0 24 24"><rect x="2.5" y="2.5" width="19" height="19" rx="5.5" fill="#0066CC"/><path d="M10 8.5l6 3.5-6 3.5z" fill="#fff"/></svg>
+    </span>
+    <h2>即梦批量生成控制台</h2>
+    <span class="hint-sm" id="homeSummary">—</span>
+    <span class="grow"></span>
+    <button class="btn-outline" id="homeRefresh">刷新</button>
+    <button class="btn-primary" id="homeNew">+ 创建项目</button>
+  </header>
+  <div class="pv-body" id="homeBody"></div>
+</section>
+
+<!-- ========== 项目主页：页面（Workspace）列表 + 四个入口 ==========
+     指令 §23：进入项目后先看到项目主页，而不是直接强行进入某个页面。 -->
+<section class="pageview" id="projView" hidden aria-hidden="true">
+  <header class="pv-head">
+    <button class="icon-btn" id="projBack" title="返回项目列表">
+      <svg width="20" height="20" viewBox="0 0 24 24"><path d="M14.5 5.5L8 12l6.5 6.5" stroke="#333" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <h2 id="projTitle">—</h2>
+    <span class="hint-sm" id="projSummary">—</span>
+    <span class="grow"></span>
+    <button class="btn-outline" id="projRename">重命名</button>
+    <button class="btn-outline btn-danger" id="projDelete">删除项目</button>
+    <button class="btn-primary" id="projNewWs">+ 新建页面</button>
+  </header>
+  <div class="pv-tabs" id="projTabs"></div>
+  <div class="pv-body" id="projBody"></div>
+</section>
 
 <div class="toasts" id="toasts"></div>
 
