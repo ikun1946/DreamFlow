@@ -209,14 +209,22 @@ test('resolveScope：父子不一致必须拒绝，且不泄露对方是否存�
   assert.throws(() => P.resolveScope(db, { workspaceId: 'ws_不存在' }), (e) => e.code === 40400);
 });
 
-test('createProject：自动创建「默认页面」，且 defaultWorkspaceId 指向它', () => {
+test('createProject：**不**自动创建分镜表（用户要求），defaultWorkspaceId 留空', () => {
   const db = v1Fixture();
   schema.runMigrations(db);
+  const wsBefore = db.workspaces.length;
+
   const out = P.createProject(db, { name: '红星机械厂' });
   assert.equal(out.project.name, '红星机械厂');
-  assert.ok(out.workspace, '必须自动创建默认页面');
-  assert.equal(out.workspace.name, '默认页面');
-  assert.equal(out.project.defaultWorkspaceId, out.workspace.id);
-  assert.equal(out.workspace.projectId, out.project.id);
-  assert.equal(out.project.counts.workspaces, 1);
+  /* ⚠ 早期版本会自动建一张「默认页面」，那个行为已按用户要求撤销：
+     新建的项目是空的，要自己建第一张分镜表。 */
+  assert.equal(out.workspace, null, '不得自动创建分镜表');
+  assert.equal(db.workspaces.length, wsBefore, '工作区总数不应变化');
+  assert.equal(out.project.defaultWorkspaceId, null, 'defaultWorkspaceId 应为空');
+  assert.equal(out.project.counts.workspaces, 0, '新项目的分镜表数为 0');
+
+  // 建第一张分镜表时应自动补上 defaultWorkspaceId（扁平路由要靠它落地）
+  const w = P.createWorkspace(db, out.project.id, { name: '第1-10集' });
+  assert.equal(P.projectOf(db, out.project.id).defaultWorkspaceId, w.id, '第一张分镜表要成为默认指向');
+  assert.equal(P.getProject(db, out.project.id).counts.workspaces, 1);
 });

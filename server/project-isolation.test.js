@@ -138,14 +138,16 @@ function existingAssetUrl() {
 }
 
 /* 建立指令 §57 要求的验收场景：
-     Project A → Workspace A1 / A2     Project B → Workspace B1 */
+     Project A → Workspace A1 / A2     Project B → Workspace B1
+   ⚠ 新建项目**不再自动创建分镜表**（用户要求），所以这里显式建。
+     夹具按"项目里本来就有这些表"来构造，与升级前的旧库形态一致。 */
 async function buildScenario() {
   DB = emptyFixture();
   const A = await dataOf('POST', '/projects', { name: '项目A' });
   const B = await dataOf('POST', '/projects', { name: '项目B' });
+  const A1 = await dataOf('POST', '/projects/' + A.project.id + '/workspaces', { name: '第1-10集' });
   const A2 = await dataOf('POST', '/projects/' + A.project.id + '/workspaces', { name: '第11-20集' });
-  const A1 = A.workspace;          // 创建项目时自动建的「默认页面」
-  const B1 = B.workspace;
+  const B1 = await dataOf('POST', '/projects/' + B.project.id + '/workspaces', { name: 'B1' });
   return { A: A.project, B: B.project, A1, A2, B1 };
 }
 
@@ -333,9 +335,31 @@ test('软删除工作区：不影响项目资产、记录，也不影响同项�
   assert.equal(still.list[0].id, sb2.id);
 });
 
-test('不能删除项目下最后一个工作区（避免项目进入"没有页面可用"的死角）', async () => {
+test('删掉最后一张分镜表是允许的（空项目本身合法，因为新建项目不再自动建表）', async () => {
   const { B, B1 } = await buildScenario();
-  assert.equal(await codeOf('DELETE', '/workspaces/' + B1.id), 40900, '最后一个工作区不得删除');
+  /* ⚠ 这里曾经断言 40900（"最后一个页面不能删"）。改成"新建项目不自动建分镜表"之后，
+     空项目就是合法状态，再禁止删到 0 会自相矛盾，故守卫已移除。 */
+  const out = await dataOf('DELETE', '/workspaces/' + B1.id);
+  assert.equal(out.softDeleted, true, '最后一张分镜表也应可删');
+
+  const ws = await dataOf('GET', '/projects/' + B.id + '/workspaces');
+  assert.equal(ws.total, 0, '项目变为空');
+  const pj = await dataOf('GET', '/projects/' + B.id);
+  assert.equal(pj.defaultWorkspaceId, null, '没有分镜表时 defaultWorkspaceId 应被清空');
+
+  // 空项目仍然可用：资产与设置是项目级的，不依赖分镜表
+  assert.equal((await dataOf('GET', '/projects/' + B.id + '/assets?type=character')).library.length, 0);
+  const st = await dataOf('GET', '/settings?projectId=' + B.id);
+  assert.ok(st.defaults && st.queue, '空项目的设置仍可读（设置是项目级的，不依赖分镜表）');
+
+  // 但分镜相关操作要**明确报错**，而不是静默返回空列表（否则会被当成"这张表是空的"）
+  assert.equal(await codeOf('GET', '/storyboards?projectId=' + B.id), 40400, '没有分镜表时取分镜必须明确报错');
+
+  // 再建一张就能恢复可用，且 defaultWorkspaceId 自动补上
+  const again = await dataOf('POST', '/projects/' + B.id + '/workspaces', { name: '重新开始' });
+  const pj2 = await dataOf('GET', '/projects/' + B.id);
+  assert.equal(pj2.defaultWorkspaceId, again.id, '建第一张时应自动补上默认指向');
+  assert.equal((await dataOf('GET', '/workspaces/' + again.id + '/storyboards')).total, 0);
 });
 
 /* ============================================================

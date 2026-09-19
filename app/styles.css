@@ -742,6 +742,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .input-sm{padding:8px 12px;border:1px solid var(--hairline);border-radius:8px;outline:0;font-family:var(--mono);font-weight:600}
 .input-sm:focus{border-color:var(--primary);border-width:1.5px}
 .banner{display:flex;align-items:center;gap:8px;padding:12px 16px;border-radius:11px;font-size:13px}
+/* ⚠ 同一类坑（第 5 处，由 server/ui-hidden-rules.test.js 静态检查发现）：
+   #importDetect 是靠 `hidden` 切换的，而 .banner 设了 display:flex ——
+   没有这条规则时 `el.hidden = true` 静默失效，导入弹窗里那条绿色的
+   「已识别 N 段提示词」一旦出现就再也收不回去（把文本框清空也还在，数字还是旧的）。 */
+.banner[hidden]{display:none}
 .banner.ok{background:var(--ok-bg);color:var(--ok)}
 .banner.warn{background:var(--warn-bg);color:var(--warn)}
 .banner.err{background:var(--err-bg);color:var(--err)}
@@ -965,10 +970,16 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
      所以"新建项目 / 重命名 / 删除确认"这些弹窗在本页之上是正常的；
      而 60 那批（导入提示词 / 分镜详情 / 干跑 / 自动匹配 / 时长重算）都只在控制台视图里打开，
      不会与本页同屏，无需为它们让位。 */
+/* ⚠ 用 flex 列而不是 grid：两个视图的子元素个数不同 —— 首页是「头 + 主体」两个，
+   项目主页是「头 + 页签 + 主体」三个。原来照抄 .recview 的
+   `grid-template-rows:auto auto minmax(0,1fr)`（三行）配两个子元素时，
+   第二个子元素落在第 2 行（auto），**第三行 1fr 空着**，
+   于是首页主体只按内容高度撑开（实测 720 高视口下只有 219px）——
+   项目一多就会被 overflow:hidden 裁掉且滚不动。
+   flex 下主体用 flex:1 自动吃掉剩余空间，两种结构都对。 */
 .pageview{
   position:fixed;inset:0;z-index:65;
-  display:grid;grid-template-rows:auto auto minmax(0,1fr);
-  grid-template-columns:minmax(0,1fr);
+  display:flex;flex-direction:column;
   background:var(--surface);
 }
 .pageview[hidden]{display:none}
@@ -979,13 +990,13 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .app.hidden-view{visibility:hidden}
 /* 只有头部与主体两层（项目主页多一条 tab 条，用 grid-template-rows 的第三行空着即可） */
 .pv-head{
-  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:none;
   padding:12px 20px;border-bottom:1px solid var(--hairline);
 }
 .pv-head h2{font-size:18px}
 .pv-head .grow{flex:1 1 24px}
 .pv-tabs{
-  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:none;
   padding:10px 20px;border-bottom:1px solid var(--divider);background:var(--pearl);
 }
 /* 页签：与素材面板的分类 tab（.seg button）同一套视觉，但作用域限定在 .pv-tabs 内，
@@ -1003,6 +1014,12 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* 就地面板槽位：把记录视图 / 设置面板搬进来后让它填满剩余高度 */
 .pv-mount{flex:1;min-height:0;display:flex;flex-direction:column}
 .pv-mount > *{flex:1;min-height:0}
+/* ⚠ 同上：.pv-mount 是 display:flex，会盖掉 [hidden]{display:none}。
+   没有这条时，空着的挂载点仍占着 flex:1 的高度（实测 608px 的容器里它吃掉 273px），
+   把真正的内容区挤成 335px —— 页面下半截是空的、且内容多时滚动区偏小。
+   这是本项目第 4 次踩同一个坑（前三次：.fs-btn / .recview / .drawer），
+   已加静态检查防止再犯，见 server/ui-hidden-rules.test.js。 */
+.pv-mount[hidden]{display:none}
 
 /* ---------------- 就地模式（把覆盖层变成普通块级内容） ----------------
    记录视图与设置抽屉在"独立打开"时是 position:fixed 的覆盖层（z-index 70）；

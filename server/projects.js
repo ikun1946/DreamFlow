@@ -57,7 +57,7 @@ function projectOfStoryboard(db, sb) {
   return ws ? projectOf(db, ws.projectId) : null;
 }
 
-/* 项目的默认工作区：新建项目时自动创建的「默认页面」，迁移时指向 ws_1。
+/* 项目的默认工作区（UI 上叫「分镜表」）：新建第一张时由 createWorkspace 补上；迁移时指向 ws_1。
    旧式扁平路由（不带 workspaceId 的 /storyboards/*）靠它落到一个确定的工作区。 */
 function defaultWorkspaceOf(db, project) {
   if (!project) return null;
@@ -122,7 +122,7 @@ function resolveScope(db, opts) {
 function requireWorkspaceScope(db, opts) {
   const scope = resolveScope(db, opts);
   if (!scope.workspace) {
-    throw new ApiError(ERR.NOTFOUND, '项目「' + scope.project.name + '」下没有可用工作区，请先新建一个页面');
+    throw new ApiError(ERR.NOTFOUND, '项目「' + scope.project.name + '」下还没有分镜表，请先新建一张');
   }
   return scope;
 }
@@ -212,31 +212,25 @@ function cleanName(raw, what) {
   return name;
 }
 
-/* 新建项目。按用户选择：**自动创建一个「默认页面」**，
-   这样建完立刻能进分镜界面，不会出现"建了项目却什么都做不了"的死角。
-   （迁移创建的旧项目也是"一项目一工作区"，行为一致。） */
+/* 新建项目。**刻意不自动创建分镜表**（用户明确要求："项目内不要自动创建默认页面"）。
+   代价是新建的项目是空的，要自己建一张分镜表才能开始做分镜 —— 这是有意的取舍，
+   避免给用户留下一堆他没要过的空分镜表。
+   defaultWorkspaceId 留 null；等建第一张分镜表时由 createWorkspace 补上。
+   （早期版本会自动建一张「默认页面」，那个行为已按用户要求撤销。） */
 function createProject(db, b) {
   const body = b || {};
   const name = cleanName(body.name, '项目');
   const now = nowIso();
-  const pid = rid('pj_');
-  const wid = rid('ws_');
-
-  const ws = {
-    id: wid, projectId: pid, name: '默认页面',
-    description: '', createdAt: now, updatedAt: now, lastOpenedAt: now, deletedAt: null
-  };
   const proj = {
-    id: pid, name,
+    id: rid('pj_'), name,
     description: String(body.description || '').trim(),
     settings: {},                 // 留空 = 全部回落到全局默认（§15.3）
-    defaultWorkspaceId: wid,
+    defaultWorkspaceId: null,
     createdAt: now, updatedAt: now, lastOpenedAt: now, deletedAt: null
   };
   db.projects.push(proj);
-  db.workspaces.push(ws);
   save();
-  return { project: viewProject(db, proj), workspace: viewWorkspace(ws) };
+  return { project: viewProject(db, proj), workspace: null };
 }
 
 function patchProject(db, id, b) {
@@ -290,7 +284,7 @@ function listWorkspaces(db, projectId) {
   if (!p) throw new ApiError(ERR.NOTFOUND, '项目不存在或已删除：' + projectId);
   const list = aliveWorkspaces(db).filter((w) => w.projectId === p.id)
     .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
-  /* 每个工作区分镜数：项目主页的页面卡片要显示，避免前端逐个再请求 */
+  /* 每张分镜表的分镜数：项目主页的卡片要显示，避免前端逐个再请求 */
   return {
     project: viewProject(db, p),
     list: list.map((w) => Object.assign(viewWorkspace(w), {
@@ -315,7 +309,7 @@ function createWorkspace(db, projectId, b) {
   const p = projectOf(db, projectId);
   if (!p) throw new ApiError(ERR.NOTFOUND, '项目不存在或已删除：' + projectId);
   const body = b || {};
-  const name = cleanName(body.name, '页面');
+  const name = cleanName(body.name, '分镜表');
   const now = nowIso();
   const w = {
     id: rid('ws_'), projectId: p.id, name,
@@ -333,7 +327,7 @@ function patchWorkspace(db, id, b) {
   const w = workspaceOf(db, id);
   if (!w) throw new ApiError(ERR.NOTFOUND, '工作区不存在或已删除：' + id);
   const body = b || {};
-  if (body.name !== undefined) w.name = cleanName(body.name, '页面');
+  if (body.name !== undefined) w.name = cleanName(body.name, '分镜表');
   if (body.description !== undefined) w.description = String(body.description || '').trim();
   w.updatedAt = nowIso();
   save();
@@ -341,29 +335,27 @@ function patchWorkspace(db, id, b) {
   return viewWorkspace(w);
 }
 
-/* 软删除工作区。**不得删除项目资产**（指令 §46）—— 资产属于项目，与工作区无关。 */
+/* 软删除工作区（UI 上叫「分镜表」）。**不得删除项目资产**（指令 §46）—— 资产属于项目，与工作区无关。 */
 function deleteWorkspace(db, id) {
   const w = workspaceOf(db, id);
-  if (!w) throw new ApiError(ERR.NOTFOUND, '工作区不存在或已删除：' + id);
+  if (!w) throw new ApiError(ERR.NOTFOUND, '分镜表不存在或已删除：' + id);
   const act = hasActiveTasks(db, { workspaceId: w.id });
   if (act.active) {
     throw new ApiError(ERR.CONFLICT,
-      '该页面下仍有生成任务（' + act.count + ' 个），请先等待任务完成或取消任务', { ids: act.ids });
+      '该分镜表下仍有生成任务（' + act.count + ' 个），请先等待任务完成或取消任务', { ids: act.ids });
   }
+  /* ⚠ 曾经这里有一条"不允许删掉项目最后一个工作区"的守卫，理由是"否则项目会进入
+     没有页面可用的死角"。但按用户要求改成"新建项目不自动建分镜表"之后，
+     **空项目本身就是合法状态**，再禁止删到 0 就自相矛盾了。故移除该守卫：
+     删掉最后一张分镜表只是把项目变回"空"，随时可以再建。 */
   const p = projectOf(db, w.projectId);
-  /* 不允许删掉项目最后一个工作区：否则项目会进入"没有页面可用"的死角。
-     要么先建新页面，要么把项目一起删掉。 */
   const others = aliveWorkspaces(db).filter((x) => x.projectId === w.projectId && x.id !== w.id);
-  if (!others.length) {
-    throw new ApiError(ERR.CONFLICT,
-      '这是项目「' + (p ? p.name : w.projectId) + '」下最后一个页面，不能删除。请先新建一个页面，或删除整个项目。');
-  }
   const now = nowIso();
   w.deletedAt = now;
   w.updatedAt = now;
-  if (p && p.defaultWorkspaceId === w.id) p.defaultWorkspaceId = others[0].id;
+  if (p && p.defaultWorkspaceId === w.id) p.defaultWorkspaceId = others.length ? others[0].id : null;
   save();
-  return { deleted: w.id, softDeleted: true, note: '页面内的分镜与项目资产均未被物理删除，仅标记为已删除' };
+  return { deleted: w.id, softDeleted: true, note: '分镜表内的分镜与项目资产均未被物理删除，仅标记为已删除' };
 }
 
 /* 打开项目/工作区时刷新 lastOpenedAt（首页按最近打开排序要用） */

@@ -21,7 +21,7 @@
       <span class="brand-name">即梦批量生成控制台</span>
     </div>
     <span class="vdiv"></span>
-    <!-- 面包屑（多项目架构）：首页 › 项目 › 页面。
+    <!-- 面包屑（多项目架构）：首页 › 项目 › 分镜表。
          三段都是**静态节点、只改文本/显隐**，沿用顶栏既有做法（不重建 DOM，
          否则会打断进行中的点击与 hover）。点「首页」回项目列表，点项目名回项目主页。 -->
     <button class="crumb-link" id="crumbHome" title="返回项目列表">首页</button>
@@ -179,11 +179,16 @@
     <button class="btn-outline" id="homeRefresh">刷新</button>
     <button class="btn-primary" id="homeNew">+ 创建项目</button>
   </header>
-  <div class="pv-body" id="homeBody"></div>
+  <!-- ⚠ 与 #projView 同构：.pv-body 是「撑满剩余高度 + overflow:hidden」的容器，
+       真正的滚动区是里面的 .pv-scroll。首页原先直接把 .pv-body 当渲染目标，
+       于是项目卡片一多就被裁掉、滚不动（项目多了才发现）。 -->
+  <div class="pv-body">
+    <div class="pv-scroll" id="homeBody"></div>
+  </div>
 </section>
 
-<!-- ========== 项目主页：页面（Workspace）列表 + 四个入口 ==========
-     指令 §23：进入项目后先看到项目主页，而不是直接强行进入某个页面。 -->
+<!-- ========== 项目主页：分镜表（代码里叫 Workspace）列表 + 四个入口 ==========
+     指令 §23：进入项目后先看到项目主页，而不是直接强行进入某张分镜表。 -->
 <section class="pageview" id="projView" hidden aria-hidden="true">
   <header class="pv-head">
     <button class="icon-btn" id="projBack" title="返回项目列表">
@@ -194,10 +199,10 @@
     <span class="grow"></span>
     <button class="btn-outline" id="projRename">重命名</button>
     <button class="btn-outline btn-danger" id="projDelete">删除项目</button>
-    <button class="btn-primary" id="projNewWs">+ 新建页面</button>
+    <button class="btn-primary" id="projNewWs">+ 新建分镜表</button>
   </header>
   <div class="pv-tabs" id="projTabs"></div>
-  <!-- 主体分两块：projBody 放「页面 / 资产库」这类由 innerHTML 直接渲染的内容；
+  <!-- 主体分两块：projBody 放「分镜表 / 资产库」这类由 innerHTML 直接渲染的内容；
        projMount 是**就地面板**槽位，用来把记录视图 / 设置面板整体搬进来（同一时刻最多一个）。
        这样切到「生成记录」时项目页的头与导航栏都保持不动，只有下方内容换掉 ——
        而不是像之前那样弹出一个覆盖整屏的独立视图，把头和导航一起盖掉。 -->

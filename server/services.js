@@ -113,7 +113,7 @@ function findScopedSb(db, id, scope) {
   const s = findSb(db, id);
   if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
   if (s.workspaceId !== scope.workspaceId) {
-    throw new ApiError(ERR.NOTFOUND, '分镜不属于当前页面：' + id);
+    throw new ApiError(ERR.NOTFOUND, '分镜不属于当前分镜表：' + id);
   }
   return s;
 }
@@ -411,7 +411,7 @@ function batchDuration(db, b, scope) {
     const s = findSb(db, id);
     if (!s) return skipped.push({ id, reason: 'not_found', message: '分镜不存在' });
     /* 不在本页面内的一律按"不存在"处理，绝不改写（隔离由后端强制） */
-    if (s.workspaceId !== scope.workspaceId) return skipped.push({ id, reason: 'not_found', message: '分镜不在当前页面内' });
+    if (s.workspaceId !== scope.workspaceId) return skipped.push({ id, reason: 'not_found', message: '分镜不在当前分镜表内' });
     if (!s.canEditDuration) return skipped.push({ id, reason: 'completed_locked', message: '已完成，已锁定时长' });
     s.durationSec = models.clampDuration(s.model, b.durationSec);
     s.dirty = true; updated.push(id);
@@ -450,7 +450,7 @@ function doSubmit(db, b, scope) {
     /* ⚠ 跨页面/跨项目提交必须拒绝（指令 §30/§43）：否则构造一个请求就能把
        别的项目里排队的任务拉进来跑，等于绕过隔离。 */
     if (s.workspaceId !== scope.workspaceId) {
-      return rejected.push({ id, code: String(ERR.NOTFOUND), message: '分镜不在当前页面内' });
+      return rejected.push({ id, code: String(ERR.NOTFOUND), message: '分镜不在当前分镜表内' });
     }
     if (TS.isRunning(s.status)) {
       return rejected.push({ id, code: String(ERR.CONFLICT), message: '该分镜已在队列中' });

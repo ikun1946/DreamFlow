@@ -113,7 +113,7 @@
     /* ---------------- 多项目上下文（指令 §25：只有前端能有"当前项目"这个概念） ----------------
        view 决定当前显示哪一层：
          'home'      首页（项目列表）
-         'project'   项目主页（页面列表 + 资产库 + 记录 + 项目设置）
+         'project'   项目主页（分镜表列表 + 资产库 + 记录 + 项目设置）
          'workspace' 工作区视图（就是既有那张分镜表）
        cur 是**唯一的**当前作用域来源，Api.setScope() 由它同步过去；
        所有请求都显式带作用域，后端据此过滤（后端不存在"当前项目"全局变量）。 */
@@ -139,10 +139,10 @@
     page: 1, pageSize: 50,
     /* lastSig：上一轮 /storyboards/progress 的载荷签名。服务端不再"读后清" dirty，
        所以"有没有变化"改由前端按签名判断（详见 pollOnce）。
-       gen：**轮询代际令牌**（指令 §38/§39）。切换项目/页面时 +1，
-       在飞的旧响应回来时代际已变，直接丢弃 —— 否则 A 页面的进度会画到 B 页面的表格上。 */
+       gen：**轮询代际令牌**（指令 §38/§39）。切换项目/分镜表时 +1，
+       在飞的旧响应回来时代际已变，直接丢弃 —— 否则 A 表的进度会画到 B 表的表格上。 */
     poll: { timer: null, idle: 0, lastSig: null, gen: 0 },
-    imp: { raw: '', delimiter: { type: 'custom', value: ';;' }, preview: null, busy: false, timer: null },
+    imp: { raw: '', delimiter: { type: 'custom', value: ';;' }, preview: null, busy: false, timer: null, seq: 0 },
     cliBusy: null, cliMsg: '', cliUrl: null, cliUserCode: null, cliRaw: null,
     settingsDirty: false,   // 抽屉本次打开期间用户是否已改动过设置（"先显示后刷新"的守卫）
     cliHint: null,          // 后端给的"下一步怎么做"提示（如手工执行 dreamina relogin）
@@ -176,11 +176,11 @@
   /* ---------------------------------------------------------- 顶栏 */
   function renderTopbar() {
     const st = S.stats || {};
-    /* 项目名与页面名改由面包屑呈现（多项目架构）：项目名来自 S.cur.project（真实数据），
+    /* 项目名与分镜表名改由面包屑呈现（多项目架构）：项目名来自 S.cur.project（真实数据），
        不再是后端 META 里的模块级常量。 */
     renderCrumb();
     /* 「第 N 批」这个概念已被 Workspace 取代（batchId 一直是硬编码的 'bt_21'，
-       界面上从来没有设置入口）。页面名已经在面包屑里，这里只留分镜数。 */
+       界面上从来没有设置入口）。分镜表名已经在面包屑里，这里只留分镜数。 */
     $('#scopeChip').textContent = (st.total || 0) + ' 个分镜';
     const d = S.settings && S.settings.defaults;
     /* 模型与画幅合并为一处纯文本（2026-09-20）：原先两个胶囊各带一个下拉箭头，但点了只弹一句
@@ -982,7 +982,7 @@
       t: pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds())
     };
   }
-  /* 单行短时间戳（项目卡片 / 页面行用）。
+  /* 单行短时间戳（项目卡片 / 分镜表行用）。
      ⚠ 与记录列表的 fmtAt 分开：fmtAt 返回 {d,t} 两段，是为了在表格里对齐成两行单元格；
      这里要的是一句话，直接拼成字符串。 */
   function fmtWhen(iso) {
@@ -1040,7 +1040,7 @@
     const v = $('#recView');
     $('#recDetail').classList.remove('on');
     stopRecPoll();
-    /* 就地模式：卸载面板并回到「页面」页签（不是去恢复整屏覆盖层的状态） */
+    /* 就地模式：卸载面板并回到「分镜表」页签（不是去恢复整屏覆盖层的状态） */
     if (inlinePanel === 'records') {
       unmountInlinePanel();
       S.proj.tab = 'pages';
@@ -1432,10 +1432,10 @@
      ------------------------------------------------------------
      层级与显示（指令 §20/§23/§25）：
        首页      #homeView（全屏覆盖，z-index 65）—— 项目列表
-       项目主页  #projView（全屏覆盖，z-index 65）—— 页面列表 / 资产库
+       项目主页  #projView（全屏覆盖，z-index 65）—— 分镜表列表 / 资产库
        工作区    #app（既有的分镜表）—— 不覆盖，靠两个覆盖层隐藏来"露出来"
      #recView（记录页）与设置抽屉都是 z-index 70，压在项目主页之上，因此从项目主页
-     能正常打开它们。**只有前端**持有"当前项目/页面"（S.cur）；后端一律 request-scoped。
+     能正常打开它们。**只有前端**持有"当前项目/分镜表"（S.cur）；后端一律 request-scoped。
      ============================================================ */
 
   /* 当前作用域同步到 Api 层（所有请求据此带上 projectId/workspaceId） */
@@ -1443,11 +1443,11 @@
     Api.setScope({ projectId: S.cur.projectId, workspaceId: S.cur.workspaceId });
   }
 
-  /* 清空一切**项目/页面级**的界面状态（指令 §37）。
+  /* 清空一切**项目/分镜表级**的界面状态（指令 §37）。
      ⚠ 刻意不清 adapter / cli* / dCli* —— 那些是**整机**状态（CLI 账号、积分、登录流程），
      清掉会让引擎读数无缘无故变空。
-     ⚠ 不清掉的话会出真事故：S.sel 里残留上一个页面的分镜 id，切过去后点「提交所选」
-     就会把**别的页面**的分镜提交出去；S.autoIds / S.durIds 同理会把预览应用到错误的页面。 */
+     ⚠ 不清掉的话会出真事故：S.sel 里残留上一张分镜表的分镜 id，切过去后点「提交所选」
+     就会把**别的分镜表**的分镜提交出去；S.autoIds / S.durIds 同理会把预览应用到错误的表。 */
   function resetScopeState() {
     // 计时器先停：晚到的回调会把旧作用域的数据写进新界面
     stopPolling();
@@ -1475,7 +1475,7 @@
     S.panelTab = 'character'; S.panelKeyword = '';
 
     // 导入 / 干跑 / 自动匹配 / 时长重算 的中间态
-    S.imp = { raw: '', delimiter: S.imp.delimiter, preview: null, busy: false, timer: null };
+    S.imp = { raw: '', delimiter: S.imp.delimiter, preview: null, busy: false, timer: null, seq: 0 };
     S.cmdRows = []; S.dryBusy = false;
     S.autoBusy = false; S.autoRows = []; S.autoStats = null; S.autoIds = []; S.autoScopeAll = false; S.autoPending = false;
     S.durBusy = false; S.durRows = []; S.durStats = null; S.durIds = []; S.durScopeAll = false;
@@ -1565,8 +1565,8 @@
     S.proj.loading = true; S.proj.error = null;
     renderProjHome();
     try {
-      /* 三个请求并行：项目详情（拿名字与计数）、页面列表、项目资产。
-         项目详情与页面列表都必须成功；资产失败只让资产 tab 空着，不阻断整页。 */
+      /* 三个请求并行：项目详情（拿名字与计数）、分镜表列表、项目资产。
+         项目详情与分镜表列表都必须成功；资产失败只让资产 tab 空着，不阻断整页。 */
       const [pj, ws] = await Promise.all([
         Api.getProject(S.cur.projectId),
         Api.listWorkspaces(S.cur.projectId)
@@ -1618,8 +1618,8 @@
       /* 项目名从 meta 里取（后端已按作用域下发），避免为了面包屑再多打一次请求 */
       S.cur.project = meta.project || (ws.project ? { id: ws.project.id, name: ws.project.name } : null);
     } catch (e) {
-      /* 页面/项目不存在或已删除 → 降级：有项目就回项目主页，否则回首页（§36） */
-      toast('该页面不存在或已被删除', 'err');
+      /* 分镜表/项目不存在或已删除 → 降级：有项目就回项目主页，否则回首页（§36） */
+      toast('该分镜表不存在或已被删除', 'err');
       if (projectId) return enterProject(projectId);
       return enterHome();
     }
@@ -1643,7 +1643,7 @@
     await loadAdapterOnly();
 
     if (projectId && workspaceId) {
-      /* URL 指向具体的页面 → 直接进工作区；enterWorkspace 内部对"不存在"有降级 */
+      /* URL 指向具体的分镜表 → 直接进工作区视图；enterWorkspace 内部对"不存在"有降级 */
       try {
         await enterWorkspace(projectId, workspaceId);
         return;
@@ -1703,7 +1703,7 @@
     if (!S.home.list.length) {
       body.innerHTML = '<div class="pv-empty">' +
         '<span class="t">还没有项目</span>' +
-        '<span class="s">项目是数据隔离的边界：不同项目的页面、分镜、素材与生成记录互不可见。<br>同一项目下的多个页面共享一份素材库。</span>' +
+        '<span class="s">项目是数据隔离的边界：不同项目的分镜表、分镜、素材与生成记录互不可见。<br>同一项目下的多张分镜表共享一份素材库。</span>' +
         '<button class="btn-primary" id="homeNew2">+ 创建第一个项目</button></div>';
       const b = $('#homeNew2'); if (b) b.addEventListener('click', () => onNewProject());
       return;
@@ -1718,7 +1718,7 @@
       '<span class="nm">' + esc(p.name) + '</span>' +
       '<span class="ds">' + (p.description ? esc(p.description) : '<span style="opacity:.6">（无描述）</span>') + '</span>' +
       '<span class="mt">' +
-        '<span>页面 <b>' + (c.workspaces || 0) + '</b></span>' +
+        '<span>分镜表 <b>' + (c.workspaces || 0) + '</b></span>' +
         '<span>分镜 <b>' + (c.storyboards || 0) + '</b></span>' +
         '<span>素材 <b>' + (c.assets || 0) + '</b></span>' +
         '<span>' + (at ? esc(fmtWhen(at)) : '') + '</span>' +
@@ -1731,11 +1731,11 @@
   }
 
   /* ---------------- 项目主页渲染 ---------------- */
-  /* 四个都是**内容页签**：切换只换下方内容，页面头与导航栏保持不动。
+  /* 四个都是**内容页签**：切换只换下方内容，视图头部与导航栏保持不动。
      （早先把「生成记录 / 项目设置」做成"动作型"页签、点了会弹整屏覆盖层，
      用户反馈那样切换太生硬、头和导航都跟着消失 —— 现在统一成内容页签。） */
   const PROJ_TABS = [
-    { key: 'pages', label: '页面' },
+    { key: 'pages', label: '分镜表' },
     { key: 'assets', label: '资产库' },
     { key: 'records', label: '生成记录' },
     { key: 'settings', label: '项目设置' }
@@ -1824,7 +1824,7 @@
     if (t) t.textContent = p ? p.name : (S.proj.loading ? '加载中…' : '—');
     if (s) {
       const c = (p && p.counts) || {};
-      s.textContent = S.proj.loading ? '加载中…' : ('页面 ' + (c.workspaces || 0) + ' · 分镜 ' + (c.storyboards || 0) + ' · 素材 ' + (c.assets || 0));
+      s.textContent = S.proj.loading ? '加载中…' : ('分镜表 ' + (c.workspaces || 0) + ' · 分镜 ' + (c.storyboards || 0) + ' · 素材 ' + (c.assets || 0));
     }
     renderProjTabs();
     if (S.proj.error && S.proj.error.code !== Api.ERR.NOTFOUND && S.proj.error.code !== 40400) {
@@ -1856,14 +1856,14 @@
     }
     if (!S.proj.workspaces.length) {
       body.innerHTML = '<div class="pv-empty">' +
-        '<span class="t">还没有页面</span>' +
-        '<span class="s">页面（工作区）是分镜的容器。同一项目下的所有页面共享本项目的素材库。</span>' +
-        '<button class="btn-primary" id="projNewWs2">+ 新建页面</button></div>';
+        '<span class="t">还没有分镜表</span>' +
+        '<span class="s">分镜表是分镜的容器。同一项目下的所有分镜表共享本项目的素材库。</span>' +
+        '<button class="btn-primary" id="projNewWs2">+ 新建分镜表</button></div>';
       const b = $('#projNewWs2'); if (b) b.addEventListener('click', () => onNewWorkspace());
       return;
     }
     body.innerHTML = '<div class="ws-list">' + S.proj.workspaces.map((w) =>
-      '<div class="ws-row" data-ws="' + esc(w.id) + '" title="打开这个页面">' +
+      '<div class="ws-row" data-ws="' + esc(w.id) + '" title="打开这张分镜表">' +
         '<span class="nm">' + esc(w.name) + '</span>' +
         (w.isDefault ? '<span class="def">默认</span>' : '') +
         '<span class="grow"></span>' +
@@ -1882,7 +1882,7 @@
     ).join('');
     const cards = S.proj.assets.length
       ? '<div class="pv-grid">' + S.proj.assets.map((a) => assetCardHTML(a, {})).join('') + '</div>'
-      : '<div class="pv-empty"><span class="t">这个分类下还没有素材</span><span class="s">素材属于<strong>项目</strong>，本项目下所有页面都能使用它；绑定到具体分镜的操作在工作区里做。</span></div>';
+      : '<div class="pv-empty"><span class="t">这个分类下还没有素材</span><span class="s">素材属于<strong>项目</strong>，本项目下所有分镜表都能使用它；绑定到具体分镜的操作在分镜表里做。</span></div>';
     body.innerHTML =
       '<div class="pv-toolbar">' + tabs +
         '<span class="grow"></span>' +
@@ -1891,18 +1891,32 @@
       '</div>' + cards;
   }
 
-  /* ---------------- 项目 / 页面 的增删改 ---------------- */
+  /* ---------------- 项目 / 分镜表 的增删改 ---------------- */
+
+  /* 新建项目的默认名：预填一个，省得用户"必须先想好名字才能建"。
+     重名会让项目卡片看起来一模一样，所以拿现有名字比一下，重复就加序号。 */
+  function defaultProjectName() {
+    const used = new Set((S.home.list || []).map((p) => p.name));
+    if (!used.has('新项目')) return '新项目';
+    for (let i = 2; i < 1000; i++) {
+      const n = '新项目 ' + i;
+      if (!used.has(n)) return n;
+    }
+    return '新项目';
+  }
 
   async function onNewProject() {
-    const name = await uiPrompt('创建项目', '给项目起个名字。项目之间数据完全隔离，同一项目下的多个页面共享素材库。', '');
+    const name = await uiPrompt('创建项目',
+      '给项目起个名字。项目之间数据完全隔离，同一项目下的多张分镜表共享素材库。', defaultProjectName());
     if (name === null) return;
     const nm = String(name).trim();
     if (!nm) { toast('项目名称不能为空', 'err'); return; }
     try {
       const res = await Api.createProject({ name: nm });
       toast('项目「' + res.project.name + '」已创建', 'ok');
-      /* 指令 §22：创建成功后进入项目主页（后端已自动建好一个「默认页面」） */
-      await enterProject(res.project.id);
+      /* 按用户要求：创建后**留在项目列表**，不自动跳进项目里。
+         新项目是空的（也不再自动建分镜表），进去也没什么可做的，留在列表更符合预期。 */
+      await loadProjects();
     } catch (e) { fail(e); }
   }
 
@@ -1920,7 +1934,7 @@
 
   async function onDeleteProject(id, name) {
     const okd = await uiConfirm('删除项目', '确定删除项目「' + name + '」？\n\n' +
-      '这是**软删除**：项目、页面、分镜、素材与生成记录都不会被物理销毁，只是不再出现在列表里。' +
+      '这是**软删除**：项目、分镜表、分镜、素材与生成记录都不会被物理销毁，只是不再出现在列表里。' +
       '如果项目下还有生成中的任务，删除会被拒绝。');
     if (!okd) return;
     try {
@@ -1933,22 +1947,22 @@
 
   async function onNewWorkspace() {
     if (!S.cur.projectId) return;
-    const name = await uiPrompt('新建页面', '页面（工作区）是分镜的容器。同一项目下的页面共享素材库，但分镜互相独立。', '');
+    const name = await uiPrompt('新建分镜表', '分镜表是分镜的容器。同一项目下的分镜表共享素材库，但分镜互相独立。', '');
     if (name === null) return;
     const nm = String(name).trim();
-    if (!nm) { toast('页面名称不能为空', 'err'); return; }
+    if (!nm) { toast('分镜表名称不能为空', 'err'); return; }
     try {
       const w = await Api.createWorkspace(S.cur.projectId, { name: nm });
-      toast('页面「' + w.name + '」已创建', 'ok');
+      toast('分镜表「' + w.name + '」已创建', 'ok');
       await loadProjectHome();
     } catch (e) { fail(e); }
   }
 
   async function onRenameWorkspace(id, cur) {
-    const name = await uiPrompt('重命名页面', '改名后旧的分镜、素材与生成记录都不受影响；生成记录里仍显示生成当时的名字。', cur || '');
+    const name = await uiPrompt('重命名分镜表', '改名后旧的分镜、素材与生成记录都不受影响；生成记录里仍显示生成当时的名字。', cur || '');
     if (name === null) return;
     const nm = String(name).trim();
-    if (!nm) { toast('页面名称不能为空', 'err'); return; }
+    if (!nm) { toast('分镜表名称不能为空', 'err'); return; }
     try {
       await Api.patchWorkspace(id, { name: nm });
       toast('已重命名', 'ok');
@@ -1957,13 +1971,13 @@
   }
 
   async function onDeleteWorkspace(id, name) {
-    const okd = await uiConfirm('删除页面', '确定删除页面「' + name + '」？\n\n' +
-      '这是**软删除**：页面里的分镜与生成记录都保留，本项目的**素材库不受影响**（素材属于项目，不属于页面）。' +
-      '如果页面下还有生成中的任务，或这是项目下最后一个页面，删除会被拒绝。');
+    const okd = await uiConfirm('删除分镜表', '确定删除分镜表「' + name + '」？\n\n' +
+      '这是**软删除**：表里的分镜与生成记录都保留，本项目的**素材库不受影响**（素材属于项目，不属于分镜表）。' +
+      '如果表下还有生成中的任务，删除会被拒绝。');
     if (!okd) return;
     try {
       await Api.deleteWorkspace(id);
-      toast('页面已删除（软删除）', 'ok');
+      toast('分镜表已删除（软删除）', 'ok');
       await loadProjectHome();
     } catch (e) { fail(e); }
   }
@@ -2002,7 +2016,7 @@
         if (tab) {
           const k = tab.dataset.ptab;
           S.proj.tab = k;
-          /* 四个都是**内容页签**：只换下方内容，页面头与导航栏保持不动。
+          /* 四个都是**内容页签**：只换下方内容，视图头部与导航栏保持不动。
              renderProjHome 内部负责挂载/卸载就地面板（记录 / 设置）。 */
           renderProjHome();
           if (k === 'assets') loadProjAssets();
@@ -2128,7 +2142,7 @@
 
   /* 停止轮询。**同时把代际令牌 +1**（指令 §38）：只 clearTimeout 拦不住已经发出、
      正在等响应的那一轮 —— 它回来时会照常 Object.assign 到 S.list 并重绘，
-     把上一个页面的进度画到新页面的表格上。代际变了，那一轮自己就作废了。 */
+     把上一张分镜表的进度画到新表的表格上。代际变了，那一轮自己就作废了。 */
   function stopPolling() {
     if (S.poll.timer) { clearTimeout(S.poll.timer); S.poll.timer = null; }
     S.poll.gen++;
@@ -2148,7 +2162,7 @@
   async function pollOnce() {
     S.poll.timer = null;
     /* 本轮的身份快照。每次 await 之后都要重新比对：
-       代际（切换过项目/页面）或视图（离开了工作区）变了，就丢弃这一轮的结果。 */
+       代际（切换过项目/分镜表）或视图（离开了工作区）变了，就丢弃这一轮的结果。 */
     const gen = S.poll.gen;
     const ws = S.cur.workspaceId;
     const stale = () => gen !== S.poll.gen || ws !== S.cur.workspaceId || S.view !== 'workspace';
@@ -3853,9 +3867,19 @@
     const raw = $('#importText').value;
     S.imp.raw = raw;
     if (!raw.trim()) { S.imp.preview = null; renderImportPreview(); return; }
+    /* ⚠ 防串线（与轮询是同一类问题，指令 §38）：连续输入时会有多个预览请求同时在飞，
+       先发的可能后到。不加序号的话**旧响应会盖掉新状态** ——
+       实测现象：把文本框清空后，上一次请求的响应晚到，又把「已识别 0 段」改回「已识别 1 段」，
+       绿色提示条重新冒出来（时好时坏，取决于两次请求的先后）。 */
+    const seq = ++S.imp.seq;
     try {
-      S.imp.preview = await Api.importPreview(raw, S.imp.delimiter);
-    } catch (e) { fail(e); S.imp.preview = null; }
+      const res = await Api.importPreview(raw, S.imp.delimiter);
+      if (seq !== S.imp.seq) return;          // 已有更新的请求发出 → 本次结果作废
+      S.imp.preview = res;
+    } catch (e) {
+      if (seq !== S.imp.seq) return;
+      fail(e); S.imp.preview = null;
+    }
     renderImportPreview();
   }
 
@@ -3901,7 +3925,7 @@
     } catch (e) { fail(e); }
   }
   function closeSettings() {
-    /* 就地模式：卸载面板并回到「页面」页签 */
+    /* 就地模式：卸载面板并回到「分镜表」页签 */
     if (inlinePanel === 'settings') {
       unmountInlinePanel();
       S.proj.tab = 'pages';
@@ -4594,8 +4618,8 @@
     render();
     /* 启动顺序（多项目架构，指令 §20/§36）：
        先按 URL 解析出"应该进哪一层"，再加载那一层需要的数据。
-       ⚠ 不能像以前那样无条件 loadList() —— 列表是**页面级**数据，
-       没有确定当前页面之前拉它只会拿到旧项目的分镜（或空）。
+       ⚠ 不能像以前那样无条件 loadList() —— 列表是**分镜表级**数据，
+       没有确定当前分镜表之前拉它只会拿到旧项目的分镜（或空）。
        bootFromUrl 内部：?project&workspace → 工作区；?project → 项目主页；
        都没有 → 首页（项目列表）。目标不存在时逐级安全降级，不会崩。 */
     await bootFromUrl();

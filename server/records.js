@@ -321,7 +321,7 @@ function exportRecords(db, q, format) {
   }
 
   if (f === 'csv') {
-    const head = ['时间', '项目', '页面', '动作', '结果', '引擎', '模型', 'CLI 型号', '镜头', '摘要', '画幅', '分辨率', '时长s', '图片数', '音频数', '耗时s', '提交ID', '产物地址', '错误码', '错误信息'];
+    const head = ['时间', '项目', '分镜表', '动作', '结果', '引擎', '模型', 'CLI 型号', '镜头', '摘要', '画幅', '分辨率', '时长s', '图片数', '音频数', '耗时s', '提交ID', '产物地址', '错误码', '错误信息'];
     const rows = list.map((r) => [
       r.at, r.projectName || r.projectId || '', r.workspaceName || r.workspaceId || '',
       ACTION_LABEL[r.action] || r.action, OUTCOME_LABEL[r.outcome] || r.outcome,
