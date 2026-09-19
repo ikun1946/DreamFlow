@@ -22,38 +22,45 @@
     <span class="proj" id="projName">雨夜归途</span>
     <span class="chip" id="scopeChip">第 1 批 · 0 个分镜</span>
 
-    <span class="grow"></span>
+    <span class="vdiv"></span>
 
-    <button class="pill" id="pillModel" title="默认模型">
-      <span id="pillModelTxt">模型 —</span>
-      <svg width="9" height="9" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" stroke="#7A7A7A" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-    <button class="pill" id="pillRatio" title="默认画幅">
-      <span id="pillRatioTxt">画幅 —</span>
-      <svg width="9" height="9" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" stroke="#7A7A7A" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
+    <span class="paramgrp">
+      <button class="pill" id="pillModel" title="默认模型">
+        <span id="pillModelTxt">模型 —</span>
+        <svg width="9" height="9" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" stroke="#7A7A7A" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="pill" id="pillRatio" title="默认画幅">
+        <span id="pillRatioTxt">画幅 —</span>
+        <svg width="9" height="9" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" stroke="#7A7A7A" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </span>
 
     <span class="grow"></span>
 
     <span class="runstate"><i class="dot" id="runDot"></i><span id="runText">—</span></span>
+
+    <span class="vdiv"></span>
+
     <button class="link" id="btnHistory">生成记录</button>
     <button class="btn-outline" id="btnDensity" title="切换表格密度">紧凑视图</button>
-    <button class="btn-outline" id="btnImport">
-      <svg width="13" height="13" viewBox="0 0 24 24"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4.5 19.5h15" stroke="#0066CC" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <button class="btn-outline" id="btnPanel" title="打开素材面板">
+      <svg width="13" height="13" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3" stroke="#0066CC" stroke-width="2" fill="none"/><path d="M14.5 4.5v15" stroke="#0066CC" stroke-width="2"/></svg>
+      素材
+    </button>
+    <button class="btn-primary" id="btnImport" style="padding:8px 16px">
+      <svg width="13" height="13" viewBox="0 0 24 24"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4.5 19.5h15" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
       批量导入提示词
     </button>
-    <button class="btn-dark" id="btnSettings">
-      <svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" stroke="#fff" stroke-width="1.9" fill="none"/><path d="M12 2.8v2.6M12 18.6v2.6M4.3 7.4l2.2 1.3M17.5 15.3l2.2 1.3M4.3 16.6l2.2-1.3M17.5 8.7l2.2-1.3" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/></svg>
+    <button class="btn-outline" id="btnSettings">
+      <svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" stroke="#0066CC" stroke-width="1.9" fill="none"/><path d="M12 2.8v2.6M12 18.6v2.6M4.3 7.4l2.2 1.3M17.5 15.3l2.2 1.3M4.3 16.6l2.2-1.3M17.5 8.7l2.2-1.3" stroke="#0066CC" stroke-width="1.9" stroke-linecap="round"/></svg>
       设置
     </button>
   </header>
 
-  <!-- ========== 列头（JS 按列配置生成） ========== -->
-  <div class="colhead" id="colhead"></div>
-
-  <!-- ========== 主体 ========== -->
+  <!-- ========== 主体（列头在滚动容器内 sticky，横向滚动时与表体同步） ========== -->
   <main class="main">
     <section class="tablecol">
+      <div class="colhead" id="colhead"></div>
       <div class="table" id="table"></div>
     </section>
     <aside class="panel" id="panel"></aside>
@@ -61,7 +68,13 @@
 
   <!-- ========== 底部状态栏 ========== -->
   <footer class="statusbar" id="statusbar"></footer>
+
+  <!-- ========== 素材批量操作条（批量选择模式下自底部向上弹出） ========== -->
+  <div class="batchbar" id="batchbar"></div>
 </div>
+
+<!-- 素材面板遮罩：仅窄屏（≤1180px）面板抽屉化时使用，点击关闭面板 -->
+<div class="mask" id="panelMask" hidden style="background:rgba(20,22,28,.24)"></div>
 
 <!-- ========== P2 批量导入提示词 ========== -->
 <div class="mask" id="importMask" hidden>
@@ -135,6 +148,101 @@
 </div>
 
 <div class="toasts" id="toasts"></div>
+
+<!-- ========== 干跑：提交后核对真实命令（命令已生成，未发送给即梦） ========== -->
+<div class="mask" id="cmdMask" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2 id="cmdTitle">干跑命令核对</h2>
+      <span class="grow"></span>
+      <button class="btn-mini" id="cmdCopyAll">复制全部命令</button>
+      <button class="icon-btn" id="cmdClose" title="关闭">
+        <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#7A7A7A" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="cmdBody"></div>
+    <div class="modal-foot">
+      <span class="hint-sm" id="cmdFootHint"></span>
+      <span class="grow"></span>
+      <button class="btn-primary" id="cmdOk">知道了</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 自动匹配参考图（只按素材名称，先预览再应用） ========== -->
+<div class="mask" id="autoMask" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2 id="autoTitle">自动匹配参考图</h2>
+      <span class="grow"></span>
+      <button class="icon-btn" id="autoClose" title="关闭">
+        <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#7A7A7A" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="autoBody"></div>
+    <div class="modal-foot">
+      <label class="checkline" title="默认只增补、不动已有绑定；勾选后，该分镜同一类型已有别的素材时会被替换">
+        <input type="checkbox" id="autoOverwrite" /> 覆盖同类型已有绑定
+      </label>
+      <span class="hint-sm" id="autoHint"></span>
+      <span class="grow"></span>
+      <button class="btn-outline" id="autoCancel">取消</button>
+      <button class="btn-primary" id="autoApply" disabled>应用到分镜</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 按提示词「总时长」标注重算时长（先预览，再应用） ========== -->
+<div class="mask" id="durMask" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2 id="durTitle">按时长标注重算</h2>
+      <span class="grow"></span>
+      <button class="icon-btn" id="durClose" title="关闭">
+        <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#7A7A7A" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="durBody"></div>
+    <div class="modal-foot">
+      <span class="hint-sm" id="durHint"></span>
+      <span class="grow"></span>
+      <button class="btn-outline" id="durCancel">取消</button>
+      <button class="btn-primary" id="durApply" disabled>应用</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 生成记录（全屏视图：左侧列表 / 右侧详情，窄屏自动改单栏） ========== -->
+<section class="recview" id="recView" hidden aria-hidden="true">
+  <header class="rec-head">
+    <button class="icon-btn" id="recBack" title="返回控制台">
+      <svg width="20" height="20" viewBox="0 0 24 24"><path d="M14.5 5.5L8 12l6.5 6.5" stroke="#333" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <h2>生成记录</h2>
+    <span class="hint-sm" id="recSummary">—</span>
+    <span class="grow"></span>
+    <select class="input-sm" id="recFormat" title="导出格式">
+      <option value="md">Markdown（含提示词与命令）</option>
+      <option value="csv">CSV（表格）</option>
+      <option value="json">JSON（全量）</option>
+    </select>
+    <button class="btn-outline" id="recExport">导出当前筛选</button>
+    <button class="btn-outline btn-danger" id="recClear">清空记录…</button>
+    <button class="btn-dark" id="recRefresh">刷新</button>
+  </header>
+
+  <!-- 筛选条（由 renderRecords 渲染：分段筛选 + 搜索 + 时间范围） -->
+  <div class="rec-bar" id="recBar"></div>
+
+  <div class="rec-body">
+    <div class="rec-col">
+      <div class="rec-listhead" id="recListHead"></div>
+      <div class="rec-list" id="recList"></div>
+      <div class="rec-pager" id="recPager"></div>
+    </div>
+    <aside class="rec-detail" id="recDetail"></aside>
+  </div>
+</section>
 
 <script src="api.js"></script>
 <script src="app.js"></script>
