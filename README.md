@@ -41,7 +41,8 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 │   └── Git 私密仓库操作指南.md        认证方式 / 令牌权限 / 私密性验证
 │
 └── scripts/
-    └── push-to-github.sh            创建 GitHub 私有仓库并推送（需 GITHUB_TOKEN）
+    ├── push-to-github.sh            创建 GitHub 私有仓库并推送（需 GITHUB_TOKEN）
+    └── backup-data.sh               把运行数据与本地快照备份到项目之外（git 保不住的那部分）
 ```
 
 **路径约定**：源码只进 `app/`、产物只进 `dist/`、文档只进 `docs/`、脚本只进 `scripts/`、后端只进 `server/`；目录名用 ASCII，文件名可用中文；根目录只留 `README.md` + `build.js`。
@@ -127,6 +128,32 @@ bash scripts/push-to-github.sh
 
 一条命令完成：校验令牌 → 创建**私有**仓库 → 推送 → 回查私密性。令牌不会写进 `.git/config`。详见 [`docs/Git 私密仓库操作指南.md`](docs/Git%20%E7%A7%81%E5%AF%86%E4%BB%93%E5%BA%93%E6%93%8D%E4%BD%9C%E6%8C%87%E5%8D%97.md)。
 
+推送时**记得带上 tag**（`git push origin main --tags`）：普通 `git push` 只推分支，tag 会留在本地，"按版本回退"的能力就没上去。
+
+---
+
+## 备份运行数据（git 替代不了的那部分）
+
+`server/data/` 被 `.gitignore` 排除，**远端仓库里没有它**。而其中的内容丢了就没了：
+
+| 内容 | 为什么 git 保不住 |
+|---|---|
+| `db.json` | 分镜 / 素材 / 生成记录，手工重建代价极大 |
+| `output/` 视频产物 | 真实生成、**花过即梦积分**，不可再生成 |
+| `assets/` 素材图 | `DELETE /assets/{id}` 会连磁盘文件一起删且不留痕（见「已知边界」第 1 条） |
+
+所以**代码靠 git、数据靠这个脚本**，两者互不替代：
+
+```bash
+bash scripts/backup-data.sh                       # 备份到 $HOME/jimeng-console-backups/<时间戳>/
+JC_BACKUP_ROOT=/d/backups bash scripts/backup-data.sh   # 换目标位置（建议放到移动硬盘等另一块盘）
+JC_BACKUP_KEEP=5 bash scripts/backup-data.sh      # 只保留最近 5 份（默认 10）
+```
+
+每次运行产生一个独立快照目录，不覆盖历史；脚本会逐类比对文件数、不一致就报错退出，并在快照里写一份 `MANIFEST.txt`（记录**这份数据对应哪一版代码**、各项校验和、恢复步骤）。两道防护：拒绝把备份写进项目目录内部（否则一次误删项目会把它一起带走）、数据目录为空时拒绝产出一份空备份。
+
+> ⚠ 恢复时先停掉 `node server/index.js`，否则运行中的服务会把覆盖回去的数据再写一遍。
+
 ---
 
 ## 已知边界
@@ -144,7 +171,7 @@ bash scripts/push-to-github.sh
 
 ## 版本
 
-当前版本：**`0.11.1`**
+当前版本：**`0.11.2`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -152,10 +179,21 @@ bash scripts/push-to-github.sh
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-测试：`node --test server/task-state.test.js server/worker-guard.test.js`（项目无 npm 依赖，用 Node 自带测试运行器）。
+测试：`node --test server/model-limits.test.js server/task-state.test.js server/worker-guard.test.js`（共 19 项；项目无 npm 依赖，用 Node 自带测试运行器）。
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.11.2` — 2026-09-19
+
+- **新增 `scripts/backup-data.sh`：运行数据备份脚本**。起因是一个很自然的问题——"项目是从 git 上拉的，推送到 git 就不用另做备份了吧？"答案是**不能替代，且原因是结构性的**（三条都实测过）：
+  - `server/data/` 被 `.gitignore` 排除，远端仓库里根本没有它。其中 `db.json`（分镜/素材/记录）、`output/`（真实生成的视频，花过积分）、`assets/`（素材图，删了不留痕）**丢了就没了**，git 再可靠也碰不到这 37 MB；
+  - 新增的 `server/task-state.js` 等文件若漏加进提交，恢复出来的仓库**起不来**（它是 `worker.js` 的硬依赖）——"以为有备份、真要恢复时才发现是坏的"是最糟的失败形态；
+  - 备份**粒度**也不同：git 保护的是提交点，工作区里未提交的改动它一样不管。
+  - 脚本每次产生独立时间戳快照、默认保留 10 份，并在快照里写 `MANIFEST.txt`（记录**这份数据对应哪一版代码**、sha256 校验和、恢复步骤）。两道防护：拒绝写进项目目录内部、数据为空时拒绝产出空备份。
+  - 详见新增的「[备份运行数据](#备份运行数据git-替代不了的那部分)」一节。
+- **补齐版本检出点**：项目此前**没有任何 tag**，README 里的版本号只是文字，"按版本回退"在 git 里做不到。现已补 `v0.1.0`（基线）与 `v0.11.1`（本次压平提交）两个 tag，并把 `§2.5` 起累积的全部改动提交为 `aa8ff63` 推送。
+  - ⚠ 代价要记清楚：`0.2.0`–`0.11.0` 这十个中间版本**没有各自独立的提交**，无法单独检出。`docs/更改文档.md` 里各条目写的「待提交」是当时的状态记录，不是现在还有未提交内容。
 
 #### `0.11.1` — 2026-09-20
 
