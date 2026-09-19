@@ -1021,9 +1021,15 @@
     keyword: S.recF.keyword || undefined, from: S.recF.from || undefined, to: S.recF.to || undefined
   });
 
-  function openRecords() {
+  /* 打开记录视图。两种呈现方式共用这一份实现：
+       · 默认（从控制台顶栏「生成记录」进来）→ 整屏覆盖层，看完用返回箭头回控制台；
+       · { inline: true }（从项目主页的「生成记录」页签进来）→ 就地嵌在项目页里，
+         项目页的头与导航栏保持不动。 */
+  function openRecords(o) {
+    const inline = !!(o && o.inline);
     S.recSel = null; S.recDetail = null; S.rec.page = 1;
     const v = $('#recView');
+    if (inline) mountInlinePanel('records');
     v.hidden = false; v.setAttribute('aria-hidden', 'false');
     stopPolling();                      // 记录页不轮询任务进度，省掉后台空转
     renderRecords();
@@ -1032,9 +1038,16 @@
   }
   function closeRecords() {
     const v = $('#recView');
-    v.hidden = true; v.setAttribute('aria-hidden', 'true');
     $('#recDetail').classList.remove('on');
     stopRecPoll();
+    /* 就地模式：卸载面板并回到「页面」页签（不是去恢复整屏覆盖层的状态） */
+    if (inlinePanel === 'records') {
+      unmountInlinePanel();
+      S.proj.tab = 'pages';
+      renderProjHome();
+      return;
+    }
+    v.hidden = true; v.setAttribute('aria-hidden', 'true');
     ensurePolling();
   }
   /* 页面开着时缓慢自动刷新（8s）：任务在后台收尾后新记录会自己冒出来。
@@ -1473,6 +1486,7 @@
     S.recSel = null; S.recDetail = null; S.recDetailLoading = false;
 
     // 关掉所有从旧作用域打开的弹层：它们的内容是按旧数据渲染的，留着会误导
+    unmountInlinePanel();   // 项目页的就地面板（记录/设置）同样按旧作用域渲染，必须先卸掉
     ['importMask', 'detailMask', 'cmdMask', 'autoMask', 'durMask'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.hidden = true;
@@ -1717,15 +1731,75 @@
   }
 
   /* ---------------- 项目主页渲染 ---------------- */
+  /* 四个都是**内容页签**：切换只换下方内容，页面头与导航栏保持不动。
+     （早先把「生成记录 / 项目设置」做成"动作型"页签、点了会弹整屏覆盖层，
+     用户反馈那样切换太生硬、头和导航都跟着消失 —— 现在统一成内容页签。） */
   const PROJ_TABS = [
     { key: 'pages', label: '页面' },
     { key: 'assets', label: '资产库' },
-    { key: 'records', label: '生成记录', act: true },
-    { key: 'settings', label: '项目设置', act: true }
+    { key: 'records', label: '生成记录' },
+    { key: 'settings', label: '项目设置' }
   ];
 
+  /* ---------------- 项目主页的「就地面板」（记录 / 设置） ----------------
+     把覆盖层整体**搬进** #projMount，于是项目页的头与导航栏保持不动，只有内容换掉。
+     ⚠ 移动的是同一个 DOM 节点，不是复制一份：记录视图带着筛选、分页、详情、导出、
+       8s 自动刷新一整套状态与事件，复制就等于要同步维护两套实现，迟早不一致。
+       移动 DOM 不会丢事件监听（节点没被重建），既有的委托与按钮绑定继续有效。
+     ⚠ 同一时刻最多挂一个；换页签、离开项目页、切换作用域都必须先卸载 ——
+       否则面板会留在已隐藏的挂载点里，下次进来既看不到也点不到。 */
+  let inlinePanel = null;   // 'records' | 'settings' | null
+
+  function unmountInlinePanel() {
+    if (!inlinePanel) return;
+    const which = inlinePanel;
+    inlinePanel = null;
+    const el = which === 'records' ? $('#recView') : $('#settingsDrawer');
+    if (el) {
+      el.classList.remove('inline');
+      if (el.parentElement !== document.body) document.body.appendChild(el);
+      el.hidden = true;
+      el.setAttribute('aria-hidden', 'true');
+    }
+    if (which === 'settings') {
+      const m = $('#settingsMask');
+      if (m) m.hidden = true;
+      S.settingsDirty = false;
+    }
+    if (which === 'records') stopRecPoll();
+    const mount = $('#projMount'), body = $('#projBody');
+    if (mount) mount.hidden = true;
+    if (body) body.hidden = false;
+  }
+
+  function mountInlinePanel(which) {
+    const mount = $('#projMount'), body = $('#projBody');
+    if (!mount || !body) return;
+    if (inlinePanel === which) return;
+    unmountInlinePanel();
+    const el = which === 'records' ? $('#recView') : $('#settingsDrawer');
+    if (!el) return;
+    body.hidden = true;
+    mount.hidden = false;
+    el.classList.add('inline');
+    el.hidden = false;
+    el.setAttribute('aria-hidden', 'false');
+    mount.appendChild(el);
+    inlinePanel = which;
+    /* 就地模式不要遮罩：遮罩会把项目页的头与导航一起压暗，正是要避免的效果 */
+    if (which === 'settings') { const m = $('#settingsMask'); if (m) m.hidden = true; }
+  }
+
+  function renderProjTabs() {
+    const tabs = $('#projTabs');
+    if (!tabs) return;
+    tabs.innerHTML = PROJ_TABS.map((x) =>
+      '<button class="pv-tab' + (S.proj.tab === x.key ? ' on' : '') + '" data-ptab="' + x.key + '">' + esc(x.label) + '</button>'
+    ).join('');
+  }
+
   function renderProjHome() {
-    const t = $('#projTitle'), s = $('#projSummary'), tabs = $('#projTabs'), body = $('#projBody');
+    const t = $('#projTitle'), s = $('#projSummary'), body = $('#projBody');
     if (!body) return;
     const p = S.cur.project;
     if (t) t.textContent = p ? p.name : (S.proj.loading ? '加载中…' : '—');
@@ -1733,15 +1807,23 @@
       const c = (p && p.counts) || {};
       s.textContent = S.proj.loading ? '加载中…' : ('页面 ' + (c.workspaces || 0) + ' · 分镜 ' + (c.storyboards || 0) + ' · 素材 ' + (c.assets || 0));
     }
-    if (tabs) {
-      tabs.innerHTML = PROJ_TABS.map((x) =>
-        '<button class="pv-tab' + (x.act ? ' act' : '') + (S.proj.tab === x.key ? ' on' : '') + '" data-ptab="' + x.key + '">' + esc(x.label) + '</button>'
-      ).join('');
-    }
+    renderProjTabs();
     if (S.proj.error && S.proj.error.code !== Api.ERR.NOTFOUND && S.proj.error.code !== 40400) {
+      unmountInlinePanel();
       body.innerHTML = '<div class="pv-empty"><span class="t">项目加载失败</span><span class="s">' + esc(errText(S.proj.error)) + '</span></div>';
       return;
     }
+    /* 记录 / 设置：面板已挂就不重复打开（重命名后 loadProjectHome 会重走这里），
+       否则挂上并首次打开。 */
+    if (S.proj.tab === 'records') {
+      if (inlinePanel !== 'records') { mountInlinePanel('records'); openRecords({ inline: true }); }
+      return;
+    }
+    if (S.proj.tab === 'settings') {
+      if (inlinePanel !== 'settings') { mountInlinePanel('settings'); openSettings({ inline: true }); }
+      return;
+    }
+    unmountInlinePanel();
     if (S.proj.tab === 'assets') return renderProjAssets();
     renderProjPages();
   }
@@ -1900,11 +1982,9 @@
         const tab = e.target.closest('[data-ptab]');
         if (tab) {
           const k = tab.dataset.ptab;
-          /* 生成记录 / 项目设置 是"离开本页"的动作：直接打开既有的全屏视图与抽屉，
-             不切换 tab 选中态（它们没有内联内容，切成选中会让用户以为还在本页）。 */
-          if (k === 'records') return openRecords();
-          if (k === 'settings') return openSettings();
           S.proj.tab = k;
+          /* 四个都是**内容页签**：只换下方内容，页面头与导航栏保持不动。
+             renderProjHome 内部负责挂载/卸载就地面板（记录 / 设置）。 */
           renderProjHome();
           if (k === 'assets') loadProjAssets();
           return;
@@ -3769,9 +3849,11 @@
      实测：缓存新鲜 117 ms ↔ 缓存过期 10981 ms（每 60 秒必犯一次）。
      现在：S.settings / S.adapter 在 boot() 里已经加载过 → 先用现有数据立即渲染并打开抽屉，
      再**并发**（不是串行）拉最新值，到位后原地重渲染。 */
-  async function openSettings() {
+  async function openSettings(o) {
+    const inline = !!(o && o.inline);
+    if (inline) mountInlinePanel('settings');
+    else $('#settingsMask').hidden = false;
     renderSettings();
-    $('#settingsMask').hidden = false;
     $('#settingsDrawer').classList.add('open');
     $('#settingsDrawer').setAttribute('aria-hidden', 'false');
     try {
@@ -3795,6 +3877,13 @@
     } catch (e) { fail(e); }
   }
   function closeSettings() {
+    /* 就地模式：卸载面板并回到「页面」页签 */
+    if (inlinePanel === 'settings') {
+      unmountInlinePanel();
+      S.proj.tab = 'pages';
+      renderProjHome();
+      return;
+    }
     $('#settingsMask').hidden = true;
     $('#settingsDrawer').classList.remove('open');
     $('#settingsDrawer').setAttribute('aria-hidden', 'true');

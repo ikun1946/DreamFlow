@@ -197,7 +197,14 @@
     <button class="btn-primary" id="projNewWs">+ 新建页面</button>
   </header>
   <div class="pv-tabs" id="projTabs"></div>
-  <div class="pv-body" id="projBody"></div>
+  <!-- 主体分两块：projBody 放「页面 / 资产库」这类由 innerHTML 直接渲染的内容；
+       projMount 是**就地面板**槽位，用来把记录视图 / 设置面板整体搬进来（同一时刻最多一个）。
+       这样切到「生成记录」时项目页的头与导航栏都保持不动，只有下方内容换掉 ——
+       而不是像之前那样弹出一个覆盖整屏的独立视图，把头和导航一起盖掉。 -->
+  <div class="pv-body">
+    <div class="pv-scroll" id="projBody"></div>
+    <div class="pv-mount" id="projMount" hidden></div>
+  </div>
 </section>
 
 <div class="toasts" id="toasts"></div>
