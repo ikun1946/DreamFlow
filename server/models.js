@@ -79,9 +79,22 @@ const DREAMINA_CAPS_DEFAULT = { resolutions: ['720p'], duration: [4, 15], audioO
 /* 创作 CLI 支持的画幅 */
 const DREAMINA_RATIOS = ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'];
 /* 创作 CLI 参考素材数量上限（multimodal2video） */
-const DREAMINA_LIMITS = {
-  'seedance2.5': { image: 30, video: 10, audio: 10, total: 50 }
-};
+/* ---------------- 参考素材数量上限：按**模型系列**配置（唯一事实来源） ----------------
+   ⚠ 2026-09-19 改为「系列规则表」形式：新增模型时只要挂到对应系列的正则上即可，
+     不必逐个型号抄一遍上限；将来某型号要单独放宽，在表的最前面插一条更具体的规则即可
+     （`find` 取第一条命中的，越靠前优先级越高）。
+
+   实测依据：Seedance 2.0 系列参考图上限 9 张、Seedance 2.5 系列 30 张。
+
+   三个消费方都必须走 `limitsFor()`，禁止各自硬编码数字：
+     · `dreamina-cli.js` 组装 `--image` 时截断（超出会丢图，必须留痕）
+     · `services.autoMatchAssets` 自动匹配的**剩余名额**分配
+     · `services.decorate` 下发给前端的 `imageLimit`（弹窗里的「已添加 X / 上限 Y」） */
+const DREAMINA_LIMIT_RULES = [
+  { family: 'seedance2.5', re: /^seedance2\.5/, limits: { image: 30, video: 10, audio: 10, total: 50 } },
+  { family: 'seedance2.0', re: /^seedance2\./,  limits: { image: 9,  video: 3,  audio: 3,  total: 12 } }
+];
+/* 兜底：不在任何系列规则里的模型（含未实测过的新型号）走最保守的一档 */
 const DREAMINA_LIMITS_DEFAULT = { image: 9, video: 3, audio: 3, total: 12 };
 
 /* 引擎标签。'canvas' 仅用于**历史生成记录**的展示（那些记录确实是画布链路产生的），
@@ -129,7 +142,33 @@ function labelOf(model) {
 }
 function engineLabel(engine) { return ENGINE_LABELS[engine] || engine; }
 function capsFor(dreaminaModel) { return DREAMINA_CAPS[dreaminaModel] || DREAMINA_CAPS_DEFAULT; }
-function limitsFor(dreaminaModel) { return DREAMINA_LIMITS[dreaminaModel] || DREAMINA_LIMITS_DEFAULT; }
+/* 该模型所属的「上限系列」名（用于给用户解释"为什么是 9 张"）；不在任何系列里返回 null。
+   传进来的可能是历史画布域名，故先归一到创作域名再判。 */
+function limitFamilyOf(model) {
+  const name = dreaminaModelOf(model) || String(model || '');
+  const hit = DREAMINA_LIMIT_RULES.find((r) => r.re.test(name));
+  return hit ? hit.family : null;
+}
+function limitsFor(model) {
+  const name = dreaminaModelOf(model) || String(model || '');
+  const hit = DREAMINA_LIMIT_RULES.find((r) => r.re.test(name));
+  return hit ? hit.limits : DREAMINA_LIMITS_DEFAULT;
+}
+/* 参考图上限的快捷取值 —— 前端提示、自动匹配配额、组装截断三处都用它，保证同一个数 */
+function imageLimitFor(model) { return limitsFor(model).image; }
+
+/* 按**模型自身**的能力区间钳制时长（2026-09-19 修复）。
+   此前 services.js 一律用全局 META.duration（4–15）钳制，于是 models.js 里
+   写着 seedance2.5 支持 4–30、设置页也能选 30，但创建 / 导入 / 批量改 / 标注重算
+   四处又把它压回 15 —— 用户看到的选项和真正落库的值不一致。
+   传进来的可能是任意历史名字，故先归一到创作 CLI 域名再查能力表。 */
+function clampDuration(model, sec) {
+  const caps = capsFor(dreaminaModelOf(model) || model);
+  const [min, max] = caps.duration || DREAMINA_CAPS_DEFAULT.duration;
+  const v = Math.round(Number(sec));
+  if (!Number.isFinite(v)) return min;
+  return Math.min(max, Math.max(min, v));
+}
 
 /* ---------------- 路由（唯一规则出口） ----------------
    本项目只有创作 CLI 一个引擎，所以路由不再有分支 —— 保留函数是为了让调用方
@@ -157,7 +196,7 @@ function routeEngine(o) {
 module.exports = {
   DREAMINA_VIDEO_MODELS, LEGACY_NAMES,
   DREAMINA_RATIOS, DREAMINA_CAPS, DREAMINA_CAPS_DEFAULT,
-  DREAMINA_LIMITS, DREAMINA_LIMITS_DEFAULT,
+  DREAMINA_LIMIT_RULES, DREAMINA_LIMITS_DEFAULT,
   dreaminaModelOf, isKnown, isLegacyName, enginesFor, groupOf, sameFamily,
-  labelOf, engineLabel, capsFor, limitsFor, routeEngine
+  labelOf, engineLabel, capsFor, limitsFor, limitFamilyOf, imageLimitFor, clampDuration, routeEngine
 };

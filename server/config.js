@@ -48,6 +48,19 @@ function loadConfig() {
     maxConcurrencySafety: Number(env.JC_MAX_CONC_SAFETY || fileCfg.maxConcurrencySafety || 0),
     concCacheTtlMs: 30 * 1000,
     uploadMaxBytes: Number(env.JC_UPLOAD_MAX_BYTES || fileCfg.uploadMaxBytes || 30 * 1024 * 1024),
+    /* 幂等记录的保留时长（默认 24 小时）。相同 Idempotency-Key 在此期间只真正执行一次，
+       第二次直接回放第一次的响应 —— 防止重复提交造成重复生成 / 重复扣费。 */
+    idempotencyTtlMs: Number(env.JC_IDEMPOTENCY_TTL_MS || fileCfg.idempotencyTtlMs || 24 * 60 * 60 * 1000),
+    /* ffmpeg 可执行文件路径：产物封面（视频抽帧）用它生成。
+       创作 CLI 的 query_result 不提供封面，只能本地抽帧 —— 本机没装 ffmpeg 时
+       封面生成静默跳过，缩略图退回 ID 派生的渐变（不影响任何其他功能）。
+       装了但不在 PATH 里，就把绝对路径填这里。 */
+    ffmpegPath: env.JC_FFMPEG_PATH || fileCfg.ffmpegPath || 'ffmpeg',
+    /* 是否允许 file:// 打开的前端（发布版单文件双击）访问本服务。
+       浏览器对 file:// 页面发来的请求带 `Origin: null`，无法与"恶意网页里被沙箱化的
+       iframe"区分开。默认 true = 保留发布版双击即用的既有体验；
+       想要最严的本地 API 防护可置 false（此时只有 http://127.0.0.1:8787 打开的页面能用）。 */
+    allowFileOrigin: env.JC_ALLOW_FILE_ORIGIN ? env.JC_ALLOW_FILE_ORIGIN === '1' : fileCfg.allowFileOrigin !== false,
     /* 创作 CLI 探测（user_credit）的缓存 TTL。单次实测 8.4–9.5 秒，积分又是低频指标，
        故默认 5 分钟。env JC_DREAMINA_PROBE_TTL_MS 可覆盖。 */
     dreaminaProbeTtlMs: Number(env.JC_DREAMINA_PROBE_TTL_MS || fileCfg.dreaminaProbeTtlMs || 5 * 60 * 1000),

@@ -24,7 +24,11 @@ const path = require('path');
 const { ASSET_DIR } = require('./config');
 
 /* 素材类型 → 中文职责标签（与前端素材面板的 tab 命名保持一致） */
-const ROLE_LABEL = { character: '角色', scene: '场景', prop: '道具', audio: '音频' };
+const ROLE_LABEL = {
+  character: '角色', scene: '场景', prop: '道具',
+  firstFrame: '首帧图', storyboard: '分镜图',     // 2026-09-20：各自独立的资产库，不再借用场景库
+  audio: '音频'
+};
 
 /* 从提示词里抓角色的「实例特征」锚点：如 `奶团（奶白短毛、黑鼻头、垂耳）`
    只取第一个括号内的短描述（≤ 40 字且不含换行），抓不到就返回 null。 */
@@ -48,6 +52,18 @@ function existsCached(file) {
   if (_exists.size > 800) _exists.clear();
   _exists.set(file, { at: now, ok });
   return ok;
+}
+
+/* 单个素材「会不会占一个图号」—— 计入条件与 imageCatalog 完全同源
+   （非音频 + 本地文件在）。供**配额计算**复用：不占号的绑定不该消耗名额，
+   否则会出现"明明只发了 8 张，却说已到 9 张上限"。
+   入参 role 可选（新绑定时 role 通常等于 asset.type，但 firstFrame/storyboard 槽位
+   绑的是场景素材，此时按 role 判是否算音频更准）。 */
+function countsAsImage(db, asset, role) {
+  if (!asset) return false;
+  if (asset.type === 'audio' || role === 'audio') return false;
+  if (!asset.url || !asset.url.startsWith('/media/assets/')) return false;
+  return existsCached(path.join(ASSET_DIR, asset.url.slice('/media/assets/'.length)));
 }
 
 /**
@@ -212,4 +228,4 @@ function validate(prompt, images, opts) {
   return issues;
 }
 
-module.exports = { ROLE_LABEL, instanceFeatures, imageCatalog, lockBlock, compose, validate, signature };
+module.exports = { ROLE_LABEL, instanceFeatures, countsAsImage, imageCatalog, lockBlock, compose, validate, signature };

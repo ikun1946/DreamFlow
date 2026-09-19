@@ -17,9 +17,12 @@
    ⚠ 禁止再引入任何「另一个引擎」的概念 —— 本项目只有创作 CLI。
    ============================================================ */
 const crypto = require('crypto');
+const path = require('path');
 const { ERR, nowIso } = require('./util');
+const { OUTPUT_DIR } = require('./config');
 const store = require('./store');
 const models = require('./models');   // 模型注册表：名称归一/能力边界/路由的唯一事实来源
+const TS = require('./task-state');   // 任务状态迁移与写入权限的唯一事实来源
 const AL = require('./asset-lock');   // 素材锁定签名（干跑记录带指纹，用于判断记录是否过期）
 const REC = require('./records');     // 生成记录：成功/失败/取消/干跑各落一条快照（落盘失败不影响任务）
 
@@ -31,6 +34,33 @@ function makeWorker(cfg, deps) {
 
   /* 本次任务绑定的音频（曾经决定"能否走画布"，现在只写进日志/路由理由里便于排查） */
   const hasAudioBound = (sb) => (sb.assets || []).some((r) => r.role === 'audio');
+
+  /* ---------------- 写入守卫（2026-09-19 修复的核心） ----------------
+     每次派发在 `runOne` 入口抓一份 attemptId，此后所有写入都要先过这道闸。
+     三种情况一律拒绝写入，避免出现"取消后复活 / 幽灵记录 / 旧轮覆盖新轮"：
+
+       deleted        分镜已被删除（强制删除 / 批量删除）——
+                      继续写会把 logs / cliJobs 条目重新建回来，产生幽灵数据
+       stale-attempt  attemptId 已变（cancel 清空 / retry 换新 / 重新提交）——
+                      旧一轮的迟到结果不能覆盖新一轮
+       illegal       状态机不允许的迁移（如 canceled → succeeded）
+
+     注意：被拒时**不能**再往这个分镜的日志里写（那正是幽灵数据本身），
+     要留痕就写系统日志。 */
+  function guard(db, sb, attemptId, to) {
+    if (!(db.storyboards || []).some((x) => x.id === sb.id)) return { ok: false, reason: 'deleted' };
+    if (attemptId && !TS.ownsAttempt(sb, attemptId)) return { ok: false, reason: 'stale-attempt' };
+    if (!TS.canTransition(sb.status, to)) return { ok: false, reason: 'illegal:' + sb.status + '→' + to };
+    return { ok: true };
+  }
+
+  /* 被拒后的统一留痕：被删的写系统日志，其余写该分镜日志（此时它还在库里） */
+  function noteRejected(db, sb, attemptId, what, why) {
+    const msg = '【已丢弃】' + what + '：本轮已失效（' + why + '）' +
+      (attemptId ? '　attempt=' + attemptId : '') + '　—— 未写入该分镜（避免覆盖新状态或产生幽灵数据）';
+    if (why === 'deleted') store.pushLog('system', 'warn', msg + '　storyboard=' + sb.id);
+    else store.pushLog(sb.id, 'warn', msg);
+  }
 
   async function tick(db, onDirty) {
     // 空闲快速路径：没有排队/运行中的任务时直接返回——避免周期性白起 CLI 进程
@@ -51,17 +81,20 @@ function makeWorker(cfg, deps) {
     const slots = effConc - runningCount;
     if (slots <= 0) return;
 
-    const queued = db.storyboards.filter((s) => s.status === 'queued').sort((a, b) => a.seq - b.seq);
+    const queued = db.storyboards.filter((s) => s.status === TS.STATUS.QUEUED).sort((a, b) => a.seq - b.seq);
     for (const sb of queued.slice(0, slots)) {
-      state.running.set(sb.id, { startedAt: Date.now(), submitId: null }); // 占位防重复派发
+      // 占位防重复派发；attemptId 一并记下，便于排查"哪一轮在跑"
+      state.running.set(sb.id, { startedAt: Date.now(), submitId: null, attemptId: sb.attemptId || null });
       runOne(db, sb, onDirty).catch((e) => console.error('[worker] 异常', e));
     }
   }
 
   /* extra（可选）:{ engine, command, argv, mode, cliModel, submitId } —— 把"本次实际用的命令"
      带进记录，否则只能按路由规则推演（CLI 不可用时推演结果未必等于真实意图） */
-  function mapTaskError(db, sb, code, message, requestId, extra) {
-    sb.status = 'failed';
+  function mapTaskError(db, sb, code, message, requestId, extra, attemptId) {
+    const g = guard(db, sb, attemptId, TS.STATUS.FAILED);
+    if (!g.ok) { noteRejected(db, sb, attemptId, '失败收尾（' + code + '）', g.reason); return; }
+    sb.status = TS.STATUS.FAILED;
     sb.errorCode = code;
     sb.errorMessage = message + (requestId ? '（requestId: ' + requestId + '）' : '');
     sb.finishedAt = nowIso();
@@ -69,8 +102,11 @@ function makeWorker(cfg, deps) {
     store.pushLog(sb.id, 'error', sb.errorCode + ' ' + sb.errorMessage);
     if (db.settings.queue.autoRetry && ['51004', '51005'].includes(String(code))) {
       if (sb.retryCount < db.settings.queue.maxRetry) {
-        sb.status = 'queued'; sb.progress = 0; sb.errorCode = null; sb.errorMessage = null;
+        sb.status = TS.STATUS.QUEUED; sb.progress = 0; sb.errorCode = null; sb.errorMessage = null;
         sb.retryCount++; sb.dirty = true;
+        /* 自动重试也要换 attempt：否则上一轮的迟到回调仍持有旧 attemptId，
+           而这里已经把状态改回 queued —— 新派发会用新 attempt，旧的必须失效。 */
+        sb.attemptId = TS.newAttemptId();
         store.pushLog(sb.id, 'info', '自动重试 ' + sb.retryCount + '/' + db.settings.queue.maxRetry);
       }
     }
@@ -82,8 +118,10 @@ function makeWorker(cfg, deps) {
   }
 
   /* 干跑收尾：不 spawn、不连服务端、不扣费；把将要执行的命令留在任务上（状态回到「未提交」） */
-  function finishDryRun(db, sb, onDirty, plan) {
-    sb.status = 'draft';
+  function finishDryRun(db, sb, onDirty, plan, attemptId) {
+    const g = guard(db, sb, attemptId, TS.STATUS.DRAFT);
+    if (!g.ok) { noteRejected(db, sb, attemptId, '干跑收尾', g.reason); return; }
+    sb.status = TS.STATUS.DRAFT;
     sb.progress = 0; sb.etaSeconds = null; sb.startedAt = null; sb.finishedAt = nowIso();
     sb.errorCode = null; sb.errorMessage = null; sb.canEditDuration = true;
     sb.submitDryRun = false;   // 本批次标记用完即清，避免误伤后续真实提交
@@ -112,10 +150,14 @@ function makeWorker(cfg, deps) {
 
   /* 派发单条任务。唯一引擎 = 创作 CLI，故这里不再有引擎分支。 */
   async function runOne(db, sb, onDirty) {
+    /* 本轮派发的写入凭证。取自已由 doSubmit / retry 分配的 sb.attemptId；
+       历史数据没有这个字段时为 undefined —— 守卫会自动跳过 attempt 检查，
+       行为与修复前一致（向后兼容）。 */
+    const attemptId = sb.attemptId;
     try {
       const D = deps.dreamina;
       if (!D) {
-        mapTaskError(db, sb, String(ERR.CLI_DOWN), '创作 CLI 适配器未加载（请重启服务）', null);
+        mapTaskError(db, sb, String(ERR.CLI_DOWN), '创作 CLI 适配器未加载（请重启服务）', null, null, attemptId);
         return;
       }
       /* 模型可用性前置校验：历史数据里可能存在已下线的名字（原仅画布模型）。
@@ -125,14 +167,19 @@ function makeWorker(cfg, deps) {
         mapTaskError(db, sb, String(ERR.PARAM),
           '模型「' + sb.model + '」当前不可用（' +
           (models.isKnown(sb.model) ? '该型号已随画布 CLI 一并下线，创作 CLI 无对应能力' : '不在模型注册表中') +
-          '）——请在设置或该分镜上改选一个可用模型', null);
+          '）——请在设置或该分镜上改选一个可用模型', null, null, attemptId);
         return;
       }
 
       const isDry = cfg.dryRun === true || sb.submitDryRun === true;
       const dryScope = sb.submitDryRun === true ? 'batch' : (cfg.dryRun === true ? 'service' : null);
 
-      sb.status = 'generating'; sb.progress = 10; sb.startedAt = sb.startedAt || nowIso();
+      /* 派发前最后一道检查：排队期间可能已被取消 / 删除 / 被新一轮取代。
+         不查的话会出现"取消之后 worker 照样开跑并写成功"（就是本次修复的主问题）。 */
+      const gDispatch = guard(db, sb, attemptId, TS.STATUS.GENERATING);
+      if (!gDispatch.ok) { noteRejected(db, sb, attemptId, '派发', gDispatch.reason); return; }
+
+      sb.status = TS.STATUS.GENERATING; sb.progress = 10; sb.startedAt = sb.startedAt || nowIso();
       sb.etaSeconds = sb.durationSec * 3; sb.errorCode = null; sb.errorMessage = null; sb.dirty = true;
       store.pushLog(sb.id, 'info', isDry
         ? '【干跑】开始组装命令（不连接服务端、不派发；来源：' + (dryScope === 'batch' ? '本次提交勾选干跑' : '服务端干跑模式') + '）'
@@ -145,27 +192,27 @@ function makeWorker(cfg, deps) {
       if (isDry) {
         let argv = null, adapted = [];
         try { const b = D.buildSubmitArgs(sb, db); argv = b.args; adapted = b.notes || []; }
-        catch (e) { mapTaskError(db, sb, String(e.code || ERR.PARAM), e.message || '创作 CLI 参数校验失败', null); return; }
+        catch (e) { mapTaskError(db, sb, String(e.code || ERR.PARAM), e.message || '创作 CLI 参数校验失败', null, null, attemptId); return; }
         const cmd = (cfg.dreaminaCliPath || 'dreamina') + ' ' + argv.join(' ');
         store.pushLog(sb.id, 'info', 'spawn: ' + cmd);
-        finishDryRun(db, sb, onDirty, { engine: 'dreamina', command: cmd, argv, adapted, mode: null, model: dmName, scope: dryScope });
+        finishDryRun(db, sb, onDirty, { engine: 'dreamina', command: cmd, argv, adapted, mode: null, model: dmName, scope: dryScope }, attemptId);
         return;
       }
 
-      await runViaDreamina(db, sb, onDirty, eng.reason);
+      await runViaDreamina(db, sb, onDirty, eng.reason, attemptId);
     } catch (e) {
-      mapTaskError(db, sb, String(ERR.INTERRUPTED), 'worker 异常：' + (e.message || e), null);
+      mapTaskError(db, sb, String(ERR.INTERRUPTED), 'worker 异常：' + (e.message || e), null, null, attemptId);
     } finally {
       state.running.delete(sb.id);
       onDirty();
     }
   }
 
-  async function runViaDreamina(db, sb, onDirty, reason) {
+  async function runViaDreamina(db, sb, onDirty, reason, attemptId) {
     const D = deps.dreamina;
     const hint = { engine: 'dreamina', engineReason: reason };
     const p = await D.probe();
-    if (!p.available) { mapTaskError(db, sb, String(ERR.CLI_DOWN), p.message || '创作 CLI 不可用', null, hint); return; }
+    if (!p.available) { mapTaskError(db, sb, String(ERR.CLI_DOWN), p.message || '创作 CLI 不可用', null, hint, attemptId); return; }
 
     /* 积分余额提醒 —— 原画布链路有一个「报价→确认」的 creditCeiling 安全阀
        （报价超上限就在运行前停止、不扣费）。画布 CLI 移除后该能力不存在了：
@@ -197,10 +244,15 @@ function makeWorker(cfg, deps) {
     try {
       res = await D.runVideo(db, sb, {
         log: (lv, m) => store.pushLog(sb.id, lv, m),
-        progress: (pct) => { sb.progress = pct; sb.dirty = true; onDirty(); }
+        progress: (pct) => {
+          /* 进度回调同样要守卫：取消 / 重试之后，旧一轮还在推进度，
+             不拦就会把界面上的新状态又盖回"生成中 xx%"。 */
+          if (!guard(db, sb, attemptId, TS.STATUS.GENERATING).ok) return;
+          sb.progress = pct; sb.dirty = true; onDirty();
+        }
       });
     } catch (e) {
-      mapTaskError(db, sb, String(e.code || ERR.INTERNAL), (e.message || '创作 CLI 参数校验失败'), null, hint);
+      mapTaskError(db, sb, String(e.code || ERR.INTERNAL), (e.message || '创作 CLI 参数校验失败'), null, hint, attemptId);
       return;
     }
     /* runVideo 把「本次真正拼装出的参数」放在 res.meta 里回传（含 argv / 图号表 / 适配说明）。
@@ -211,6 +263,22 @@ function makeWorker(cfg, deps) {
       command: cmdLine, argv: m.argv || null, mode: m.subcommand || null, cliModel: m.cliModel || null,
       adapted: m.adapted || [], submitId: res.submitId || null
     });
+    /* ⚠ 收尾前先验写入权（2026-09-19 修复的关键一步）。
+       CLI 是异步的，这一轮跑着的时候用户可能已经「取消」了这个分镜 —— 原先这里
+       无条件写 succeeded，于是出现 generating → canceled → succeeded 的"取消后复活"。
+       同样地，被强制删除的分镜不能再写 cliJobs（那会把已删条目重新建回来）。
+       注意：被拒时**先**把已经拿到的 submit_id 记到系统日志 —— 那是"钱已经花了"的唯一凭据，
+       丢了就再也查不到这次生成。 */
+    const gFinish = guard(db, sb, attemptId, res.ok ? TS.STATUS.SUCCEEDED : TS.STATUS.FAILED);
+    if (!gFinish.ok) {
+      if (res.submitId) {
+        store.pushLog('system', 'warn', '【已丢弃】生成结果：本轮已失效（' + gFinish.reason + '）' +
+          '　storyboard=' + sb.id + '　submit_id=' + res.submitId +
+          '　可用 dreamina query_result --submit_id=' + res.submitId + ' 续查或补下载');
+      }
+      noteRejected(db, sb, attemptId, '结果收尾', gFinish.reason);
+      return;
+    }
     /* 补齐命令与 submit_id。**即便任务失败或超时也必须落库** ——
        submit_id 是之后用 `dreamina query_result --submit_id=…` 续查结果、补下载的唯一凭据；
        原先只在 `if (cmdLine)` 里写、且不含 submitId，一旦超时这条线索就彻底丢了。 */
@@ -221,9 +289,14 @@ function makeWorker(cfg, deps) {
       state: res.ok ? 'succeeded' : 'failed', updatedAt: nowIso()
     });
     store.save();
-    if (!res.ok) { mapTaskError(db, sb, res.code || String(ERR.INTERNAL), res.message || '创作 CLI 任务失败', null, dctx); return; }
+    if (!res.ok) { mapTaskError(db, sb, res.code || String(ERR.INTERNAL), res.message || '创作 CLI 任务失败', null, dctx, attemptId); return; }
     const dl = await D.downloadResult(db, sb, res.submitId).catch(() => ({ videoUrl: null, coverUrl: null }));
-    sb.status = 'succeeded'; sb.progress = 100; sb.etaSeconds = 0;
+    /* 下载是另一次异步等待，期间仍可能被取消 —— 再验一次写入权 */
+    if (!guard(db, sb, attemptId, TS.STATUS.SUCCEEDED).ok) {
+      noteRejected(db, sb, attemptId, '下载完成后的成功收尾', guard(db, sb, attemptId, TS.STATUS.SUCCEEDED).reason);
+      return;
+    }
+    sb.status = TS.STATUS.SUCCEEDED; sb.progress = 100; sb.etaSeconds = 0;
     sb.remoteId = 'jm_' + String(res.submitId).slice(0, 8);
     sb.finishedAt = nowIso();
     sb.elapsedMs = state.running.get(sb.id) ? Date.now() - state.running.get(sb.id).startedAt : null;
@@ -307,7 +380,8 @@ function makeWorker(cfg, deps) {
       const tail = job.submitId
         ? '。该任务的 submit_id=' + job.submitId + '，可用 dreamina query_result --submit_id=' + job.submitId + ' 续查或补下载'
         : '（本次未取得 submit_id，需重新生成）';
-      sb.status = 'failed';
+      sb.status = TS.STATUS.FAILED;
+      sb.attemptId = null;   // 跟踪已断，本轮 attempt 作废（用户点「重试」会分配新的）
       sb.errorCode = String(ERR.INTERRUPTED);
       sb.errorMessage = '服务重启导致本次生成的跟踪中断（进度百分比为按时间估算，不代表实际完成度）' + tail;
       sb.finishedAt = nowIso();
@@ -329,7 +403,32 @@ function makeWorker(cfg, deps) {
     return stuck.length;
   }
 
-  return { tick, resolveMaxConcurrency, planFor, reconcileOrphans, state };
+  /* ---------------- 启动期封面补齐 ----------------
+     本次改动之前生成的产物没有封面（创作 CLI 不给，代码也没抽帧），表格里只能显示
+     ID 派生的渐变缩略图。启动时补一次：只处理「已完成 + 有视频 + 无封面」的分镜。
+     幂等：有 coverUrl 就跳过，makeCover 自身也会复用已存在的文件；
+     失败或本机没有 ffmpeg 就静默跳过，绝不影响启动。上限 50 条，避免首次启动拖太久。 */
+  async function backfillCovers(db) {
+    const D = deps.dreamina;
+    if (!D || typeof D.makeCover !== 'function') return 0;
+    const targets = (db.storyboards || [])
+      .filter((s) => s.status === 'succeeded' && s.videoUrl && !s.coverUrl).slice(0, 50);
+    if (!targets.length) return 0;
+    let done = 0;
+    for (const sb of targets) {
+      const abs = path.join(OUTPUT_DIR, decodeURIComponent(String(sb.videoUrl).replace(/^\/files\//, '')));
+      const outName = path.basename(abs).replace(/\.[^.]+$/, '') + '_cover.jpg';
+      const made = await D.makeCover(abs, path.join(path.dirname(abs), outName));
+      if (!made) continue;
+      sb.coverUrl = '/files/' + sb.id + '/' + encodeURIComponent(outName);
+      sb.dirty = true;
+      done++;
+    }
+    if (done) { store.save(); console.log('[封面补齐] ' + done + ' 条产物的封面已生成'); }
+    return done;
+  }
+
+  return { tick, resolveMaxConcurrency, planFor, reconcileOrphans, backfillCovers, state };
 }
 
 module.exports = { makeWorker };

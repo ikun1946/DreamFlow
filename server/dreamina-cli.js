@@ -17,7 +17,7 @@
      · multimodal2video 至少需 1 张图或视频（seedance2.5 允许纯音频）
      · 成功判定看 gen_status=success，不能只看退出码
    ============================================================ */
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { OUTPUT_DIR, ASSET_DIR } = require('./config');
@@ -60,10 +60,27 @@ function makeDreaminaAdapter(cfg) {
     });
   }
 
+  /* CLI 输出有两种形态：**单个 JSON 对象**（大多数子命令）与 **JSON 数组**（list_task）。
+     ⚠ 原实现只找第一个 `{`：遇到数组时会从数组内部的第一个对象开始切，切出
+     `{…}, {…}]` 这种非法 JSON → 解析必然失败。表现是 list_task 的输出恒为 null
+     （2026-09-19 排查"找回 submit_id"时发现，见 recoverSubmitId）。
+     也不能只试「第一个 {」+「第一个 [」两个起点 —— stdout 前面若混了 `[WARN] …`
+     这类日志行，两个起点都会落在非 JSON 处而双双失败。
+     现在从每个 `{` / `[` 位置依次尝试，命中即返回；正常输出（首字符就是 JSON 起点）
+     仍然只解析一次，不产生额外开销。候选点上限 200 个，避免大输出上的无谓重复解析。 */
   function parseJson(s) {
-    const i = String(s || '').indexOf('{');
-    if (i < 0) return null;
-    try { return JSON.parse(String(s).slice(i)); } catch (e) { return null; }
+    const t = String(s || '');
+    let tried = 0;
+    for (let i = 0; i < t.length && tried < 200; i++) {
+      const c = t[i];
+      if (c !== '{' && c !== '[') continue;
+      tried++;
+      try {
+        const v = JSON.parse(t.slice(i));
+        if (v && typeof v === 'object') return v;
+      } catch (e) { /* 该起点不是合法 JSON，继续往后找 */ }
+    }
+    return null;
   }
 
   async function call(args, timeoutMs) {
@@ -498,7 +515,23 @@ function makeDreaminaAdapter(cfg) {
       return { ok: false, code: String(ERR.FORBIDDEN), message: '该模型需先在即梦 Web 端完成一次首次生成（合规确认），完成后重试即可', meta };
     }
     if (!submitId) {
-      return { ok: false, code: String(ERR.INTERNAL), message: '创作 CLI 未返回 submit_id：' + ((r.message || (r.data ? JSON.stringify(r.data) : '')).slice(0, 200)), meta };
+      /* ⚠ CLI 没回传 submit_id ≠ 任务没创建（2026-09-19 实测故障）。
+         `dreamina multimodal2video` 报了 `get_history_by_ids failed: ret=1015` —— 但任务
+         **已经在即梦侧创建并扣费**（实测扣 30 积分、随后 gen_status 变 success），
+         只是 CLI 在回查那一步挂了、没把 submit_id 返回来。
+         原实现直接判失败 ⇒ 钱花了、视频也生成了，却因为没有 id 而查不到、下不到，白扔一次生成。
+         这里先用 `list_task` 把最近的任务拉回来：按「任务类型一致 + 提示词全等」匹配。
+         提示词里带着素材锁定区块，几乎不可能与别的任务撞车。找回后照常进入下面的轮询。 */
+      const recovered = await recoverSubmitId(built.promptWithLock, built.cmd);
+      if (recovered) {
+        submitId = recovered;
+        status = 'querying';
+        log('warn', 'CLI 未回传 submit_id（' + ((r.message || '').slice(0, 120) || '无详情') +
+          '），但已通过 list_task 找回：' + recovered + ' —— 任务在即梦侧确实创建了，本次生成不会被浪费');
+      }
+    }
+    if (!submitId) {
+      return { ok: false, code: String(ERR.INTERNAL), message: '创作 CLI 未返回 submit_id（且 list_task 也未能找回）：' + ((r.message || (r.data ? JSON.stringify(r.data) : '')).slice(0, 200)), meta };
     }
     log('info', 'submit_id=' + submitId + '（gen_status=' + status + '）');
     prog(30);   // 已受理
@@ -548,6 +581,48 @@ function makeDreaminaAdapter(cfg) {
   }
 
   /* 下载产物到 output/<storyboardId>/，返回可访问 url */
+  /* 产物封面：从视频里抽一帧。
+     为什么需要（2026-09-19）：创作 CLI 的 `query_result` **没有取封面的选项**
+     （`--help` 只有 `--download_dir` / `--submit_id`），实测下载目录里只有 mp4 ——
+     于是 coverUrl 恒为 null，表格里已完成分镜只能退回「ID 派生的渐变 + 播放图标」，
+     用户看不到画面内容（会以为缩略图坏了）。
+     这里用本机 ffmpeg 抽**第 1 秒**的一帧（避开可能的黑场 / 淡入）。
+
+     ⚠ 尺寸按**最大的用武之地**取，不是按缩略图取（2026-09-19 修正）：
+     这张图有两个用途 —— ① 列表里 76×48 的结果缩略图；② 播放器的 `poster`（播放前显示的那一帧，
+     实测渲染宽 566 CSS px，HiDPI 屏上可达 1132 设备像素）。原实现按①的需求缩到 480 宽，
+     结果②把它放大 1.18×（DPR 2 时 2.4×）→ 播放前画面发虚。
+     现在改为 `min(1280, iw)`：**上限 1280 且绝不放大源**（480p 的源不会被拉大）。
+     代价：文件从 ~15 KB 涨到 ~54 KB —— 对一次性的缓存资源可忽略。
+     幂等：目标文件已存在就直接复用。ffmpeg 缺失或失败一律静默返回 null ——
+     封面是锦上添花，绝不能因此让任务收尾失败。 */
+  function makeCover(videoAbs, outAbs) {
+    return new Promise((resolve) => {
+      try { if (fs.statSync(outAbs).size > 0) return resolve(outAbs); } catch (e) { /* 还没有，继续生成 */ }
+      execFile(cfg.ffmpegPath || 'ffmpeg',
+        ['-y', '-ss', '1', '-i', videoAbs, '-frames:v', '1', '-update', '1', '-q:v', '3', '-vf', 'scale=min(1280\\,iw):-2', outAbs],
+        { timeout: 30000, windowsHide: true },
+        (err) => {
+          if (err) return resolve(null);
+          try { resolve(fs.statSync(outAbs).size > 0 ? outAbs : null); } catch (e) { resolve(null); }
+        });
+    });
+  }
+
+  /* CLI 提交后没回传 submit_id 时的补救：用 list_task 把刚创建的任务找回来。
+     匹配条件 = 任务类型一致 + **提示词全等**。提示词里含自动追加的「素材锁定」区块
+     （与本次分镜的绑定严格对应），所以全等匹配基本不可能误命中别的任务。
+     只读命令、不产生任何费用；失败一律返回 null，由调用方按原逻辑判失败。 */
+  async function recoverSubmitId(expectedPrompt, cmd) {
+    if (!expectedPrompt || !cmd) return null;
+    const r = await call(['list_task', '--limit', '10'], 60000);
+    if (r.kind !== 'ok') return null;
+    const list = Array.isArray(r.data) ? r.data : ((r.data && r.data.list) || []);
+    const hit = list.find((t) => t && t.submit_id &&
+      t.gen_task_type === cmd && String(t.prompt || '') === String(expectedPrompt));
+    return hit ? hit.submit_id : null;
+  }
+
   async function downloadResult(db, sb, submitId) {
     const dir = path.join(OUTPUT_DIR, sb.id);
     fs.mkdirSync(dir, { recursive: true });
@@ -555,7 +630,13 @@ function makeDreaminaAdapter(cfg) {
     if (r.kind !== 'ok') return { videoUrl: null };
     const files = fs.readdirSync(dir).filter((f) => /\.(mp4|mov|webm|jpg|jpeg|png)$/i.test(f));
     const video = files.find((f) => /\.(mp4|mov|webm)$/i.test(f));
-    const cover = files.find((f) => /\.(jpg|jpeg|png)$/i.test(f));
+    let cover = files.find((f) => /\.(jpg|jpeg|png)$/i.test(f));
+    /* CLI 没给封面就自己抽一帧 —— 见 makeCover 的说明 */
+    if (!cover && video) {
+      const outName = video.replace(/\.[^.]+$/, '') + '_cover.jpg';
+      const made = await makeCover(path.join(dir, video), path.join(dir, outName));
+      if (made) cover = outName;
+    }
     return {
       videoUrl: video ? '/files/' + sb.id + '/' + encodeURIComponent(video) : null,
       coverUrl: cover ? '/files/' + sb.id + '/' + encodeURIComponent(cover) : null
@@ -564,7 +645,7 @@ function makeDreaminaAdapter(cfg) {
 
   /* parseChallenge 一并导出：仅用于单元验证「授权材料解析」是否稳健
      （切换账号会先退出登录态，无法在真机反复试，必须靠样本单测覆盖）。 */
-  return { probe, peek, lastProbe, credit, invalidate, authLoginFlow, switchAccount, pending, parseChallenge, buildSubmitArgs, runVideo, downloadResult, state, normResolution };
+  return { probe, peek, lastProbe, credit, invalidate, authLoginFlow, switchAccount, pending, parseChallenge, buildSubmitArgs, runVideo, downloadResult, makeCover, recoverSubmitId, state, normResolution };
 }
 
 module.exports = { makeDreaminaAdapter, DREAMINA_MODELS, normResolution };

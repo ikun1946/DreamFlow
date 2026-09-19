@@ -9,6 +9,7 @@
 const { ERR, ApiError, rid, nowIso, clamp, grad } = require('./util');
 const store = require('./store');
 const models = require('./models');   // 模型注册表：归属/命名/路由的唯一事实来源
+const TS = require('./task-state');   // 任务状态迁移与写入权限的唯一事实来源
 const AL = require('./asset-lock');   // 素材图号 / 素材锁定区块 / 引用校验的唯一事实来源
 const REC = require('./records');     // 生成记录：查询 / 详情 / 删除 / 清空 / 导出
 const fs = require('fs');
@@ -20,7 +21,22 @@ const ASSET_EXT = {
   image: ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'],
   audio: ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac']
 };
-const ASSET_TYPE_KIND = { character: 'image', scene: 'image', prop: 'image', audio: 'audio' };
+/* 素材类型 → 上传校验用的种类（图片 / 音频）。
+   ⚠ 2026-09-20 新增 firstFrame / storyboard 两类：它们**不是**场景素材。
+   此前首帧图 / 分镜图两个槽位在映射表里被指到 'scene'，于是这两类素材无处存放、
+   只能借场景库，点开槽位只看到场景图 → 用户报「提示资产缺失」。
+   现在每个槽位有各自独立的资产库，一一对应（见前端 ROLE_META）。 */
+const ASSET_TYPE_KIND = {
+  character: 'image', scene: 'image', prop: 'image',
+  firstFrame: 'image', storyboard: 'image',
+  audio: 'audio'
+};
+
+/* **多值槽位**的唯一事实来源：这些 role 可以绑多个素材，其余为单值（再绑会替换）。
+   ⚠ 原先后端硬编码成 `role !== 'character'`、前端另有一份 ROLE_META.multi ——
+   两处各写各的，改一处就不同步。现在两边都以这份表为准。 */
+const ROLE_MULTI = { character: true, prop: true };
+const isMultiRole = (role) => ROLE_MULTI[role] === true;
 
 /* 静态模型兜底（探测不可用时使用）：清单与归属全部来自模型注册表。
    2026-09-18 画布 CLI 移除后，可用模型 = 创作 CLI 支持的全部型号。 */
@@ -100,6 +116,10 @@ function decorate(db, s) {
     dryRunStale: stale,
     pendingDryRun: s.submitDryRun === true,
     imageCount: cat.images.length,          // 本次会发出的图片数（= --image 个数）
+    /* 该分镜当前模型允许的参考图上限 + 所属系列。前端「已添加 X / 上限 Y」与
+       达上限时的拦截提示都读它 —— 上限只由 models.js 的系列规则表决定，别在别处算。 */
+    imageLimit: models.imageLimitFor(s.model),
+    imageLimitFamily: models.limitFamilyOf(s.model),
     audioCount: cat.audios.length,
     assets: (() => {
       /* 给每个绑定素材标上「图片N / 音频N」——图号与创作 CLI 的 --image 顺序同源，
@@ -180,9 +200,14 @@ function listStoryboards(db, q, projectId) {
 
 function getProgress(db, idsParam) {
   const ids = String(idsParam || '').split(',').map((s) => s.trim()).filter(Boolean);
+  /* ⚠ 不再「读后清」（2026-09-19 修复）。
+     原实现在这里 `s.dirty = false`，等于让"谁先问谁消费掉这次变化"：同时开两个标签页时，
+     A 拿到更新并把 dirty 清掉，B 之后只能收到空数组、界面永远停在旧进度上，
+     极端情况下 B 会一直轮询却再也看不到任务结束（UI 永久卡在「生成中」）。
+     现在只读取、不清除；dirty 由 listStoryboards（列表刷新）统一清 —— 那是"确实拿到过完整状态"
+     的时点。代价是生成期间前端不再退避到 10s（每轮都有变化），对本地服务可忽略。
+     前端侧配套：按载荷签名判断"真的没变"再退避，见 app/app.js 的 pollOnce。 */
   const changed = db.storyboards.filter((s) => ids.includes(s.id) && s.dirty);
-  changed.forEach((s) => { s.dirty = false; });
-  store.save();
   return changed.map((s) => ({
     id: s.id, status: s.status, progress: Math.round(s.progress),
     etaSeconds: s.etaSeconds, currentFrameUrl: s.currentFrameUrl,
@@ -270,11 +295,15 @@ async function dryRunStoryboard(db, id, adapter, opts) {
 
 function createStoryboard(db, b) {
   const d = db.settings.defaults;
+  /* 先定模型再钳时长：时长上限取决于**该分镜实际用的模型**（seedance2.5 到 30s，
+     其余到 15s）。原先统一按全局 META.duration（4–15）钳，于是"设置页能选 30、
+     创建出来却是 15"（2026-09-19 修复）。 */
+  const model = b.model || d.model;
   const s = {
     id: rid('st_'), projectId: 'pj_1', batchId: 'bt_21', seq: ++db.seq,
     prompt: b.prompt || '', negativePrompt: b.negativePrompt != null ? b.negativePrompt : d.negativePrompt,
-    durationSec: clamp(Math.round(Number(b.durationSec || d.durationSec)), META.duration.min, META.duration.max),
-    model: b.model || d.model, ratio: b.ratio || d.ratio,
+    durationSec: models.clampDuration(model, b.durationSec || d.durationSec),
+    model: model, ratio: b.ratio || d.ratio,
     resolution: b.resolution || d.resolution, seed: 'random',
     motion: b.motion != null ? Number(b.motion) : d.motion,
     status: 'draft', progress: 0, etaSeconds: null, remoteId: null,
@@ -293,10 +322,12 @@ function patchStoryboard(db, id, b) {
   if (b.durationSec != null && !s.canEditDuration) {
     throw new ApiError(ERR.CONFLICT, '分镜已完成，修改时长需重新生成');
   }
+  // 本次生效的模型：同一请求里既改模型又改时长时，要按**新模型**的能力钳
+  const effModel = b.model != null ? b.model : s.model;
   if (b.durationSec != null) {
     const v = Math.round(Number(b.durationSec));
     if (!isFinite(v)) throw new ApiError(ERR.PARAM, '时长不合法');
-    s.durationSec = clamp(v, META.duration.min, META.duration.max);
+    s.durationSec = models.clampDuration(effModel, v);
   }
   ['prompt', 'model', 'ratio', 'resolution', 'seed', 'motion', 'negativePrompt'].forEach((k) => {
     if (b[k] != null) s[k] = b[k];
@@ -304,7 +335,7 @@ function patchStoryboard(db, id, b) {
   // 改了提示词、且这次没显式指定时长 → 时长自动跟随提示词里的「总时长」标注
   if (b.durationSec == null && b.prompt != null && s.canEditDuration) {
     const byPrompt = parsePromptDuration(s.prompt).seconds;
-    if (byPrompt != null) s.durationSec = clamp(byPrompt, META.duration.min, META.duration.max);
+    if (byPrompt != null) s.durationSec = models.clampDuration(effModel, byPrompt);
   }
   s.dirty = true;
   store.save();
@@ -317,7 +348,7 @@ function batchDuration(db, b) {
     const s = findSb(db, id);
     if (!s) return skipped.push({ id, reason: 'not_found', message: '分镜不存在' });
     if (!s.canEditDuration) return skipped.push({ id, reason: 'completed_locked', message: '已完成，已锁定时长' });
-    s.durationSec = clamp(Math.round(Number(b.durationSec)), META.duration.min, META.duration.max);
+    s.durationSec = models.clampDuration(s.model, b.durationSec);
     s.dirty = true; updated.push(id);
   });
   store.save();
@@ -351,18 +382,32 @@ function doSubmit(db, b) {
   (b.ids || []).forEach((id) => {
     const s = findSb(db, id);
     if (!s) return rejected.push({ id, code: String(ERR.NOTFOUND), message: '分镜不存在' });
-    if (s.status === 'generating' || s.status === 'queued') {
+    if (TS.isRunning(s.status)) {
       return rejected.push({ id, code: String(ERR.CONFLICT), message: '该分镜已在队列中' });
     }
     if (s.errorCode === String(ERR.NO_CREDIT)) {
       return rejected.push({ id, code: String(ERR.NO_CREDIT), message: '积分不足，无法提交' });
     }
-    s.status = 'queued'; s.progress = 0; s.errorCode = null; s.errorMessage = null;
+    TS.assertTransition(s.status, TS.STATUS.QUEUED);
+    s.status = TS.STATUS.QUEUED; s.progress = 0; s.errorCode = null; s.errorMessage = null;
     s.finishedAt = null; s.remoteId = null; s.dirty = true;
+    /* 每次提交都换一个新 attemptId：worker 只认当前 attempt，上一轮的迟到结果一律丢弃
+       （重新生成同一分镜时，旧一轮的 CLI 回调不能再改这个分镜）。 */
+    s.attemptId = TS.newAttemptId();
     if (dry) s.submitDryRun = true; else s.submitDryRun = false;
     accepted.push({ id, remoteId: null, status: 'queued' });
   });
-  if (b.concurrency != null) db.settings.queue.concurrency = clamp(Number(b.concurrency), 1, 5);
+  /* ⚠ 这里**不再**把并发写回设置（2026-09-19 修复）。
+     原实现是 `clamp(Number(b.concurrency), 1, 5)` —— 前端每次提交都会带上当前设置，
+     于是用户把并发设成 8 时，一次提交就被**静默改回 5**，界面配置与真实行为长期不一致。
+     并发上限现在只有一个出口：PUT /settings（按本地保护上限校验）+ worker 派发闸。
+     这里最多只做"不改动既有值"的合法性检查，避免把非法值写进库。 */
+  if (b.concurrency != null) {
+    const v = Number(b.concurrency);
+    if (!Number.isFinite(v) || v < 1) {
+      return { accepted, rejected, dryRun: dry, concurrencyRejected: { value: b.concurrency, message: '并发数须为不小于 1 的整数（本次未改动设置）' } };
+    }
+  }
   store.save();
   return { accepted, rejected, dryRun: dry };
 }
@@ -372,8 +417,15 @@ function cancel(db, id) {
   if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
   if (s.status === 'succeeded') throw new ApiError(ERR.CONFLICT, '已完成的分镜无法取消');
   if (s.status === 'draft') throw new ApiError(ERR.CONFLICT, '未提交的分镜无需取消，直接删除或编辑即可');
+  if (!TS.canCancel(s.status)) throw new ApiError(ERR.CONFLICT, '当前状态（' + s.status + '）无法取消');
+  TS.assertTransition(s.status, TS.STATUS.CANCELED);
   const wasGenerating = s.status === 'generating';
-  s.status = 'canceled'; s.progress = 0; s.etaSeconds = 0; s.finishedAt = nowIso(); s.dirty = true;
+  s.status = TS.STATUS.CANCELED; s.progress = 0; s.etaSeconds = 0; s.finishedAt = nowIso(); s.dirty = true;
+  /* 清掉 attemptId —— 这是「取消后不再被覆盖」的关键：
+     worker 手里那次派发持有的旧 attemptId 从此对不上，它拿到的 CLI 结果会被直接丢弃，
+     不会再把这个分镜写回 succeeded（2026-09-19 修复：原先会出现
+     generating → canceled → succeeded 的"取消后复活"）。 */
+  s.attemptId = null;
   if (wasGenerating) {
     s.elapsedMs = s.startedAt ? Math.max(0, Date.now() - Date.parse(s.startedAt)) : s.elapsedMs;
     store.pushLog(s.id, 'warn', '已取消本地跟踪（CLI 无取消命令，即梦侧任务将继续并照常计费）');
@@ -396,25 +448,46 @@ function cancel(db, id) {
 function retry(db, id) {
   const s = findSb(db, id);
   if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
-  s.status = 'queued'; s.progress = 0; s.etaSeconds = null;
+  /* ⚠ 状态限制（2026-09-19 修复）：原先 retry 没有任何校验，generating 也能 retry
+     ⇒ 同一分镜同时跑两轮生成，**直接重复扣费**。现在只允许 failed / canceled。
+     界面上的重试按钮本就只在失败行出现，这里是让后端对齐界面已有的意图。 */
+  if (!TS.canRetry(s.status)) {
+    throw new ApiError(ERR.CONFLICT,
+      s.status === 'generating' || s.status === 'queued'
+        ? '该分镜正在生成中，无法重试（如需中止请先「取消」）'
+        : (s.status === 'succeeded' ? '该分镜已完成；如需重新生成请用「提交所选」' : '当前状态（' + s.status + '）不允许重试'));
+  }
+  TS.assertTransition(s.status, TS.STATUS.QUEUED);
+  s.status = TS.STATUS.QUEUED; s.progress = 0; s.etaSeconds = null;
   s.errorCode = null; s.errorMessage = null; s.retryCount++; s.dirty = true;
   s.canEditDuration = true;
+  s.attemptId = TS.newAttemptId();   // 新的一轮 = 新的 attempt，旧一轮的迟到结果一律丢弃
   store.save();
   return decorate(db, s);
 }
 
 function batchDelete(db, b) {
   const ids = b.ids || [];
-  const running = db.storyboards.filter((s) => ids.includes(s.id) && (s.status === 'generating' || s.status === 'queued'));
+  const running = db.storyboards.filter((s) => ids.includes(s.id) && TS.isRunning(s.status));
   if (running.length && !b.force) {
     throw new ApiError(ERR.CONFLICT, '存在运行中的分镜，请确认后强制删除', { ids: running.map((s) => s.id) });
   }
+  /* ⚠ 强制删除运行中的分镜：先把它们置为 canceled 并清掉 attemptId，再删。
+     为什么要多这一步（2026-09-19 修复）：worker 手里那次派发还持有旧 attemptId，
+     直接物理删除的话它会继续往这个已消失的分镜上写日志 / 生成记录，并把 cliJobs
+     条目重新建回来 —— 表现为"删除后任务又出现"、留下孤立的生成记录。
+     先取消 = 让那次派发立即失去写入权（worker 侧按 attemptId + 存在性双重守卫）。 */
+  running.forEach((s) => {
+    s.status = TS.STATUS.CANCELED;
+    s.attemptId = null;
+    store.pushLog(s.id, 'warn', '运行中被强制删除：已先中止本地跟踪（CLI 无取消命令，即梦侧任务可能仍在运行并照常计费）');
+  });
   const deleted = db.storyboards.filter((s) => ids.includes(s.id)).map((s) => s.id);
   db.storyboards = db.storyboards.filter((s) => !ids.includes(s.id));
   deleted.forEach((id) => { delete db.logs[id]; delete db.cliJobs[id]; });
   renumber(db);
   store.save();
-  return { deleted };
+  return { deleted, canceledBeforeDelete: running.map((s) => s.id) };
 }
 
 function reorder(db, id, b) {
@@ -461,7 +534,7 @@ function viewAsset(a, usedIds) {
 function createAsset(db, opts) {
   const type = String(opts.type || '');
   const kind = ASSET_TYPE_KIND[type];
-  if (!kind) throw new ApiError(ERR.PARAM, '素材类型不合法：' + type + '（支持 character/scene/prop/audio）');
+  if (!kind) throw new ApiError(ERR.PARAM, '素材类型不合法：' + type + '（支持 ' + Object.keys(ASSET_TYPE_KIND).join('/') + '）');
   const filename = String(opts.filename || '');
   if (!filename) throw new ApiError(ERR.PARAM, '缺少文件名');
   const ext = (filename.match(/\.[^.]+$/) || [''])[0].toLowerCase();
@@ -493,11 +566,12 @@ function bindAsset(db, id, b) {
   const s = findSb(db, id);
   if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
   const role = b.role;
-  if (!['character', 'scene', 'prop', 'audio', 'firstFrame', 'storyboard'].includes(role)) {
+  /* role 与资产类型一一对应（本项目 type 即 role），故直接以类型表为准，避免两处漂移 */
+  if (!Object.keys(ASSET_TYPE_KIND).includes(role)) {
     throw new ApiError(ERR.PARAM, 'role 不合法');
   }
   if (!findAsset(db, b.assetId)) throw new ApiError(ERR.NOTFOUND, '素材不存在');
-  const single = role !== 'character';
+  const single = !isMultiRole(role);
   if (single) s.assets = s.assets.filter((r) => r.role !== role);
   if (!s.assets.some((r) => r.assetId === b.assetId && r.role === role)) {
     s.assets.push({ assetId: b.assetId, role });
@@ -612,7 +686,7 @@ function autoMatchAssets(db, b) {
   pool.sort((a, b2) => a.seq - b2.seq);
 
   const rows = [];
-  const stat = { storyboards: pool.length, bound: 0, kept: 0, occupied: 0, noMatch: 0 };
+  const stat = { storyboards: pool.length, bound: 0, kept: 0, occupied: 0, noMatch: 0, overLimit: 0 };
 
   pool.forEach((s) => {
     const p = normKey(s.prompt);
@@ -652,7 +726,7 @@ function autoMatchAssets(db, b) {
       const same = existing.some((r) => r.assetId === m.assetId && r.role === m.role);
       if (same) { kept.push(m); return; }
       const other = existing.find((r) => r.role === m.role);
-      if (other && m.role !== 'character') {
+      if (other && !isMultiRole(m.role)) {
         const oa = findAsset(db, other.assetId) || { name: '(已删除素材)' };
         occupied.push({ role: m.role, currentAssetId: other.assetId, currentName: oa.name, want: m });
         if (overwrite) toBind.push(m);
@@ -661,24 +735,44 @@ function autoMatchAssets(db, b) {
       toBind.push(m);
     });
 
-    if (apply && toBind.length) {
-      toBind.forEach((m) => {
-        if (m.role !== 'character' && overwrite) s.assets = s.assets.filter((r) => r.role !== m.role);
+    /* ④ 参考图配额校验（2026-09-19 新增）：自动匹配必须与「添加资产」共用同一套统计，
+       只填**剩余名额**，不得绕过上限。
+       口径与组装命令时完全一致 —— 当前已占图数取自 AL.imageCatalog（只算真有本地文件、
+       真会作为 --image 发出的图），上限取自 models.imageLimitFor（系列规则表）。
+       替换同 role 的已有绑定不新增名额（老的那张让位）；character 是多值槽位，永远算新增。 */
+    const limit = models.imageLimitFor(s.model);
+    let used = AL.imageCatalog(s, db).images.length;
+    const allowed = [], overLimit = [];
+    toBind.forEach((m) => {
+      const a = findAsset(db, m.assetId);
+      const replaces = !isMultiRole(m.role) && existing.some((r) => r.role === m.role);
+      if (replaces || !AL.countsAsImage(db, a, m.role)) { allowed.push(m); return; }
+      if (used + 1 > limit) { overLimit.push(m); return; }   // 名额用完：不绑，留给用户手工取舍
+      used++;
+      allowed.push(m);
+    });
+
+    if (apply && allowed.length) {
+      allowed.forEach((m) => {
+        if (!isMultiRole(m.role) && overwrite) s.assets = s.assets.filter((r) => r.role !== m.role);
         if (!s.assets.some((r) => r.assetId === m.assetId && r.role === m.role)) {
           s.assets.push({ assetId: m.assetId, role: m.role, via: m.via, matchedBy: m.keyword, autoAt: nowIso() });
         }
       });
       s.dirty = true;
     }
-    stat.bound += toBind.length;
+    stat.bound += allowed.length;
     stat.kept += kept.length;
     stat.occupied += occupied.length;
+    stat.overLimit = (stat.overLimit || 0) + overLimit.length;
     if (!won.length) stat.noMatch++;
 
     const strip = (m) => ({ assetId: m.assetId, name: m.name, type: m.type, role: m.role, via: m.via, keyword: m.keyword });
     rows.push({
       id: s.id, seq: s.seq, status: s.status, prompt: s.prompt,
-      toBind: toBind.map(strip),
+      imageCount: used, imageLimit: limit,          // 预览里显示「将占 X / 上限 Y」
+      toBind: allowed.map(strip),
+      overLimit: overLimit.map(strip),               // 命中但名额不够，未绑定（前端单独列出并说明）
       kept: kept.map(strip),
       rivals: rivals.map(strip),
       occupied: occupied.map((o) => ({ role: o.role, currentAssetId: o.currentAssetId, currentName: o.currentName, want: strip(o.want) })),
@@ -698,7 +792,7 @@ function autoMatchAssets(db, b) {
    分镜稿的书写约定：段落头「段落1｜总时长：4.0s」，镜头行「镜1｜1.3s｜近景/…」。
    取值优先级：①「总时长」标注 → ② 各镜头秒数之和（标注缺失时的兜底）。
    取整：**一律向上进位**（Math.ceil）—— 分镜时长必须装得下整段内容，宁可多 1 秒；
-   再按全局时长范围（META.duration）钳制，钳制过的在结果里标 clamped 并给出提示。 */
+   再按**该分镜模型的时长能力**钳制（models.clampDuration），钳制过的在结果里标 clamped 并给出提示。 */
 
 const RE_TOTAL_DUR = /总\s*时长\s*[：:]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|秒|sec)?/i;
 const RE_PLAIN_DUR = /时\s*长\s*[：:]\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|秒|sec)?/i;
@@ -728,11 +822,12 @@ function parsePromptDuration(prompt) {
   };
 }
 
-/** 按标注把 durationSec 换算成合法值 */
+/** 按标注把 durationSec 换算成合法值（上限取该分镜模型的时长能力） */
 function durationFromPrompt(s, fallbackSec) {
   const p = parsePromptDuration(s.prompt);
   if (p.seconds == null) return { seconds: null, parsed: p };
-  return { seconds: clamp(p.seconds, META.duration.min, META.duration.max), parsed: p, clamped: p.seconds !== clamp(p.seconds, META.duration.min, META.duration.max) };
+  const capped = models.clampDuration(s.model, p.seconds);
+  return { seconds: capped, parsed: p, clamped: p.seconds !== capped };
 }
 
 /**
@@ -771,10 +866,14 @@ function autoDuration(db, b) {
       row.reason = '提示词里既没有「总时长」标注，也没有可解析的镜头秒数';
       stat.noDuration++; sumAfter += s.durationSec; rows.push(row); return;
     }
-    const target = clamp(parsed.seconds, META.duration.min, META.duration.max);
+    const target = models.clampDuration(s.model, parsed.seconds);
     row.target = target;
     row.clamped = target !== parsed.seconds;
-    if (row.clamped) { row.clampReason = '超出全局时长范围 ' + META.duration.min + '–' + META.duration.max + 's'; stat.clamped++; }
+    if (row.clamped) {
+      const cap = models.capsFor(models.dreaminaModelOf(s.model) || s.model).duration;
+      row.clampReason = '超出模型 ' + s.model + ' 的时长范围 ' + cap[0] + '–' + cap[1] + 's';
+      stat.clamped++;
+    }
     if (parsed.mismatch) stat.mismatch++;
     if (parsed.declared != null) {
       declaredSum += parsed.declared;
@@ -807,6 +906,11 @@ function autoDuration(db, b) {
 function importPreview(db, b) {
   const segs = splitSegments(b.rawText, b.delimiter);
   const existing = db.storyboards.map((s) => s.prompt);
+  /* 预览里"实际会采用的时长"必须与 importConfirm 的落库值同源：都按**当前默认模型**
+     的能力区间钳。否则 seedance2.5 下标注 30s 会被预览误报成"超出 4–15"，
+     而真正导入进去的是 30（2026-09-19 修复）。 */
+  const model = db.settings.defaults.model;
+  const cap = models.capsFor(models.dreaminaModelOf(model) || model).duration;
   const warnings = [];
   const out = segs.map((text, i) => {
     const dup = existing.includes(text);
@@ -815,12 +919,13 @@ function importPreview(db, b) {
     if (tooLong) warnings.push({ code: 'TOO_LONG', index: i + 1, message: '超过 2000 字' });
     const pd = parsePromptDuration(text);
     if (pd.mismatch) warnings.push({ code: 'DURATION_MISMATCH', index: i + 1, message: '标注总时长 ' + pd.declared + 's 与镜头之和 ' + pd.shotsSum + 's 不一致（按标注 ' + pd.declared + 's 计）' });
-    if (pd.seconds != null && (pd.seconds < META.duration.min || pd.seconds > META.duration.max)) {
-      warnings.push({ code: 'DURATION_CLAMPED', index: i + 1, message: '标注时长进位后为 ' + pd.seconds + 's，超出 ' + META.duration.min + '–' + META.duration.max + 's，将按边界值取' });
+    const applied = pd.seconds == null ? null : models.clampDuration(model, pd.seconds);
+    if (applied != null && applied !== pd.seconds) {
+      warnings.push({ code: 'DURATION_CLAMPED', index: i + 1, message: '标注时长进位后为 ' + pd.seconds + 's，超出模型 ' + model + ' 的 ' + cap[0] + '–' + cap[1] + 's，将按边界值取 ' + applied + 's' });
     }
     return {
       index: i + 1, text, charCount: text.length, duplicate: dup, tooLong,
-      declaredTotal: pd.declared, shotSeconds: pd.shots, durationSec: pd.seconds   // 导入后实际会采用的时长
+      declaredTotal: pd.declared, shotSeconds: pd.shots, durationSec: applied   // 导入后实际会采用的时长
     };
   });
   return { total: out.length, delimiterEcho: b.delimiter, segments: out, warnings };
@@ -839,7 +944,7 @@ function importConfirm(db, b, idempotencyKey) {
       // 时长优先取提示词里的「总时长」标注（向上进位），没有标注才回落到默认值
       durationSec: (function () {
         const byPrompt = parsePromptDuration(text).seconds;
-        return clamp(byPrompt != null ? byPrompt : Math.round(Number(d.durationSec)), META.duration.min, META.duration.max);
+        return models.clampDuration(d.model, byPrompt != null ? byPrompt : Math.round(Number(d.durationSec)));
       })(),
       model: d.model, ratio: d.ratio, resolution: d.resolution, seed: 'random',
       motion: d.motion, status: 'draft', progress: 0, etaSeconds: null, remoteId: null,
@@ -859,7 +964,49 @@ function getSettings(db) {
   return JSON.parse(JSON.stringify(db.settings));
 }
 
+/* ---------------- 默认值变更 → 同步到已有分镜 ----------------
+   为什么需要（2026-09-19 用户要求）：分镜在**导入那一刻**把默认模型/画幅/分辨率快照到自己身上，
+   之后不跟随默认值。于是出现"我把默认改成 Fast VIP，可提交出去在即梦里还是 VIP"
+   （实测踩到：16 条分镜在默认是 seedance2.0_vip 时导入，两小时后改默认，提交仍用旧模型）。
+
+   同步范围：**模型 / 画幅 / 分辨率**三项。
+   刻意**不同步时长** —— 时长是逐条按提示词的「总时长」标注算出来并可能手工调过的，
+   不该被一个全局默认值覆盖（用户明确要求）。
+   generating 的分镜跳过：它的 CLI 任务已经拿旧参数开跑，改字段只会让界面与实际执行对不上。
+
+   ⚠ 触发时机是「保存设置即对齐」，**不是**只在默认值发生变化时：
+   若只在变化时同步，"默认已经是 Fast VIP、但分镜还是 VIP"这种存量不一致就永远修不好
+   （用户当前正是这个状态 —— 保存一次也不会动）。对齐语义也更符合直觉：
+   设置面板上写的就是所有分镜将采用的参数。
+   实测无害：模型/画幅/分辨率**没有任何逐条修改的界面入口**，所以不存在"被误伤的手工偏离"。
+
+   返回摘要供接口回传、前端提示；一条都没动时返回 null（不产生任何写入）。 */
+const SYNC_FIELDS = [
+  { key: 'model', label: '模型' },
+  { key: 'ratio', label: '画幅' },
+  { key: 'resolution', label: '分辨率' }
+];
+
+function syncDefaultsToStoryboards(db, before, after) {
+  let updated = 0, skippedGenerating = 0;
+  db.storyboards.forEach((sb) => {
+    if (sb.status === 'generating') { skippedGenerating++; return; }
+    let touched = false;
+    SYNC_FIELDS.forEach((f) => { if (after[f.key] != null && sb[f.key] !== after[f.key]) { sb[f.key] = after[f.key]; touched = true; } });
+    if (touched) { sb.dirty = true; updated++; }
+  });
+  if (!updated) return null;
+  return {
+    // 默认值本次是否真的变了（用于把提示语说得更准确）；没变就只有条数有意义
+    fields: SYNC_FIELDS.filter((f) => before[f.key] !== after[f.key])
+      .map((f) => ({ field: f.key, label: f.label, from: before[f.key], to: after[f.key] })),
+    defaults: SYNC_FIELDS.map((f) => ({ field: f.key, label: f.label, value: after[f.key] })),
+    updated, skippedGenerating
+  };
+}
+
 async function putSettings(db, s, adapter) {
+  const prevDefaults = Object.assign({}, db.settings.defaults || {});   // 同步前快照：用来判断"哪些项真的变了"
   // 并发上限：不再按账号档位限制；仅当配置了本地保护上限（concMax>0）时校验上限
   let concMax = 0;
   try { concMax = (await adapter.resolveMaxConcurrency()).max; } catch (e) { /* 解析失败按不限制处理 */ }
@@ -887,7 +1034,13 @@ async function putSettings(db, s, adapter) {
       const resList = caps.resolutions;
       const ratioList = models.DREAMINA_RATIOS;
       const durRange = { min: caps.duration[0], max: caps.duration[1] };
-      if (!s.defaults) s.defaults = {};
+      /* 请求体没带 defaults 时，基于**库中现值**拷一份，让下面「按模型能力归一」有地方可写。
+         ⚠ 原来这里写的是 `s.defaults = {}` —— 紧接着的 `db.settings = Object.assign({}, db.settings, s)`
+         会拿这个空对象把库里的默认参数**整体清空**。实测（2026-09-19）：一次只带 queue 的
+         PUT /settings 就让 defaults.model 变成 undefined，之后新导入的分镜 model 为空、提交即报
+         「模型当前不可用」。这是下面「默认值同步」功能的前提 —— defaults 一旦被清空，
+         同步会把 undefined 推给所有分镜。 */
+      if (!s.defaults) s.defaults = Object.assign({}, db.settings.defaults || {});
       if (resList.length) {
         const hit = resList.find((v) => String(v).toLowerCase() === String(incoming.resolution).toLowerCase());
         const pick = hit || resList.reduce((b, v) =>
@@ -920,11 +1073,19 @@ async function putSettings(db, s, adapter) {
       dreaminaVersion: db.settings.adapter.dreaminaVersion      // 只读
     }
   });
+  /* 默认值变了就同步到已有分镜（模型 / 画幅 / 分辨率；时长不同步） */
+  const synced = syncDefaultsToStoryboards(db, prevDefaults, db.settings.defaults || {});
   store.save();
   const out = getSettings(db);
   if (adjustments.length) {
     adjustments.forEach((a) => store.pushLog('system', 'info', '默认参数已按模型规格调整：' + a));
     out.adjustments = adjustments;
+  }
+  if (synced) {
+    store.pushLog('system', 'info', '默认值变更已同步到 ' + synced.updated + ' 条分镜：' +
+      synced.fields.map((f) => f.label + ' ' + f.from + ' → ' + f.to).join('；') +
+      (synced.skippedGenerating ? '（' + synced.skippedGenerating + ' 条生成中已跳过）' : ''));
+    out.synced = synced;
   }
   return out;
 }
@@ -1065,20 +1226,44 @@ function parseAssetPromptSegments(rawText) {
   return { items, skipped, total: segs.length };
 }
 
+/* 素材去重键：类型 + 名称（首尾空格忽略、大小写不敏感）——
+   与前端图片导入的名称匹配规则一致，两处判定同一个"这是同一条素材"。 */
+function assetKey(type, name) { return String(type) + '\u0000' + String(name == null ? '' : name).trim().toLowerCase(); }
+
 function importAssetPrompts(db, b) {
   const rawText = String((b && b.rawText) || '');
   if (!rawText.trim()) throw new ApiError(ERR.PARAM, '提示词文本为空');
   const parsed = parseAssetPromptSegments(rawText);
+  /* 去重：库里已有同「类型 + 名称」的视为重复，同一批里重复出现的段也只留第一段。
+     不去重的话，把同一段提示词再粘一次就会整套复制一遍同名素材（2026-09-19 实测：
+     重复导入一次，场景 / 道具各多出一份，库里从 27 条堆到 40 条）。 */
+  const known = new Map();                       // key -> 库中已存在的 asset.id；null = 本批内前面已出现
+  (db.assets || []).forEach((a) => {
+    const k = assetKey(a.type, a.name);
+    if (!known.has(k)) known.set(k, a.id);
+  });
+  const items = [];
+  const duplicates = [];
+  parsed.items.forEach((it) => {
+    const k = assetKey(it.type, it.name);
+    if (known.has(k)) {
+      const existingId = known.get(k);
+      duplicates.push({
+        index: it.index, type: it.type, name: it.name, existingId,
+        source: existingId === null ? 'batch' : 'library'    // 同批重复 / 库里已有
+      });
+      return;
+    }
+    known.set(k, null);                          // 占位：本批后续同名的也按重复处理
+    items.push(it);
+  });
+  const base = { items, skipped: parsed.skipped, duplicates, total: parsed.total };
   const apply = !!(b && b.apply);
-  if (!apply) {
-    return Object.assign(parsed, { created: [], applied: false });
-  }
-  if (!parsed.items.length) {
-    return Object.assign(parsed, { created: [], applied: true });
-  }
+  if (!apply) return Object.assign(base, { created: [], applied: false });
+  if (!items.length) return Object.assign(base, { created: [], applied: true });
   const TYPE_LABEL = { character: '角色', scene: '场景', prop: '道具' };
   const created = [];
-  for (const it of parsed.items) {
+  for (const it of items) {
     const id = rid('as_');
     const asset = {
       id, projectId: 'pj_1', name: it.name, type: it.type, prompt: it.prompt,
@@ -1091,7 +1276,7 @@ function importAssetPrompts(db, b) {
     created.push({ id, type: it.type, typeLabel: TYPE_LABEL[it.type], name: it.name, chars: it.chars });
   }
   store.save();
-  return Object.assign(parsed, { created, applied: true });
+  return Object.assign(base, { created, applied: true });
 }
 
 function resetSettings(db, b) {

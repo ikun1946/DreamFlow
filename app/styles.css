@@ -102,6 +102,8 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   font-size:11px;color:var(--ink48);background:var(--parchment);
   padding:4px 8px;border-radius:6px;white-space:nowrap;
 }
+/* 参数胶囊：2026-09-20 顶栏的「模型」「画幅」已合并为纯文本 .paramtext，
+   全项目暂时没有元素再用 .pill —— 规则保留（组件可复用），但当前是未使用状态。 */
 .pill{
   display:inline-flex;align-items:center;gap:6px;
   font-size:12px;padding:6px 10px 6px 12px;border-radius:999px;
@@ -109,6 +111,21 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .pill:hover{background:#ECECEF}
 .paramgrp{display:inline-flex;align-items:center;gap:8px}   /* 顶栏参数组：模型 / 画幅 */
+/* 模型 · 画幅：纯文本展示（2026-09-20 由两个 .pill 胶囊合并而来）。
+   原先那两颗各带一个下拉箭头，但点击只弹一句提示、并没有真正的下拉列表 —— 属于假的下拉外观。
+   现在只是读数，用次级墨色 + 等宽数字，与 .proj / .chip 同一视觉层级。 */
+.paramtext{
+  font-size:12px;color:var(--ink80);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:280px;
+}
+/* 顶栏里的整体进度（2026-09-20 从底部状态栏移上来）：
+   进度百分比 + 进度条 + 预计剩余 是一组读数，所以整组一起搬，保持在同一行内不折行。
+   进度条收窄到 56px —— 顶栏要与「运行状态」「按钮」同排竞争空间，状态栏里那条 88px 放不下。 */
+.top-progress{
+  display:inline-flex;align-items:center;gap:8px;flex:none;
+  font-size:12px;color:var(--ink80);white-space:nowrap;
+}
+.top-progress b{font-family:var(--mono);font-weight:600;color:var(--ink80)}
 .runstate{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink80);white-space:nowrap;padding:5px 11px;border-radius:999px;background:var(--parchment)}
 .runstate .dot{width:6px;height:6px;border-radius:999px;background:var(--primary);flex:none}
 .runstate.off{background:var(--warn-bg);color:var(--warn)}
@@ -202,10 +219,35 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* 提示词列 */
 .titleline{display:flex;align-items:center;gap:8px;min-width:0}
 .shotno{font-size:13px;font-weight:600;white-space:nowrap;flex:none}
+/* 提示词：不再截断成两行，改成定高可滚动 —— 行高固定，滚动看全文不撑破表格。
+   滚动条做细，避免在 340px 宽的单元格里显得笨重。 */
 .prompt-text{
   font-size:12.5px;line-height:19px;color:var(--ink80);
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  max-height:96px;overflow-y:auto;overscroll-behavior:contain;
+  padding-right:4px;
+  scrollbar-width:thin;
 }
+.app.compact .prompt-text{max-height:60px}
+.prompt-text::-webkit-scrollbar{width:6px}
+.prompt-text::-webkit-scrollbar-thumb{background:var(--chipgray);border-radius:3px}
+.prompt-text::-webkit-scrollbar-thumb:hover{background:var(--ink48)}
+.prompt-text::-webkit-scrollbar-track{background:transparent}
+
+/* 提示词里的素材名着色：按素材类型分色，颜色只作区分、不抢正文可读性 */
+.hl{border-radius:4px;padding:0 3px;font-weight:600}
+.hl-character{color:#0066CC;background:#E6F0FA}
+.hl-scene{color:#1F7A38;background:#E7F6EC}
+.hl-prop{color:#B25000;background:#FFF1E0}
+.hl-audio{color:#7A3FA8;background:#F3E9FB}
+
+/* 提示词放大钮：挂在标题行右端，常驻可见（单元格小，悬停浮现太难找） */
+.zoom-btn{
+  width:22px;height:22px;border-radius:6px;flex:none;cursor:pointer;
+  display:grid;place-items:center;
+  border:1px solid var(--hairline);background:var(--surface);
+}
+.zoom-btn:hover{border-color:var(--primary);background:var(--primary-bg)}
+.zoom-btn:hover svg path{stroke:var(--primary)}
 .prompt-meta{font-size:11px;color:var(--ink48);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* 时长步进器 */
@@ -238,6 +280,9 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   background:var(--parchment);
   background-image:var(--g);
 }
+/* 无图素材在素材格里的样子：与卡片缩略图同一套半透明图片样式，不铺随机渐变。
+   名字标签压在底部深色条上，浅底不影响可读性。 */
+.thumb.no-pic{background:var(--pearl);background-image:none;border:1px dashed var(--hairline)}
 .thumb span{
   position:absolute;left:0;right:0;bottom:0;
   font-size:9px;line-height:14px;text-align:center;color:#fff;
@@ -248,6 +293,10 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   background:rgba(0,0,0,.5);display:none;place-items:center;
 }
 .thumb:hover .rm{display:grid}
+/* 已上传的素材格是「预览 / 替换」的入口（点击打开预览弹窗）——
+   加一点悬停反馈，否则用户不知道这里能点。 */
+.thumb.clickable{cursor:pointer}
+.thumb.clickable:hover{box-shadow:0 0 0 2px var(--primary)}
 .slot-add{
   width:var(--thumb-w);height:var(--thumb-h);border-radius:8px;flex:none;
   border:1px dashed var(--chipgray);background:var(--pearl);
@@ -294,6 +343,8 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   position:relative;display:grid;place-items:center;overflow:hidden;
   background:var(--parchment);background-image:var(--g);cursor:pointer;
 }
+/* 有封面时按 cover 铺满（缩略图是固定 76×48 的小框，contain 会留黑边） */
+.result-thumb.has-cover{background-size:cover;background-position:center;background-repeat:no-repeat}
 .result-thumb.plain{background-image:none;border:1px dashed var(--chipgray);background:var(--pearl);cursor:default}
 .result-thumb.failed{background-image:none;border:1px dashed #F79E99;background:var(--err-bg)}
 .progline{display:flex;align-items:center;gap:8px;width:100%}
@@ -326,25 +377,35 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .icon-act:disabled{opacity:.28;cursor:not-allowed;background:none}
 
 /* ============================ 素材面板 ============================ */
+/* 2026-09-20 版面重排：面板内各区块统一「上间距 10px」的垂直节奏，横向一律 14px。
+   改动前每个区块各写一套 margin（8/6/8px），行与行之间疏密不一，视觉上很散。 */
 .panel{border-left:1px solid var(--hairline);display:flex;flex-direction:column;min-height:0;overflow:hidden}
-/* 面板顶栏：给按钮留出换行的余地。
-   固定 height:48px + nowrap 时，4 个分类 tab 加两个提交按钮在 336px 里放不下，
-   多出来的内容会被 .panel 的 overflow:hidden 直接裁掉（实测「干跑提交」只剩半个）。 */
-.panel-top{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;min-height:48px;padding:8px 14px;flex:none}
-.panel-top .seg{flex:0 1 auto;min-width:0;max-width:100%}
-/* 换行后这两个按钮独占一行，等分宽度铺满，避免左侧留一截空档 */
-.panel-top #btnSubmitSel,.panel-top #btnDrySubmit{flex:1 1 auto}
+/* 面板顶栏：只剩分类 tab 一行（「干跑提交」已并入下方动作区，不再独占一行）。
+   tab 等分铺满整行；总宽不够时横向滚动兜底，不换行、不裁切。
+   ⚠ 只作用于面板里的这一处 .seg —— 导入弹窗那个「导入图片文件 / 导入提示词文本」是同一个组件，
+     若把 flex:1 0 auto 写到全局 .seg 上，那两颗按钮会被撑满整个弹窗宽度。 */
+.panel-top{padding:10px 14px 0;flex:none}
+.panel-top .seg{display:flex;min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:none}
+.panel-top .seg::-webkit-scrollbar{display:none}
+.panel-top .seg button{flex:1 0 auto;padding:5px 10px}
 .seg{display:inline-flex;padding:3px;gap:2px;background:var(--parchment);border-radius:8px}
 .seg button{font-size:11.5px;padding:5px 11px;border-radius:6px;color:var(--ink48);white-space:nowrap}
 .seg button.on{background:#fff;color:var(--ink);font-weight:600}
 .panel-search{display:flex;align-items:center;gap:7px;height:32px;margin:0 14px 8px;padding:0 10px;background:var(--parchment);border-radius:8px;flex:none}
 .panel-search input{flex:1;border:0;outline:0;background:none;font-size:11.5px;min-width:0}
 .panel-search input::placeholder{color:var(--ink48)}
+/* ⚠ .panel-search 也被「添加资产」选择弹窗复用（openAssetPicker）。面板里的间距节奏与
+   弹窗不同，所以只覆盖面板内的那一处，全局规则保持原样，免得连带改到弹窗。 */
+.panel .panel-search{margin:10px 14px 0}
 .sec-head{display:flex;align-items:center;gap:8px;height:34px;padding:0 14px;flex:none}
-/* 分区标题加主色竖条：「本分镜素材 / 素材库全部」两个分区在长列表里能一眼定位 */
+/* 分区标题加主色竖条：「本分镜素材 / 素材库」两个分区在长列表里能一眼定位 */
 .sec-head b{font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:7px}
 .sec-head b::before{content:'';width:3px;height:12px;border-radius:2px;background:var(--primary);opacity:.8}
 .sec-head span{font-size:10.5px;color:var(--ink48)}
+/* 面板里的分区头保持**单行**（标题在左、状态说明在右）。2026-09-20 曾把它拆成两行，
+   那是因为当时的说明文字很长（"点表格里的 ＋ 绑定；直接点击卡片则打开素材设置"）会折行；
+   现在说明只剩承载状态的那几种（"暂无绑定" / "点击卡片勾选" / "点击下方素材添加到分镜 N"），
+   都够短，单行反而更紧凑、层级也更清楚。 */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(58px,1fr));gap:10px 8px;padding:0 14px 12px;justify-items:center}
 .acard{display:flex;flex-direction:column;gap:4px;cursor:pointer;min-width:0;width:100%}
 .acard .pic{width:100%;height:64px;border-radius:8px;background:var(--parchment);background-image:var(--g);position:relative;overflow:hidden}
@@ -357,6 +418,19 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .acard.add .pic{border:1px dashed var(--chipgray);background:var(--pearl);background-image:none;display:grid;place-items:center}
 .acard.add .nm{color:var(--ink48)}
 .acard .pic .note{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.22)}
+/* 无图素材（提示词导入的那批）的缩略图：半透明的「图片样式」空槽位，替代原来的随机渐变。
+   虚线框 + 淡图标说明"这里该有一张图、点开可补"，而不是给一个没有含义的色块。
+   与素材详情弹窗的 .asset-preview.pickable 是同一套视觉语言。 */
+.acard .pic.no-pic{
+  background:var(--pearl);background-image:none;
+  border:1px dashed var(--hairline);
+  display:grid;place-items:center;
+  transition:background .15s ease,border-color .15s ease;
+}
+.acard .pic.no-pic .ph-ico{display:grid;place-items:center;color:var(--ink);opacity:.26;transition:opacity .15s ease}
+.acard .pic.no-pic .ph-ico svg{width:22px;height:22px}
+.acard:hover .pic.no-pic{background:var(--primary-bg);border-color:var(--primary)}
+.acard:hover .pic.no-pic .ph-ico{opacity:.45}
 .acard .pic .rm{
   position:absolute;top:3px;right:3px;width:16px;height:16px;border-radius:999px;
   background:rgba(0,0,0,.58);display:none;place-items:center;
@@ -364,6 +438,88 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .acard:hover .pic .rm{display:grid}
 .acard.sel .pic{outline:2.5px solid var(--primary);outline-offset:1px}
 .acard.sel .nm{color:var(--primary);font-weight:600}
+/* ============================ 参考图配额：满额态 ============================ */
+/* 槽位「＋」满额：不置灰成"无反应的禁用"，而是换成琥珀色并保留可点 ——
+   点下去会明确说明"当前模型上限 N 张、已用满"，比一个点不动的按钮有用。 */
+.slot-add.full{border-color:#E7C88A;background:var(--warn-bg);cursor:not-allowed}
+.slot-add.full:hover{border-color:#E7C88A;background:var(--warn-bg)}
+.slot-add.full svg path{stroke:#B26A00}
+/* 弹窗头部的「已添加 X / 上限 Y」 */
+.ap-quota{
+  font-size:11px;color:var(--ink48);flex:none;
+  background:var(--parchment);border-radius:6px;padding:3px 8px;
+}
+.ap-quota.full{color:var(--warn);background:var(--warn-bg);font-weight:600}
+
+/* ============================ 分镜「添加资产」弹窗 ============================ */
+/* 行式列表（不是网格）：要在一行里同时交代「缩略图 / 名称 / 类型 / 已添加 / 选中态」，
+   网格卡片放不下这些信息。选中态用「描边 + 底色 + 实心勾」，与素材面板的 .acard.sel 同源。 */
+.ap-list{display:flex;flex-direction:column;gap:6px;max-height:min(46vh,380px);overflow-y:auto;padding-right:2px}
+.ap-row{
+  display:flex;align-items:center;gap:10px;padding:7px 10px;
+  border:1px solid var(--hairline);border-radius:10px;background:var(--surface);
+  cursor:pointer;transition:background .12s ease,border-color .12s ease;
+}
+.ap-row:hover{border-color:var(--primary);background:var(--primary-bg)}
+.ap-row.sel{border-color:var(--primary);background:var(--primary-bg);box-shadow:inset 0 0 0 1px var(--primary)}
+.ap-row.bound{opacity:.7;cursor:not-allowed}
+.ap-row.bound:hover{border-color:var(--hairline);background:var(--surface)}
+.ap-thumb{
+  width:40px;height:40px;border-radius:8px;flex:none;
+  background:var(--parchment) center/cover no-repeat;
+}
+.ap-name{flex:1;min-width:0;font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ap-type{font-size:11px;color:var(--ink48);flex:none}
+.ap-bound{font-size:10.5px;color:var(--ink48);background:var(--parchment);border-radius:6px;padding:2px 6px;flex:none}
+.ap-tick{
+  width:18px;height:18px;border-radius:999px;flex:none;
+  border:1.5px solid var(--chipgray);display:grid;place-items:center;
+}
+.ap-tick svg{display:none}
+.ap-row.sel .ap-tick{border-color:var(--primary);background:var(--primary)}
+.ap-row.sel .ap-tick svg{display:block}
+
+/* ============================ 产物预览：真播放器 ============================ */
+.pv-video{
+  display:block;width:100%;max-height:min(52vh,420px);
+  border-radius:12px;background:#0B0D12;outline:none;
+}
+.pv-video:focus-visible{box-shadow:var(--focus)}
+.pv-meta{
+  margin:8px 0 2px;font-size:11.5px;color:var(--ink48);
+}
+.pv-meta a{color:var(--primary);text-decoration:none}
+.pv-meta a:hover{text-decoration:underline}
+
+/* ============================ 快速多选：框选 / 区间选择 ============================ */
+/* 拖拽选框：position:fixed + 视口坐标，这样容器滚动与否都不影响命中判定 */
+.marquee{
+  position:fixed;z-index:120;pointer-events:none;
+  border:1px solid var(--primary);border-radius:3px;
+  background:rgba(0,102,204,.10);
+}
+.marquee .mq-n{
+  position:absolute;right:-2px;bottom:-20px;
+  padding:1px 6px;border-radius:5px;
+  background:var(--primary);color:#fff;font-size:10.5px;line-height:16px;white-space:nowrap;
+}
+/* 框选经过的卡片：只做即时高亮，真正的选中态由 .sel 承担（mouseup 才提交） */
+.acard.mq-hit .pic,.row.mq-hit{outline:2px solid var(--primary);outline-offset:1px}
+
+/* 区间选择：两个序号输入 + 一个按钮，塞进批量条/状态栏而不撑破 */
+.range-sel{display:inline-flex;align-items:center;gap:4px;flex:none}
+.range-sel .range-dash{color:var(--ink48);font-size:11px}
+.input-xs{
+  width:58px;height:24px;padding:0 6px;
+  font-family:var(--font);font-size:11.5px;color:var(--ink);
+  background:var(--surface);border:1px solid var(--hairline);border-radius:6px;outline:0;
+}
+.input-xs:focus{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-bg)}
+/* 数字输入框的上下箭头在 24px 高度里很挤，去掉 */
+.input-xs::-webkit-outer-spin-button,.input-xs::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.input-xs[type=number]{-moz-appearance:textfield;appearance:textfield}
+.mq-tip{color:var(--ink48)}
+
 /* ============================ 素材批量操作条（批量选择模式下自底部弹出） ============================ */
 .batchbar{
   height:0;overflow:hidden;flex:none;min-width:0;
@@ -384,13 +540,17 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* 「自动匹配参考图」原本和三个素材操作挤在同一行：它没有 flex:1，
    在 336px 面板里会被 nowrap 顶出容器、右侧被裁掉。改成它自己占满一行——
    它本来就是作用于「全部素材 × 全部分镜」的智能操作，与左侧三个文件操作不同层。 */
-.panel-actions{display:flex;align-items:center;gap:6px;margin:0 14px 8px;flex:none;flex-wrap:wrap}
-.panel-actions .btn-mini{font-size:11px;padding:4px 10px;white-space:nowrap}
-.panel-actions .btn-mini[data-assetact]{flex:1 1 0;min-width:0}
-.panel-actions #btnAutoMatch{flex:1 1 100%}
-.panel-actions .hint-sm{display:none}             /* 提示文本移入按钮 title，避免挤压换行 */
-.asset-msg{margin:0 14px 6px;color:var(--ink80);word-break:break-all}
-.panel-list{overflow-y:auto;flex:1;min-height:0}
+/* 面板动作区：2×2 网格 —— 四颗按钮各占一格、高度一致、左右边缘严格对齐。
+   原先用 flex + flex-wrap + flex:1 1 100% 拼出来，换行位置依赖内容宽度，窄屏下会散成三行且宽度参差。
+   「干跑提交」2026-09-20 从面板顶栏并入这里（原来它独占一行，白吃一行高度）。 */
+.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 14px 0;flex:none}
+.panel-actions .btn-mini{
+  height:30px;font-size:11px;padding:0 10px;
+  display:inline-flex;align-items:center;justify-content:center;
+}
+.asset-msg{margin:8px 14px 0;color:var(--ink80);word-break:break-all}
+.panel-list{overflow-y:auto;flex:1;min-height:0;padding-top:10px}
+.panel .empty-mini{padding:16px 14px}               /* 面板里的空态比弹窗里更紧凑，别吃掉半屏高度 */
 .asset-preview{
   width:100%;border-radius:11px;position:relative;overflow:hidden;
   background:var(--parchment);background-size:contain;background-repeat:no-repeat;background-position:center;
@@ -400,6 +560,18 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .asset-preview.audio{height:140px}   /* 音频占位：无图，给固定高度 */
 .asset-preview img{display:block;max-width:100%;max-height:min(38vh,300px);object-fit:contain;border-radius:8px}
 .asset-preview .note{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.22)}
+/* 图片区即上传入口（.pickable）：无图时给半透明的「图片样式」空槽位视觉 —— 虚线框 + 淡图标，
+   整块可点。有图后（.has-pic）虚线框让位，恢复常规底色，避免和图片边框打架。 */
+.asset-preview.pickable{
+  cursor:pointer;background:var(--pearl);border:1px dashed var(--hairline);
+  transition:background .15s ease,border-color .15s ease;
+}
+.asset-preview.pickable:hover{background:var(--primary-bg);border-color:var(--primary)}
+.asset-preview.pickable.has-pic{background:var(--parchment);border-style:solid;border-color:transparent}
+.asset-preview.pickable.has-pic:hover{background:var(--parchment)}
+/* 素材预览弹窗（点分镜素材格打开）：这里不提供上传入口，点图片=看原图全屏，
+   所以用 zoom-in 而不是 pickable 那套「点击上传」的视觉。 */
+.asset-preview.zoomable{cursor:zoom-in;background:var(--parchment);border-style:solid;border-color:transparent}
 .empty-mini{padding:28px 16px;text-align:center;font-size:11.5px;color:var(--ink48)}
 
 /* ============================ 素材详情弹窗：提示词编辑 / 无图占位 ============================ */
@@ -414,18 +586,14 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .asset-prompt.tall{min-height:150px}
 .asset-promptwrap .hint-sm{position:absolute;right:8px;bottom:6px;background:rgba(255,255,255,.85);padding:1px 6px;border-radius:6px;pointer-events:none}
 .asset-preview .empty-ph{
-  display:grid;place-items:center;text-align:center;
-  font-size:12.5px;color:rgba(255,255,255,.94);line-height:1.9;text-shadow:0 1px 4px rgba(0,0,0,.35);
-  padding:26px 12px;width:100%;
+  display:grid;place-items:center;text-align:center;gap:4px;
+  font-size:12.5px;color:var(--ink48);line-height:1.9;
+  padding:24px 12px;width:100%;
 }
-.asset-preview .empty-ph small{font-size:10.5px;opacity:.8}
-/* 素材卡片：提示词资产的角标（尚无图片，渐变占位） */
-.acard .pic .pmark{
-  position:absolute;left:4px;bottom:4px;
-  font-size:9px;line-height:1;padding:3px 5px;border-radius:6px;
-  background:rgba(0,0,0,.5);color:#fff;letter-spacing:.5px;pointer-events:none;
-}
-
+/* 半透明图片图标：占位本身就是"这里该有一张图"的暗示，透明度只在这里控制 */
+.asset-preview .empty-ph svg{display:block;opacity:.26;color:var(--ink);transition:opacity .15s ease}
+.asset-preview.pickable:hover .empty-ph svg{opacity:.45}
+.asset-preview.pickable:hover .empty-ph{color:var(--primary)}
 /* ============================ 素材详情：全屏预览（悬停淡入按钮 + 全屏查看器） ============================ */
 /* 按钮默认隐形（opacity:0 + 不可点），悬停预览区时淡入浮现，移出淡出 */
 .asset-preview .fs-btn{
@@ -436,8 +604,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .asset-preview:hover .fs-btn{opacity:1;pointer-events:auto}
 .asset-preview .fs-btn:hover{background:rgba(0,0,0,.72)}
-/* 更换文件钮与全屏钮并排：全屏在最右，更换在其左侧 */
-.asset-preview .fs-btn.pick{right:46px}
+/* 上面的 display:grid 会盖掉 UA 对 hidden 属性的 display:none（作者样式优先级更高），
+   故必须显式声明，否则"无图时藏起全屏钮"根本不生效。 */
+.asset-preview .fs-btn[hidden]{display:none}
+/* 换图入口已收敛到图片区本身（点击即选文件），此处不再有并排的换图钮，
+   故也不需要 .fs-btn.pick 的让位规则 —— 全屏钮就用基类的 right:10px。 */
 /* 全屏查看器：黑透遮罩 + 原图 contain 居中，任意屏幕尺寸清晰完整显示 */
 .fs-viewer{
   position:fixed;inset:0;background:rgba(12,14,18,.92);
@@ -459,6 +630,22 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .fs-viewer .fs-hint{
   position:fixed;left:0;right:0;bottom:20px;text-align:center;
   font-size:11.5px;color:rgba(255,255,255,.55);pointer-events:none;
+}
+/* 文本全屏（提示词）：白底面板 + 内部滚动，行长受限以免整屏长句难读 */
+.fs-viewer .fs-panel{
+  width:min(1040px,92vw);max-height:88vh;display:flex;flex-direction:column;
+  background:var(--surface);border-radius:12px;overflow:hidden;
+  box-shadow:0 12px 60px rgba(0,0,0,.55);
+  transform:scale(1.03);transition:transform .2s ease;
+}
+.fs-viewer.on .fs-panel{transform:scale(1)}
+.fs-viewer .fs-panel-head{
+  display:flex;align-items:center;padding:14px 18px;
+  border-bottom:1px solid var(--divider);font-size:14px;
+}
+.fs-viewer .fs-panel-body{
+  padding:16px 18px;overflow-y:auto;overscroll-behavior:contain;
+  font-size:13.5px;line-height:1.9;color:var(--ink80);white-space:pre-wrap;word-break:break-word;
 }
 
 /* ============================ 导入资产弹窗（双模式） ============================ */
@@ -502,7 +689,9 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   font-size:11px;color:var(--ink48);white-space:nowrap;
 }
 .statusbar b{font-family:var(--mono);color:var(--ink80);font-weight:600}
-.minibar{width:88px;height:5px;border-radius:999px;background:#E4E4E8;overflow:hidden;flex:none}
+/* 进度条：2026-09-20 随「整体进度」一起从状态栏移到顶栏，故宽度由 88px 收到 56px
+   （顶栏要与运行状态、按钮同排竞争空间）。当前全项目只有顶栏这一处用到 .minibar。 */
+.minibar{width:56px;height:5px;border-radius:999px;background:#E4E4E8;overflow:hidden;flex:none}
 .sb-div{width:1px;height:12px;background:var(--hairline);flex:none}   /* 状态栏分组分隔 */
 .minibar > i{display:block;height:100%;width:0;background:var(--primary);transition:width .4s}
 .btn-mini{
@@ -628,6 +817,37 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   background:#0B0D12;color:#9FE8D2;border-radius:8px;padding:12px 14px;
   font-family:var(--mono);font-size:11.5px;line-height:20px;white-space:pre-wrap;word-break:break-all;
 }
+
+/* ============================ 长文本块右上角的悬浮复制钮 ============================ */
+/* 默认隐形，悬停整块才浮现 —— 正文是整段密集文字，常驻按钮会压住开头几行。 */
+.copywrap{position:relative}
+.copywrap .copy-btn{
+  position:absolute;top:3px;right:3px;z-index:2;   /* 贴住右上角内沿，不出框 */
+  display:inline-flex;align-items:center;gap:4px;
+  height:24px;padding:0 8px;border-radius:6px;cursor:pointer;
+  font-family:var(--font);font-size:11px;line-height:1;
+  /* 半透明磨砂底：压在正文上能透出下面的字，靠 backdrop blur 拉开层次，不至于糊成一片。
+     底色透明了就不再叠阴影 —— 半透明 + 阴影会显脏。 */
+  border:1px solid rgba(255,255,255,.72);
+  background:rgba(255,255,255,.6);
+  color:var(--ink80);
+  -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+  opacity:0;pointer-events:none;
+  transition:opacity .18s ease,background .15s ease,border-color .15s ease,color .15s ease;
+}
+.copywrap:hover .copy-btn,
+.copywrap .copy-btn:focus-visible{opacity:1;pointer-events:auto}
+.copywrap .copy-btn:hover{background:var(--primary);border-color:var(--primary);color:#fff}
+.copywrap .copy-btn svg{display:block}
+/* 复制成功：按钮原地变绿并显示「已复制」，反馈不必让用户去看角落的 toast */
+.copywrap .copy-btn.done{opacity:1;pointer-events:auto;background:var(--ok);border-color:var(--ok);color:#fff}
+/* 深色代码块（.codebox）上的复制钮：反色处理，保证在 #0B0D12 上可读 */
+.copywrap.on-dark .copy-btn{
+  background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.26);color:#E8E8EA;
+  -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+}
+.copywrap.on-dark .copy-btn:hover{background:rgba(255,255,255,.3);border-color:rgba(255,255,255,.44);color:#fff}
+.copywrap.on-dark .copy-btn.done{background:rgba(36,138,61,.9);border-color:rgba(36,138,61,.95);color:#fff}
 .logline{font-family:var(--mono);font-size:11.5px;line-height:20px;color:var(--ink80)}
 .logline.err{color:var(--err)}
 .logline.ok{color:var(--ok)}
@@ -843,6 +1063,8 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   }
   .panel.open{transform:none}
   #btnPanel{display:inline-flex}
+  /* 抽屉里的面板更窄（min(360px,94vw)）：tab 收紧内边距，6 个分类仍能一行放得下（放不下则横滑） */
+  .panel-top .seg button{font-size:11px;padding:5px 8px}
   /* 批量选择操作条窄屏改置底悬浮：否则被抽屉面板（z-index:80）盖住点不到 */
   .batchbar.on{position:fixed;left:0;right:0;bottom:0;z-index:85}
   /* 横向滚动时「序号 + 勾选」钉在左侧：滚到素材列也能看清是哪一行、能直接勾选 */
@@ -904,6 +1126,9 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 @media (max-width:420px){
   .cli-actions .btn-mini{flex:1 1 100%}
+  /* 极窄屏：抽屉几乎占满屏宽，tab 再收一档；动作区仍保持两列（一列会让按钮过宽、显得空） */
+  .panel-top .seg button{font-size:10.5px;padding:5px 7px}
+  .panel-actions{gap:6px}
 }
 
 /* ============================ 主界面 · 响应式（顶栏 / 表格 / 状态栏 / 弹窗） ============================
@@ -918,6 +1143,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   .btn-outline,.btn-primary{font-size:11.5px;padding:6px 11px}
   .btn-primary#btnImport{padding:6px 12px}
   .runstate{font-size:11px;padding:4px 9px}
+  .paramtext,.top-progress{font-size:11px}
   /* 状态栏：分隔线在换行布局里是噪音，去掉；间距收紧 */
   .statusbar{gap:4px 10px;padding:4px 12px}
   .statusbar .sb-div{display:none}
@@ -932,13 +1158,20 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 @media (max-width:420px){
   .topbar{gap:7px;padding:6px 10px}
-  /* 参数胶囊在极窄屏与主操作争位：降到第二行独占，按钮不缩水 */
+  /* 极窄屏顺序：参数（模型·画幅）→ 整体进度 → 运行状态 → 各按钮。
+     参数与进度各自独占一行，按钮行才不会被挤散。 */
   .paramgrp{order:5;flex:1 1 100%}
-  .runstate{order:6;flex:1 1 auto;justify-content:center}
-  #btnHistory{order:7}
-  #btnDensity{order:8}
-  #btnPanel{order:9}
-  #btnImport{order:10;flex:1 1 auto;justify-content:center}
-  #btnSettings{order:11}
+  .top-progress{order:6;flex:1 1 100%;justify-content:space-between}
+  .runstate{order:7;flex:1 1 auto;justify-content:center}
+  /* 按钮按 DOM 顺序排（生成记录 → 批量导入 → 提交所选 → 素材 → 设置）。
+     ⚠ 这里**不能**给主操作加 flex:1 1 auto：一旦它们会伸展，极窄屏上「批量导入」
+     会独自占满一整行、把「提交所选」挤到下一行，两个按钮就不再相邻了（400px 实测踩到）。
+     保持自然宽度后由整行一起换行：实测 ≥380px 两者仍在同一行、提交所选紧贴其右侧；
+     360px 及以下「运行状态」胶囊占满本行剩余宽度，提交所选会换到下一行（阅读顺序仍正确）。 */
+  #btnHistory{order:8}
+  #btnImport{order:9}
+  #btnSubmitSel{order:10}
+  #btnPanel{order:11}
+  #btnSettings{order:12}
   .btn-outline,.btn-primary{font-size:11px;padding:6px 10px}
 }

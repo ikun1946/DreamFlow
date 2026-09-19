@@ -140,6 +140,19 @@
 
   function request(method, path, opt) { return httpRoute(method, path, opt); }
 
+  /* 批量提交的幂等键 = 提交内容 + 2 秒时间桶。
+     为什么不沿用 rid('')（每次调用随机）：那样连点两次就是两个不同的键，
+     后端做得再幂等也拦不住重复提交 —— 而重复提交在这里等于**重复生成 + 重复扣费**。
+     用时间桶让"同一批、同一瞬间"的重复请求落到同一个键上（连点 / 网络重发被吸收），
+     而几秒之后的再次提交仍是新键（首次快速失败后立刻重提，不会被当成重放而不执行）。 */
+  function submitKey(ids, dryRun) {
+    const bucket = Math.floor(Date.now() / 2000);
+    const src = (ids || []).slice().sort().join(',') + '|' + (dryRun ? 'dry' : 'real') + '|' + bucket;
+    let h = 0;
+    for (let i = 0; i < src.length; i++) h = (h * 31 + src.charCodeAt(i)) >>> 0;
+    return 'sb_' + h.toString(36) + '_' + bucket.toString(36);
+  }
+
   /* ---------------------------------------------------------- 对外 API */
   const api = {
     CFG, META, ERR, ApiError,
@@ -160,7 +173,7 @@
     patchStoryboard: (id, body) => request('PATCH', '/storyboards/' + id, { body }),
     batchDuration:(ids, durationSec) => request('POST', '/storyboards/batch-duration', { body: { ids, durationSec } }),
     // dryRun=true：只组装命令、不派发给即梦（提交后在页面核对真实命令）
-    batchSubmit:  (ids, concurrency, dryRun) => request('POST', '/storyboards/batch-submit', { body: { ids, concurrency, dryRun: !!dryRun }, idempotencyKey: rid('') }),
+    batchSubmit:  (ids, concurrency, dryRun) => request('POST', '/storyboards/batch-submit', { body: { ids, concurrency, dryRun: !!dryRun }, idempotencyKey: submitKey(ids, dryRun) }),
     // 干跑校验（不提交、不改状态）：返回各引擎完整命令 + 画布 CLI 本地校验结果
     dryRun:       (id)           => request('POST', '/storyboards/' + id + '/dry-run', { body: {} }),
     cancel:       (id)        => request('POST', '/storyboards/' + id + '/cancel', { body: {} }),

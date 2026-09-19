@@ -19,7 +19,39 @@ function queryOf(url) {
   return q;
 }
 
+/* 幂等记录 TTL：默认 24 小时（可用 server/config.json 的 idempotencyTtlMs 调整）。
+   过期即清，避免 db.idempotency 无限膨胀 —— 它随每次提交增长，而提交是高频动作。 */
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+
 function makeRouter(cfg, adapter) {
+  const idemTtl = Number(cfg.idempotencyTtlMs) > 0 ? Number(cfg.idempotencyTtlMs) : IDEMPOTENCY_TTL_MS;
+
+  function pruneIdempotency(db) {
+    const m = db.idempotency || (db.idempotency = {});
+    const cut = Date.now() - idemTtl;
+    Object.keys(m).forEach((k) => {
+      const at = Date.parse((m[k] && m[k].createdAt) || '') || 0;
+      if (at && at < cut) delete m[k];
+    });
+  }
+
+  /* 幂等包装：同一 Idempotency-Key 只真正执行一次，第二次直接回放第一次的响应。
+     ⚠ 为什么给 batch-submit 补上（2026-09-19 修复）：前端一直在发这个头，
+     但后端只在 /storyboards/import 上处理了 —— 而 batch-submit 才是**真正花钱**的那个：
+     重复投递（连点、网络重发、代理重放）会重复生成、重复扣费。 */
+  function withIdempotency(ctx, run) {
+    const key = ctx.req.headers['idempotency-key'];
+    if (!key) return Promise.resolve(run());
+    pruneIdempotency(ctx.db);
+    const hit = ctx.db.idempotency[key];
+    if (hit) return Promise.resolve(hit.response);
+    return Promise.resolve(run()).then((data) => {
+      ctx.db.idempotency[key] = { response: data, createdAt: nowIso() };
+      store.save();
+      return data;
+    });
+  }
+
   // routes: [method, regex, handler(ctx)]
   const routes = [
     ['GET', /^\/meta\/options$/, async (ctx) => ok(ctx.res, await S.getOptions(ctx.db, adapter))],
@@ -50,7 +82,7 @@ function makeRouter(cfg, adapter) {
 
     // 批量（先于 /storyboards/{id} 匹配）
     ['POST', /^\/storyboards\/batch-duration$/, async (ctx) => ok(ctx.res, S.batchDuration(ctx.db, ctx.body))],
-    ['POST', /^\/storyboards\/batch-submit$/, async (ctx) => ok(ctx.res, await S.batchSubmit(ctx.db, ctx.body, adapter, ctx.cfg))],
+    ['POST', /^\/storyboards\/batch-submit$/, async (ctx) => ok(ctx.res, await withIdempotency(ctx, () => S.batchSubmit(ctx.db, ctx.body, adapter, ctx.cfg)))],
     ['POST', /^\/storyboards\/batch-delete$/, async (ctx) => ok(ctx.res, S.batchDelete(ctx.db, ctx.body))],
     // 自动匹配参考图（只按素材名；apply=false 时仅预览不写库）
     ['POST', /^\/storyboards\/auto-assets$/, async (ctx) => ok(ctx.res, S.autoMatchAssets(ctx.db, ctx.body))],
@@ -59,13 +91,8 @@ function makeRouter(cfg, adapter) {
 
     // 导入（先于 /storyboards/{id}）
     ['POST', /^\/storyboards\/import\/preview$/, async (ctx) => ok(ctx.res, S.importPreview(ctx.db, ctx.body))],
-    ['POST', /^\/storyboards\/import$/, async (ctx) => {
-      const key = ctx.req.headers['idempotency-key'];
-      if (key && ctx.db.idempotency[key]) return ok(ctx.res, ctx.db.idempotency[key].response);
-      const data = S.importConfirm(ctx.db, ctx.body);
-      if (key) { ctx.db.idempotency[key] = { response: data, createdAt: nowIso() }; store.save(); }
-      return ok(ctx.res, data);
-    }],
+    // 与 batch-submit 共用同一套幂等实现（原先是就地内联的一份，行为一致，只是补上了 TTL 清理）
+    ['POST', /^\/storyboards\/import$/, async (ctx) => ok(ctx.res, await withIdempotency(ctx, () => S.importConfirm(ctx.db, ctx.body)))],
 
     // 单条 CRUD 与行操作
     ['POST', /^\/storyboards$/, async (ctx) => ok(ctx.res, S.createStoryboard(ctx.db, ctx.body))],

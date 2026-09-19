@@ -16,6 +16,18 @@
   const mmss = (sec) => sec ? pad2(Math.floor(sec / 60)) + ':' + pad2(sec % 60) : '--:--';
   const OPT = () => S.options || Api.META;
 
+  /* 产物 / 素材地址：后端给的是 `/files/…`、`/media/assets/…` 这类**同源相对路径**。
+     页面由后端托管时直接用没问题；但以 `file://` 打开发布版单文件时，相对路径会解析到
+     本地磁盘（`file:///files/…`）→ 必然取不到。所以这里补上后端 origin，
+     判定方式与 api.js 的 baseUrl 一致（绝对地址 / blob / data 原样返回）。 */
+  function mediaUrl(u) {
+    const s = String(u || '');
+    if (!s) return '';
+    if (/^(https?:|blob:|data:)/i.test(s)) return s;
+    const m = String((Api.CFG && Api.CFG.baseUrl) || '').match(/^(https?:\/\/[^/]+)/i);
+    return (m ? m[1] : '') + (s.charAt(0) === '/' ? s : '/' + s);
+  }
+
   /* ------------------------------------------------ 错误码 → 文案兜底 */
   const ERR_TEXT = {
     40001: '参数不合法', 40100: '登录已失效，请重新登录', 40300: '没有权限',
@@ -52,17 +64,34 @@
     check: '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="#248A3D" stroke-width="1.8" fill="none"/><path d="M8 12.4l2.8 2.8L16 9.6" stroke="#248A3D" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     note:  '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M9.5 4v10.1a2.9 2.9 0 1 1-1.5-2.55V6.2h7.4v5.4a2.9 2.9 0 1 1-1.5-2.55V4z" fill="#fff"/></svg>',
     expand:'<svg width="14" height="14" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    swap:  '<svg width="14" height="14" viewBox="0 0 24 24"><path d="M4 7h13M14 3.5L17.5 7 14 10.5M20 17H7M10 13.5L6.5 17l3.5 3.5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    // 放大图标（深色描边，用于白底表格）：I.expand 是白描边，只适合深色底，别混用
+    expandDark: '<svg width="12" height="12" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="#7A7A7A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    // 复制图标：描边用 currentColor，由按钮的 color 控制（浅色块 / 深色代码块上都能用）
+    copy:  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><rect x="8.6" y="8.6" width="11.8" height="11.8" rx="2.4" stroke="currentColor" stroke-width="2"/><path d="M15.4 5.7A2.4 2.4 0 0013.3 4H6.4A2.4 2.4 0 004 6.4v6.9a2.4 2.4 0 001.7 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    // 图片占位图标：描边用 currentColor，由 CSS 控制颜色与透明度（半透明占位样式）
+    img:   '<svg width="42" height="42" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.6" width="18" height="14.8" rx="3" stroke="currentColor" stroke-width="1.5"/><circle cx="8.7" cy="9.7" r="1.6" stroke="currentColor" stroke-width="1.5"/><path d="M3.7 16.4l4.5-4.1 3.3 2.9 3-2.5 5.8 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
   };
 
   const STATUS_TEXT = { draft: '未提交', queued: '排队中', generating: '生成中', succeeded: '已完成', failed: '失败', canceled: '已取消' };
+  /* 槽位定义：每个槽位 ↔ 一个**独立**的资产库（type 即资产类型）。
+     ⚠ 2026-09-20 修两处：
+       ① prop 从单值改为**多值**（原来绑一张就没了，用户报"没有可用槽位"）；
+       ② firstFrame / storyboard 原来都被指到 'scene' —— 于是这两类素材无处存放，
+          点开槽位只看到场景图、必然"资产缺失"。现在各有自己的库。
+     `multi` 必须与后端 `services.js` 的 ROLE_MULTI 一致（两边都以此为准，改一处要同步另一处）。 */
   const ROLE_META = {
-    character:  { label: '角色',   type: 'character', multi: true,  key: 'characters' },
-    scene:      { label: '场景',   type: 'scene',     multi: false, key: 'scene' },
-    prop:       { label: '道具',   type: 'prop',      multi: false, key: 'prop' },
-    firstFrame: { label: '首帧图', type: 'scene',     multi: false, key: 'firstFrame' },
-    storyboard: { label: '分镜图', type: 'scene',     multi: false, key: 'storyboard' },
-    audio:      { label: '音频',   type: 'audio',     multi: false, key: 'audio' }
+    character:  { label: '角色',   type: 'character',  multi: true,  key: 'characters' },
+    scene:      { label: '场景',   type: 'scene',      multi: false, key: 'scene' },
+    prop:       { label: '道具',   type: 'prop',       multi: true,  key: 'prop' },
+    firstFrame: { label: '首帧图', type: 'firstFrame', multi: false, key: 'firstFrame' },
+    storyboard: { label: '分镜图', type: 'storyboard', multi: false, key: 'storyboard' },
+    audio:      { label: '音频',   type: 'audio',      multi: false, key: 'audio' }
+  };
+  /* 素材面板的 Tab 顺序与标签：与资产类型一一对应（6 类） */
+  const ASSET_TABS = ['character', 'scene', 'prop', 'firstFrame', 'storyboard', 'audio'];
+  const ASSET_TAB_LABEL = {
+    character: '角色', scene: '场景', prop: '道具',
+    firstFrame: '首帧图', storyboard: '分镜图', audio: '音频'
   };
 
   const COLUMNS = [
@@ -84,13 +113,21 @@
     list: [], stats: null, options: null, adapter: null, settings: null,
     sel: new Set(), filter: 'all', keyword: '',
     panelTab: 'character', panelKeyword: '', assets: [], assetCounts: { currentShot: 0, library: 0 },
+    /* 全库「素材名(小写) → 类型」索引：给提示词里的素材名着色用。
+       必须覆盖全部分类，否则场景/道具的名字着不出颜色。 */
+    assetIndex: new Map(),
     assetBusy: null, assetMsg: '',
     assetSelMode: false, assetSel: new Set(),
+    /* 区间选择的输入值：面板/状态栏会被频繁重绘，值必须留在 state 里，
+       否则用户刚打完「起始」序号，一次重绘就把它清空了。 */
+    assetRange: { from: '', to: '' }, selRange: { from: '', to: '' },
     bindTarget: null,            // { id, role }
     detailFull: null,            // 最近一次打开的详情数据（复制锁定区块 / 完整提示词用）
     loading: true, error: null, busy: false,
     page: 1, pageSize: 50,
-    poll: { timer: null, idle: 0 },
+    /* lastSig：上一轮 /storyboards/progress 的载荷签名。服务端不再"读后清" dirty，
+       所以"有没有变化"改由前端按签名判断（详见 pollOnce）。 */
+    poll: { timer: null, idle: 0, lastSig: null },
     imp: { raw: '', delimiter: { type: 'custom', value: ';;' }, preview: null, busy: false, timer: null },
     cliBusy: null, cliMsg: '', cliUrl: null, cliUserCode: null, cliRaw: null,
     settingsDirty: false,   // 抽屉本次打开期间用户是否已改动过设置（"先显示后刷新"的守卫）
@@ -126,8 +163,17 @@
     $('#projName').textContent = (opts().projectName) || '未命名项目';
     $('#scopeChip').textContent = '第 1 批 · ' + (st.total || 0) + ' 个分镜';
     const d = S.settings && S.settings.defaults;
-    $('#pillModelTxt').textContent = '模型 ' + (d ? (labelOf(opts().models, d.model) || d.model) : '—');
-    $('#pillRatioTxt').textContent = '画幅 ' + (d ? d.ratio : '—');
+    /* 模型与画幅合并为一处纯文本（2026-09-20）：原先两个胶囊各带一个下拉箭头，但点了只弹一句
+       "可在设置里修改"，并没有真正的下拉列表 —— 去掉假的下拉外观，合并成「模型 · 画幅」一行。
+       具体含义由元素 title 说明，这里只放值，省下 ~80px 顶栏宽度。 */
+    const mLabel = d ? (labelOf(opts().models, d.model) || d.model) : '—';
+    $('#modelRatioTxt').textContent = mLabel + ' · ' + (d ? d.ratio : '—');
+    /* 整体进度（2026-09-20 从底部状态栏移上来）：与底部同源，都读 S.stats，
+       刷新时机也一致（renderTopbar 在 renderRowsOnly 里每轮轮询都会被调用）。 */
+    const pct = st.overallProgress || 0;
+    $('#tpPct').textContent = pct + '%';
+    $('#tpBar').style.width = pct + '%';
+    $('#tpEta').textContent = mmss(st.etaSeconds);
     $('#runText').textContent = (st.generating || st.queued)
       ? '生成中 ' + (st.generating || 0) + ' · 排队中 ' + (st.queued || 0)
       : (st.total ? '全部就绪' : '—');
@@ -188,7 +234,9 @@
     const canAdd = meta.multi ? true : items.length === 0;
     let out = '';
     items.forEach((a) => {
-      const bg = (a.url && !/^(mock|cli):/.test(a.url) && a.type !== 'audio')
+      /* 无图素材（提示词导入的那批）与卡片缩略图保持同一套半透明图片样式，不铺随机渐变 */
+      const hasPic = !!(a.url && !/^(mock|cli):/.test(a.url) && a.type !== 'audio');
+      const bg = hasPic
         ? 'background-image:url(' + a.url + ');background-size:cover;background-position:center;' : '';
       /* 图号徽标：这个号 = 提交时 --image 的上传顺序，也是提示词里该写的 @图片N。
          没有它，作者根本无法在提示词里指认「哪张图是谁」。 */
@@ -197,14 +245,27 @@
         : (a.audioIndex
             ? '<i class="imgnum aud" title="音频走 --audio，不占图片号">音' + a.audioIndex + '</i>'
             : (a.notCounted ? '<i class="imgnum bad" title="未计入图号：' + esc(a.notCounted) + '（后面的图号也不会因它顺延）">!</i>' : ''));
-      const tip = esc(a.name) + (a.imageIndex ? '（图片' + a.imageIndex + '）' : '');
-      out += '<span class="thumb" style="' + bg + '--g:' + (a.grad || Api.grad(a.assetId)) + '" title="' + tip + '">' +
+      /* 素材格本身可点（用户 2026-09-20 要求：点击已上传的素材即可预览与替换）。
+         委托处理器里 data-unbind 分支排在前面，所以右上角的 × 仍然是「移除」，
+         不会被这里抢走；框选引擎的 click 只在真正拖动过之后才吞，普通点击照常到达。 */
+      const tip = esc(a.name) + (a.imageIndex ? '（图片' + a.imageIndex + '）' : '') + '　点击预览 / 替换';
+      out += '<span class="thumb clickable' + (hasPic ? '' : ' no-pic') + '"' +
+        ' data-bound="' + a.assetId + '" data-role="' + role + '"' +
+        (hasPic ? ' style="' + bg + '--g:' + (a.grad || Api.grad(a.assetId)) + '"' : '') + ' title="' + tip + '">' +
         badge +
         '<span>' + esc(a.name) + '</span>' +
         '<button class="rm" data-unbind="' + a.assetId + '" data-role="' + role + '" title="移除">' + I.x + '</button>' +
         '</span>';
     });
-    if (canAdd) out += '<button class="slot-add" data-bind="' + role + '" title="添加' + meta.label + '">' + I.add + '</button>';
+    if (canAdd) {
+      /* 参考图已达当前模型上限：按钮改成「满额」样式并说明原因。
+         仍然可点（点击给出解释而不是毫无反应的禁用态），拦截在 data-bind 处理器里。 */
+      const full = role !== 'audio' && s.imageLimit != null && (s.imageCount || 0) >= s.imageLimit;
+      out += '<button class="slot-add' + (full ? ' full' : '') + '" data-bind="' + role + '" title="' +
+        (full
+          ? '已达参考图上限：当前模型（' + esc(s.model) + '）最多 ' + s.imageLimit + ' 张，已用满 ' + s.imageCount + ' 张'
+          : '添加' + meta.label) + '">' + I.add + '</button>';
+    }
     if (!items.length && !canAdd) out += '<span class="dash">—</span>';
     return out;
   }
@@ -212,7 +273,12 @@
   function resultHTML(s) {
     let inner;
     if (s.status === 'succeeded') {
-      inner = '<span class="result-thumb" data-preview="' + s.id + '" style="--g:' + s.grad + '" title="预览产物">' + I.play + '</span>';
+      /* 有封面就用封面（产物视频抽出的那一帧），没有才退回 ID 派生的渐变。
+         封面由后端在下载产物时用本机 ffmpeg 抽帧生成 —— 创作 CLI 本身不给封面。 */
+      const cover = s.coverUrl ? mediaUrl(s.coverUrl) : null;
+      inner = '<span class="result-thumb' + (cover ? ' has-cover' : '') + '" data-preview="' + s.id + '"' +
+        ' style="--g:' + s.grad + (cover ? ';background-image:url(' + esc(cover) + ')' : '') + '"' +
+        ' title="预览产物">' + I.play + '</span>';
     } else if (s.status === 'failed') {
       inner = '<span class="result-thumb failed" title="' + esc(s.errorMessage || '生成失败') + '">' + I.alert + '</span>';
     } else {
@@ -238,6 +304,29 @@
       '<button class="icon-act" data-act="del" title="删除"' + (busy ? ' disabled' : '') + '>' + I.trash + '</button>';
   }
 
+  /* 提示词里的素材名着色：命中「全库素材名」的词按素材类型套不同颜色。
+     实现要点：
+     · 在**原文**上匹配再分段转义 —— 若先 esc 再替换，`&` → `&amp;` 会让下标全错位；
+     · 名称按长度倒序拼成一条交替式正则，正则引擎优先匹配靠前的分支 ⇒ 长名先命中，
+       「林晚」不会被更短的「林」抢走，重叠部分也不会重复标注。 */
+  function highlightPrompt(text) {
+    const src = String(text == null ? '' : text);
+    const idx = S.assetIndex;
+    if (!idx || !idx.size) return esc(src);
+    const names = Array.from(idx.keys()).filter((n) => n.length >= 1)
+      .sort((a, b) => b.length - a.length).slice(0, 500);
+    if (!names.length) return esc(src);
+    const re = new RegExp(names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+    let out = '', pos = 0, hit = false;
+    for (const m of src.matchAll(re)) {
+      hit = true;
+      out += esc(src.slice(pos, m.index)) +
+        '<mark class="hl hl-' + esc(idx.get(m[0].toLowerCase()) || 'other') + '">' + esc(m[0]) + '</mark>';
+      pos = m.index + m[0].length;
+    }
+    return hit ? out + esc(src.slice(pos)) : esc(src);
+  }
+
   function rowHTML(s) {
     const sel = S.sel.has(s.id);
     return '<div class="row' + (sel ? ' sel' : '') + '" data-id="' + s.id + '">' +
@@ -246,8 +335,11 @@
         '<button class="cbx' + (sel ? ' on' : '') + '" data-check="1" title="选择">' + I.tick + '</button>' +
       '</div>' +
       '<div class="cell prompt">' +
-        '<span class="titleline"><span class="shotno">分镜 ' + s.seq + '</span>' + durHTML(s) + '</span>' +
-        '<span class="prompt-text">' + esc(s.prompt) + '</span>' +
+        '<span class="titleline"><span class="shotno">分镜 ' + s.seq + '</span>' + durHTML(s) +
+          '<span class="grow"></span>' +
+          '<button class="zoom-btn" data-zoom="' + s.id + '" title="放大查看完整提示词（含素材名着色）">' + I.expandDark + '</button>' +
+        '</span>' +
+        '<span class="prompt-text">' + highlightPrompt(s.prompt) + '</span>' +
         '<span class="prompt-meta">模型 ' + esc(labelOf(opts().models, s.model) || s.model) + ' · ' + s.ratio + ' · ' + s.resolution + ' · motion ' + Number(s.motion).toFixed(2) + (s.imageCount ? ' · 参考图 ' + s.imageCount + ' 张' : '') + '</span>' +
       '</div>' +
       '<div class="cell"><span class="slots">' + slotsHTML(s, 'character') + '</span></div>' +
@@ -287,7 +379,7 @@
         '<svg width="44" height="44" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="3" stroke="#D2D2D7" stroke-width="1.3" fill="none"/><path d="M2.5 8.5h19" stroke="#D2D2D7" stroke-width="1.3"/></svg>' +
         '<b>' + (S.keyword || S.filter !== 'all' ? '没有符合条件的分镜' : '还没有分镜') + '</b>' +
         '<span>' + (S.keyword || S.filter !== 'all' ? '试试清空搜索或切换筛选' : '把多段提示词粘进来，一次创建整批分镜') + '</span>' +
-        (S.keyword || S.filter !== 'all' ? '' : '<button class="btn-primary" data-act="openImport">批量导入提示词</button>') +
+        (S.keyword || S.filter !== 'all' ? '' : '<button class="btn-primary" data-act="openImport" title="批量导入提示词">批量导入</button>') +
         '</div>';
       return;
     }
@@ -295,43 +387,80 @@
     updateCheckAll();
   }
 
+  /* ---------------------------------------------------------- 显示偏好（个性化） */
+  /* 表格密度的**唯一事实来源是 `#app` 上的 `.compact` 类** —— 与原来顶栏那个
+     「紧凑视图」按钮完全同一套逻辑，只是入口从顶栏挪进了设置的「个性化」分区。
+     读状态一律读这个类（而不是另存一份变量），否则设置抽屉每次重绘都可能与真实外观不一致。 */
+  function isCompact() {
+    const el = $('#app');
+    return !!(el && el.classList.contains('compact'));
+  }
+  function applyDensity(on) {
+    const el = $('#app');
+    if (el) el.classList.toggle('compact', !!on);
+  }
+
+  /* 顶栏主操作按钮的标签同步：「提交所选」要带上已选数量。
+     按钮是 index.html 里的静态节点（不在任何会被重绘的容器里），所以只改文本、不重建节点 ——
+     重建会打断进行中的点击，也会丢掉焦点与 hover 态。 */
+  function syncTopActions() {
+    const b = $('#btnSubmitSel');
+    if (!b) return;
+    b.textContent = '提交所选' + (S.sel.size ? ' ' + S.sel.size : '');
+    b.title = S.sel.size
+      ? '提交选中的 ' + S.sel.size + ' 个分镜'
+      : '先在表格里勾选分镜，再点这里提交';
+  }
+
   /* ---------------------------------------------------------- 素材面板 */
   function renderPanel() {
-    const tabs = ['character', 'scene', 'prop', 'audio'];
-    const tabLabel = { character: '角色', scene: '场景', prop: '道具', audio: '音频' };
+    const tabs = ASSET_TABS;
+    const tabLabel = ASSET_TAB_LABEL;
     const act = document.activeElement;
     const keepSearch = act && act.id === 'panelSearch' ? act.selectionStart : null;
+    /* 分区头的说明只在**承载状态**时才出现：绑定目标（哪个分镜）/ 批量选择模式 / 本分类为空。
+       默认态不再放"点击卡片打开素材设置"这类说明 —— 那是每屏都在、却没人看的噪音；
+       卡片与按钮的 title 里都写着，且点一下就知道。 */
+    const bindSeq = S.bindTarget ? (rowById(S.bindTarget.id) || {}).seq : null;
+    const hintFor = (where) => {
+      if (S.bindTarget) {
+        const tail = bindSeq != null ? '到分镜 ' + bindSeq : '';
+        return where === 'lib' ? '点击即可添加' + tail : '点击下方素材添加' + tail;
+      }
+      if (S.assetSelMode) return '点击卡片勾选';
+      return '';
+    };
+    const curHint = hintFor('cur') || (S.assetCounts.currentShot ? '' : '暂无绑定');
 
     $('#panel').innerHTML =
       '<div class="panel-top">' +
         '<span class="seg">' + tabs.map((t) =>
           '<button data-tab="' + t + '"' + (S.panelTab === t ? ' class="on"' : '') + '>' + tabLabel[t] + '</button>').join('') + '</span>' +
-        '<span class="grow"></span>' +
-        '<button class="btn-primary" style="padding:8px 13px;font-size:11.5px" id="btnSubmitSel">提交所选' + (S.sel.size ? ' ' + S.sel.size : '') + '</button>' +
-        '<button class="btn-outline" style="padding:8px 13px;font-size:11.5px" id="btnDrySubmit" title="干跑：走完整提交链路组装命令，但不发送给即梦（不创建任务、不扣费），提交后在弹层里核对真实命令"' + (S.dryBusy ? ' disabled' : '') + '>' + (S.dryBusy ? '干跑中…' : '干跑提交') + '</button>' +
       '</div>' +
+      /* 动作区：2×2 网格，四颗按钮各占一格（同高、左右边缘对齐）。
+         「干跑提交」原先在面板顶栏独占一行 —— 面板里白白吃掉一行高度，现在与素材动作同排。
+         它原本那条「图片 / 提示词导入」提示文本从来没显示过（CSS 里 .panel-actions .hint-sm
+         是 display:none），属于死文本，一并删除。 */
       '<div class="panel-actions">' +
         '<button class="btn-mini" data-assetact="openImport" title="两种模式：导入本地图片文件，或粘贴提示词文本（@ 分段自动识别 场景/道具/角色）"' + (S.assetBusy ? ' disabled' : '') + '>' + (S.assetBusy ? '导入中…' : '导入资产') + '</button>' +
         '<button class="btn-mini" data-assetact="batch" title="进入批量选择模式（操作在底部弹出的操作条中完成）"' + (S.assetBusy || S.assetSelMode ? ' disabled' : '') + '>批量选择</button>' +
         '<button class="btn-mini" id="btnAutoMatch" title="按素材名称在分镜提示词里匹配对应素材并自动绑定（先预览，确认后再应用）"' + (S.autoBusy ? ' disabled' : '') + '>' + (S.autoBusy ? '匹配中…' : '自动匹配参考图') + '</button>' +
-        '<span class="grow"></span>' +
-        '<span class="hint-sm">' + (S.panelTab === 'audio' ? '支持音频文件' : '图片 / 提示词导入') + '</span>' +
+        '<button class="btn-mini" id="btnDrySubmit" title="干跑：走完整提交链路组装命令，但不发送给即梦（不创建任务、不扣费），提交后在弹层里核对真实命令"' + (S.dryBusy ? ' disabled' : '') + '>' + (S.dryBusy ? '干跑中…' : '干跑提交') + '</button>' +
       '</div>' +
       (S.assetMsg ? '<div class="hint-sm asset-msg">' + esc(S.assetMsg) + '</div>' : '') +
       '<label class="panel-search">' + I.search +
         '<input id="panelSearch" placeholder="搜索' + tabLabel[S.panelTab] + '" value="' + esc(S.panelKeyword) + '" />' +
       '</label>' +
       '<div class="panel-list">' +
-        '<div class="sec-head"><b>本分镜素材 (' + S.assetCounts.currentShot + ')</b><span class="grow"></span><span>' +
-          (S.bindTarget ? '点击下方素材添加到分镜 ' + (rowById(S.bindTarget.id) || {}).seq
-            : (S.assetSelMode ? '批量选择中：点击卡片勾选' : '点表格里的 ＋ 绑定；直接点击卡片则打开素材设置')) + '</span></div>' +
+        /* 本分类为空时不再单占一块空态（原来那句"当前分镜还没有在此分类下绑定素材"有 16 个字），
+           改在分区头右侧一行「暂无绑定」说清，省下一整块高度。 */
+        '<div class="sec-head"><b>本分镜素材 (' + S.assetCounts.currentShot + ')</b><span class="grow"></span>' +
+          (curHint ? '<span>' + curHint + '</span>' : '') + '</div>' +
         (S.assetCounts.currentShot
           ? '<div class="grid">' + S.assets.filter((a) => a.inCurrentShot).map(cardHTML).join('') + '</div>'
-          : '<div class="empty-mini">当前分镜还没有在此分类下绑定素材</div>') +
-        '<div class="sec-head"><b>素材库全部 (' + S.assetCounts.library + ')</b><span class="grow"></span>' +
-          (S.assetSelMode ? '<span>点击卡片勾选</span>'
-            : (S.bindTarget ? '<span>点击即可添加到分镜 ' + (rowById(S.bindTarget.id) || {}).seq + '</span>'
-              : '<span>点击打开素材设置</span>')) + '</div>' +
+          : '') +
+        '<div class="sec-head"><b>素材库 (' + S.assetCounts.library + ')</b><span class="grow"></span>' +
+          (hintFor('lib') ? '<span>' + hintFor('lib') + '</span>' : '') + '</div>' +
         (S.assets.length
           ? '<div class="grid">' + S.assets.map(cardHTML).join('') + '</div>'
           : '<div class="empty-mini">没有匹配的素材</div>') +
@@ -343,12 +472,15 @@
         ? 'background-image:url(' + a.url + ');background-size:cover;background-position:center;'
         : '';
       const glyph = a.type === 'audio' ? '<span class="note">' + I.note + '</span>' : '';
-      // 提示词导入的资产还没有图片：渐变占位 + 「提示词」角标，点击详情弹窗可上传 / 编辑
-      const pmark = (!hasPic && a.type !== 'audio' && (a.origin === 'prompt' || a.prompt))
-        ? '<span class="pmark" title="提示词资产：尚未上传图片，点开可编辑提示词并补图">提示词</span>' : '';
+      /* 无图素材（提示词导入的那批）不再用按 id 派生的随机渐变占位 —— 那只是个没有含义的
+         色块，看不出"这里该有一张图"。改铺半透明的图片样式空槽位（浅底 + 虚线框 + 淡图标），
+         和素材详情弹窗的图片区同一套视觉语言。音频有自己的音符图标，不走这条。 */
+      const noPic = !hasPic && a.type !== 'audio';
+      const phGlyph = noPic ? '<span class="ph-ico">' + I.img + '</span>' : '';
       const selCls = (S.assetSelMode && S.assetSel.has(a.id)) ? ' sel' : '';
+      const picStyle = noPic ? '' : ' style="--g:' + a.grad + (mediaBg ? ';' + mediaBg : '') + '"';
       return '<div class="acard' + (a.inCurrentShot ? ' used' : '') + selCls + '" data-asset="' + a.id + '" title="' + esc(a.name) + '">' +
-        '<span class="pic" style="--g:' + a.grad + (mediaBg ? ';' + mediaBg : '') + '">' + glyph + pmark +
+        '<span class="pic' + (noPic ? ' no-pic' : '') + '"' + picStyle + '>' + glyph + phGlyph +
         '<span class="tick">' + I.tickSm + '</span>' +
         '<button class="rm" data-assetdel="' + a.id + '" title="删除素材">' + I.x + '</button></span>' +
         '<span class="nm">' + esc(a.name) + '</span>' +
@@ -373,16 +505,223 @@
     if (!on) { bar.innerHTML = ''; return; }
     const total = S.assets.length;
     const n = S.assetSel.size;
+    const snap = snapRange('as');          // 重绘前记下区间输入框，重绘后还原
     bar.innerHTML =
       '<div class="bb-inner">' +
         '<b class="bb-title">批量选择</b>' +
-        '<span class="hint-sm">已选 <b>' + n + '</b> / ' + total + ' 个（点击素材卡片勾选）</span>' +
+        '<span class="hint-sm">已选 <b>' + n + '</b> / ' + total + ' 个' +
+          '<span class="mq-tip"> · 点卡片勾选，或在网格里按住拖拽框选（Ctrl / Shift 追加，Alt 减去）</span></span>' +
         '<span class="grow"></span>' +
+        (total ? rangeHTML('as', total, S.assetRange) : '') +
+        /* 反选只要有卡片就该可点：n=0 时反选=全选，n=total 时反选=全不选，两种都常用。
+           （早先写成 n && n<total 才可点，导致"全选之后反而不能反选"——已修。） */
         '<button class="btn-mini" data-assetact="all"' + (total && n < total ? '' : ' disabled') + '>全选</button>' +
+        '<button class="btn-mini" data-assetact="invert"' + (total ? '' : ' disabled') + ' title="反选：已选变未选、未选变已选">反选</button>' +
         '<button class="btn-mini" data-assetact="none"' + (n ? '' : ' disabled') + '>清空选择</button>' +
         '<button class="btn-mini btn-danger" data-assetact="del"' + (S.assetBusy || !n ? ' disabled' : '') + '>' + (S.assetBusy === 'del' ? '删除中…' : '删除所选' + (n ? '（' + n + '）' : '')) + '</button>' +
         '<button class="btn-primary" data-assetact="exit">完成</button>' +
       '</div>';
+    restoreRange('as', snap);
+  }
+
+  /* ============================================================
+     快速多选：框选（marquee）+ 区间选择 + 全选 / 反选 / 清空
+     素材面板与分镜列表共用同一套引擎，差异只在「哪些元素算一项」与「选择态怎么落地」。
+     ============================================================ */
+
+  /* 区间解析：把用户填的起止序号收敛到 [1, total]。
+     非法/越界不报错中断，而是钳制到有效范围并把调整原因回给调用方去提示 ——
+     用户要的是"越界时给个提示并自动收敛"，不是"填错就什么都不做"。 */
+  function resolveRange(fromRaw, toRaw, total) {
+    const num = (v) => {
+      const n = parseInt(String(v == null ? '' : v).trim(), 10);
+      return Number.isFinite(n) ? n : null;
+    };
+    let from = num(fromRaw), to = num(toRaw);
+    const notes = [];
+    if (from == null && to == null) return { from: 1, to: total, notes: ['未填序号，按全部处理'] };
+    if (from == null) { from = 1; notes.push('起始未填，按 1 计'); }
+    if (to == null) { to = total; notes.push('结束未填，按 ' + total + ' 计'); }
+    if (from > to) { const t = from; from = to; to = t; notes.push('起止颠倒，已自动对调'); }
+    if (from < 1) { from = 1; notes.push('起始小于 1，已收敛为 1'); }
+    if (to > total) { to = total; notes.push('结束超过 ' + total + '，已收敛为 ' + total); }
+    if (from > total) { from = total; notes.push('起始超过总数，已收敛为 ' + total); }
+    if (to < 1) { to = 1; notes.push('结束小于 1，已收敛为 1'); }
+    return { from, to, notes };
+  }
+
+  /* 框选引擎。cfg：
+       areaSel   必须落在它里面才起拖（动态取，因为容器会被重绘重建）
+       itemSel   项选择器（相对 host）
+       idOf      el -> 稳定 id
+       selSet()  读当前选择集（引擎只取快照，不直接改）
+       commit(set)  提交新选择集（调用方负责写回 state 并重绘一次）
+       applySel(el, on)  把单项选中态落到 DOM（拖拽期间每帧调用，必须廉价、幂等）
+       onEnter() 可选：确认起拖时调用一次（素材用它自动进批量模式）
+     关键取舍：
+     · 拖拽期间**只改 class、不重绘**——每帧 renderTable/renderPanel 会把整列表重建，
+       素材/分镜一多就卡；真正的选择集只在 mouseup 时提交一次；
+     · 先批量读全部 rect、再统一写 class，避免读写交错触发 layout thrashing；
+     · 起拖阈值 4px：没超过就当作普通点击，**不拦截**，卡片编辑弹窗照常打开；
+     · 超过阈值则吞掉紧随的那次 click —— 浏览器在拖拽结束时会补发一次 click，
+       不拦就会"框选完顺手把卡片打开成编辑弹窗"。 */
+  const MARQUEE_THRESHOLD = 4;
+  let swallowClickUntil = 0;   // 拖拽结束后的极短窗口内，吞掉补发的那一次 click
+
+  function attachMarquee(host, cfg) {
+    if (!host) return;
+    let armed = false, dragging = false, box = null, sx = 0, sy = 0;
+    let base = null, mode = 'replace', prev = null, cache = null, rects = null;
+
+    /* 项的位置在拖拽期间是固定的（本引擎不做边缘自动滚动），所以矩形**只测一次**。
+       每帧都 getBoundingClientRect 会强制回流：实测 416 行时平均 6.6ms/帧、
+       还夹着一帧 129ms 的卡顿；改成缓存后每帧只剩 Set 运算与 class 差分。
+       用户中途滚轮滚动时位置会失效 —— 监听 scroll 重测一次即可。 */
+    const snapshot = () => {
+      cache = $$(cfg.itemSel, host);
+      rects = cache.map((el) => el.getBoundingClientRect());
+    };
+    const onScroll = () => { if (dragging) snapshot(); };
+
+    const onDown = (e) => {
+      if (e.button !== 0) return;
+      const area = host.querySelector(cfg.areaSel) || host;
+      if (!area.contains(e.target)) return;
+      // 落在交互控件或可滚动文本上不启动：按钮/输入框有自己的动作，
+      // .prompt-text 要留给用户划词复制，抢过来会毁掉原本的能力。
+      if (e.target.closest('button, input, textarea, select, a, [data-no-marquee], .prompt-text, .codebox')) return;
+      sx = e.clientX; sy = e.clientY;
+      armed = true; dragging = false; box = null; prev = null;
+      base = new Set(cfg.selSet());
+      mode = (e.altKey || (e.ctrlKey && e.shiftKey)) ? 'sub' : ((e.ctrlKey || e.shiftKey) ? 'add' : 'replace');
+      /* ⚠ 必须在 **mousedown** 就 preventDefault（用户报「框选会选中文字」）。
+         浏览器的原生划词从 mousedown 那一刻就开始建立选区；原实现只在超过 4px 阈值的
+         mousemove 里 preventDefault —— 那时选区已经建好，再拦也取消不掉，于是拖拽框选的
+         同时把卡片名称、行内文字一并选蓝了。
+         顺手清掉拖拽前可能残留的选区（上一次划词的结果）。
+         不影响既有能力：click 事件照常派发；被排除的按钮 / 输入框 / .prompt-text
+         根本不走这条分支，它们的划词与聚焦不受影响。 */
+      e.preventDefault();
+      const sel = window.getSelection && window.getSelection();
+      if (sel && sel.removeAllRanges) sel.removeAllRanges();
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
+    };
+
+    const onMove = (e) => {
+      if (!armed) return;
+      if (!dragging) {
+        if (Math.abs(e.clientX - sx) < MARQUEE_THRESHOLD && Math.abs(e.clientY - sy) < MARQUEE_THRESHOLD) return;
+        dragging = true;
+        // onEnter 会重绘（素材：进批量模式），所以 base 与项快照都必须排在它之后取
+        if (cfg.onEnter) { cfg.onEnter(); base = new Set(cfg.selSet()); }
+        snapshot();
+        box = document.createElement('div');
+        box.className = 'marquee';
+        box.innerHTML = '<span class="mq-n"></span>';
+        document.body.appendChild(box);
+        document.addEventListener('scroll', onScroll, true);
+        e.preventDefault();                  // 到这里才拦：阻止划词 / 原生拖拽
+      }
+      const x = e.clientX, y = e.clientY;
+      const left = Math.min(sx, x), top = Math.min(sy, y);
+      const w = Math.abs(x - sx), h = Math.abs(y - sy);
+      box.style.left = left + 'px'; box.style.top = top + 'px';
+      box.style.width = w + 'px'; box.style.height = h + 'px';
+
+      const next = new Set(mode === 'replace' ? [] : base);
+      let hit = 0;
+      const changed = [];
+      for (let i = 0; i < cache.length; i++) {
+        const r = rects[i];
+        if (r.right < left || r.left > left + w || r.bottom < top || r.top > top + h) continue;
+        hit++;
+        const id = cfg.idOf(cache[i]);
+        if (mode === 'sub') next.delete(id); else next.add(id);
+        if (!prev || prev.has(id) !== next.has(id)) changed.push(cache[i], next.has(id));
+      }
+      box.querySelector('.mq-n').textContent = hit ? String(hit) : '';
+      for (let i = 0; i < changed.length; i += 2) cfg.applySel(changed[i], changed[i + 1]);   // 只改有变化的项
+      prev = next;
+    };
+
+    const onUp = () => {
+      if (!armed) return;
+      armed = false;
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('mouseup', onUp, true);
+      document.removeEventListener('scroll', onScroll, true);
+      if (box) { box.remove(); box = null; }
+      if (dragging) {
+        dragging = false;
+        cfg.commit(prev || new Set(base));
+        /* 吞掉浏览器在拖拽结束后补发的那一次 click。窗口取 100ms：补发的 click 与 mouseup
+           同轮同步触发，100ms 绰绰有余；再长就会误吞用户拖完立刻点的按钮（实测 200ms 时
+           紧随其后的「清空」被吞掉）。 */
+        swallowClickUntil = Date.now() + 100;
+      }
+      prev = null; base = null; cache = null; rects = null;
+    };
+
+    host.addEventListener('mousedown', onDown);
+  }
+
+  /* 拖拽刚结束时吞掉一次 click（捕获阶段拦，早于任何委托处理器） */
+  document.addEventListener('click', (e) => {
+    if (Date.now() >= swallowClickUntil) return;
+    swallowClickUntil = 0;
+    e.stopPropagation(); e.preventDefault();
+  }, true);
+
+  /* 区间选择控件（素材面板与分镜列表共用一套标记与交互） */
+  function rangeHTML(prefix, total, cur) {
+    return '<span class="range-sel" title="按序号区间选择：填起止序号后点「选中区间」（越界会自动收敛到 1–' + total + '）">' +
+      '<input type="number" class="input-xs" id="' + prefix + 'From" min="1" max="' + total + '" placeholder="起始" value="' + esc(cur.from) + '" data-range="' + prefix + '" />' +
+      '<span class="range-dash">–</span>' +
+      '<input type="number" class="input-xs" id="' + prefix + 'To" min="1" max="' + total + '" placeholder="结束" value="' + esc(cur.to) + '" data-range="' + prefix + '" />' +
+      '<button class="btn-mini" data-rangego="' + prefix + '">选中区间</button>' +
+    '</span>';
+  }
+
+  /* 重绘前记下区间输入框的值与光标，重绘后原样还原 ——
+     面板与状态栏都会被频繁重绘（轮询、选中变化），不还原的话用户打到一半就失焦。 */
+  function snapRange(prefix) {
+    const from = document.getElementById(prefix + 'From');
+    const to = document.getElementById(prefix + 'To');
+    if (!from || !to) return null;
+    const act = document.activeElement;
+    const which = act === from ? 'From' : (act === to ? 'To' : null);
+    return {
+      from: from.value, to: to.value, which,
+      caret: which ? act.selectionStart : 0
+    };
+  }
+  function restoreRange(prefix, snap) {
+    if (!snap) return;
+    const from = document.getElementById(prefix + 'From');
+    const to = document.getElementById(prefix + 'To');
+    if (from) from.value = snap.from;
+    if (to) to.value = snap.to;
+    if (snap.which) {
+      const el = snap.which === 'From' ? from : to;
+      if (el) { el.focus(); try { el.setSelectionRange(snap.caret, snap.caret); } catch (e) { /* noop */ } }
+    }
+  }
+
+  /* 区间选中（两个界面共用）。ids 是当前可见项的顺序数组；**追加**语义，不动原有选择 ——
+     要重新来过先点「清空选择」。序号按「当前列表第 N 条」计（分页时不是全局 seq）。 */
+  function applyRange(prefix, ids, rangeState, selSet, rerender) {
+    const elFrom = document.getElementById(prefix + 'From');
+    const elTo = document.getElementById(prefix + 'To');
+    if (!ids.length) { toast('当前没有可选的项', 'err'); return; }
+    const r = resolveRange(elFrom && elFrom.value, elTo && elTo.value, ids.length);
+    rangeState.from = String(r.from); rangeState.to = String(r.to);
+    if (elFrom) elFrom.value = r.from;
+    if (elTo) elTo.value = r.to;
+    for (let i = r.from; i <= r.to; i++) if (ids[i - 1]) selSet.add(ids[i - 1]);
+    rerender();
+    toast('已选中第 ' + r.from + '–' + r.to + ' 项（' + (r.to - r.from + 1) + ' 个）' +
+      (r.notes.length ? '；' + r.notes.join('；') : ''), r.notes.length ? 'err' : 'ok');
   }
 
   /* ---------------- 批量导入图片 · 名称匹配自动处理 ----------------
@@ -400,9 +739,52 @@
   function normAssetKey(s) { return String(s || '').trim().toLowerCase(); }
   function fileBaseName(f) { return String(f.name || '').replace(/\.[^.]+$/, '').trim(); }
 
+  /* 匹配池必须是**全库**，不能只查当前面板分类：后端 GET /assets 强制带 type，所以四种类型
+     各查一次再合并。只查当前分类的话，在「角色」页导入一批混着场景/道具的图，那些文件永远
+     匹配不到自己的资产，最后全被当成新角色素材堆在角色分类下（用户实测踩到）。 */
+  const ASSET_TYPES = ASSET_TABS;   // 全库遍历（高亮索引 / 匹配池）用同一份类型清单
+  async function loadAllAssets() {
+    const rs = await Promise.all(ASSET_TYPES.map((t) =>
+      Api.listAssets({ projectId: Api.CFG.projectId, type: t }).catch(() => ({ library: [] }))));
+    return rs.reduce((acc, r) => acc.concat(r.library || []), []);
+  }
+
+  /* 重建「素材名 → 类型」索引。索引一变就补一次行重绘，让提示词里的高亮跟着更新；
+     索引没变则不重绘（避免每次 loadAssets 都闪一下）。失败就保持旧索引，不打断主流程。 */
+  let assetIndexPending = null;
+  function refreshAssetIndex() {
+    if (assetIndexPending) return assetIndexPending;
+    assetIndexPending = loadAllAssets()
+      .then((lib) => {
+        const idx = new Map();
+        lib.forEach((a) => {
+          const k = String(a.name || '').trim().toLowerCase();
+          if (k) idx.set(k, a.type);
+        });
+        const same = idx.size === S.assetIndex.size &&
+          Array.from(idx).every(([k, v]) => S.assetIndex.get(k) === v);
+        S.assetIndex = idx;
+        /* 索引变了要重绘提示词单元格。注意不能用 renderRowsOnly() —— 它只更新进度/状态/勾选，
+           不碰提示词文本，调了等于没调（2026-09-19 实际踩到：高亮一直不出来）。
+           这里只重绘提示词、且保住各自的滚动位置，避免整表重绘打断 hover 与阅读位置。 */
+        if (!same && S.list.length) {
+          $$('#table .row').forEach((el) => {
+            const s = rowById(el.dataset.id);
+            const box = $('.prompt-text', el);
+            if (!s || !box) return;
+            const keep = box.scrollTop;
+            box.innerHTML = highlightPrompt(s.prompt);
+            box.scrollTop = keep;
+          });
+        }
+      })
+      .catch(() => { /* 索引拿不到就不高亮，不影响列表本身 */ })
+      .then(() => { assetIndexPending = null; });
+    return assetIndexPending;
+  }
+
   async function planFiles(files) {
-    const res = await Api.listAssets({ projectId: Api.CFG.projectId, type: S.panelTab });
-    const lib = res.library || [];
+    const lib = await loadAllAssets();
     const byKey = new Map();
     lib.forEach((a) => {
       const k = normAssetKey(a.name);
@@ -497,6 +879,7 @@
       fail(e);
     }
     renderPanel();
+    refreshAssetIndex();   // 不 await：索引只影响提示词着色，晚到一步不拖累列表
   }
 
   /* ---------------------------------------------------------- 状态栏 */
@@ -505,6 +888,7 @@
     const n = S.sel.size;
     const engName = '创作 CLI';
     const engOk = !!(S.adapter && S.adapter.dreamina && S.adapter.dreamina.available);
+    const snap = snapRange('sb');          // 状态栏会被轮询频繁重绘，区间输入框要还原
     $('#statusbar').innerHTML =
       (S.options && S.options.dryRun
         ? '<span class="drybadge" title="服务启动时带了 JC_DRY_RUN=1：所有提交都只组装命令、不派发">干跑模式</span><i class="sb-div"></i>'
@@ -513,19 +897,25 @@
       '<i class="sb-div"></i>' +
       '<span>并发 <b>' + (S.settings ? S.settings.queue.concurrency : '—') + '</b></span>' +
       '<i class="sb-div"></i>' +
-      '<span>已选 <b>' + n + '</b> 项</span>' +
+      '<span>已选 <b>' + n + '</b> / ' + S.list.length + ' 项</span>' +
+      (S.list.length
+        ? '<button class="btn-mini" data-batch="all"' + (n < S.list.length ? '' : ' disabled') + '>全选</button>' +
+          '<button class="btn-mini" data-batch="invert" title="反选：已选变未选、未选变已选">反选</button>' +
+          '<button class="btn-mini" data-batch="clear"' + (n ? '' : ' disabled') + '>清空</button>' +
+          rangeHTML('sb', S.list.length, S.selRange)
+        : '') +
       (n
         ? '<button class="btn-mini" data-batch="duration">批量改时长</button>' +
           '<button class="btn-mini" data-batch="reduration" title="读提示词里的「总时长：X.Xs」标注重算时长（小数向上进位）">按时长标注重算</button>' +
-          '<button class="btn-mini" data-batch="delete">删除所选</button>' +
-          '<button class="btn-mini" data-batch="clear">取消选择</button>'
+          '<button class="btn-mini" data-batch="delete">删除所选</button>'
         : '<button class="btn-mini" data-batch="reduration" title="不勾选时作用于全部「未提交」分镜：读「总时长：X.Xs」标注重算（小数向上进位）">按时长标注重算（全部）</button>') +
       '<span class="grow"></span>' +
-      '<span>显示 <b>' + S.list.length + '</b> 条，共 <b>' + (st.total || 0) + '</b> 个分镜</span>' +
-      '<i class="sb-div"></i>' +
-      '<span>整体进度 <b>' + (st.overallProgress || 0) + '%</b></span>' +
-      '<span class="minibar"><i style="width:' + (st.overallProgress || 0) + '%"></i></span>' +
-      '<span>预计剩余 <b>' + mmss(st.etaSeconds) + '</b></span>';
+      '<span>显示 <b>' + S.list.length + '</b> 条，共 <b>' + (st.total || 0) + '</b> 个分镜</span>';
+    /* 「整体进度 X% + 进度条 + 预计剩余」已于 2026-09-20 整组移到顶栏（见 index.html 的
+       .top-progress 与 renderTopbar）。三者是一组读数，拆开摆会看不懂，故整组一起搬；
+       这里不再重复渲染，避免同一个数字在两处出现却各自刷新。 */
+    restoreRange('sb', snap);
+    syncTopActions();          // 「提交所选」的数量与 title 跟着勾选变化（按钮在顶栏，不在本容器内）
   }
 
   /* ============================================================
@@ -1057,6 +1447,7 @@
     if (document.hidden) return;
     if (!activeIds().length) return;
     S.poll.idle = 0;
+    S.poll.lastSig = null;   // 新一轮轮询：清掉上一轮的载荷签名，否则首轮会被误判成"没变化"
     pollOnce();
   }
 
@@ -1069,7 +1460,14 @@
     let delay = base;
     try {
       const changed = await Api.getProgress(ids.slice(0, 50));
-      if (!changed.length) {
+      /* 服务端已不再"读后清" dirty（原因见 services.getProgress：那会让第二个标签页
+         永远收不到更新）。代价是它每轮都会把仍是 dirty 的行再回一遍，所以"有没有变化"
+         改由这里按**载荷签名**判断：内容与上一轮完全相同就算无变化，照常退避。
+         否则生成期间每轮都非空 ⇒ 永不退避，一直按 3s 打。 */
+      const sig = changed.map((c) => c.id + ':' + c.status + ':' + c.progress + ':' + c.retryCount + ':' + (c.errorCode || '')).join('|');
+      const sameAsLast = sig === S.poll.lastSig;
+      S.poll.lastSig = sig;
+      if (!changed.length || sameAsLast) {
         // 无变化 → 退避：3s → 6s → 10s 封顶
         S.poll.idle++;
         if (S.poll.idle >= 3) delay = Math.min(10000, base * Math.pow(2, S.poll.idle - 2));
@@ -1124,6 +1522,11 @@
 
     if (t.closest('[data-check]')) { S.sel.has(s.id) ? S.sel.delete(s.id) : S.sel.add(s.id); renderTable(); renderPanel(); renderStatusbar(); return; }
 
+    if (t.closest('[data-zoom]')) {   // 提示词放大：全屏看完整文本，素材名照样着色
+      openFullscreenText('分镜 ' + s.seq + ' · 提示词', highlightPrompt(s.prompt));
+      return;
+    }
+
     const step = t.closest('[data-step]');
     if (step) { stepDuration(s, Number(step.dataset.step)); return; }
 
@@ -1131,16 +1534,39 @@
 
     const bind = t.closest('[data-bind]');
     if (bind) {
-      S.bindTarget = { id: s.id, role: bind.dataset.bind };
-      S.panelTab = ROLE_META[bind.dataset.bind].type;
+      const role = bind.dataset.bind;
+      /* 参考图已达上限 → 拦在这里并说明清楚，不弹选择弹窗。
+         （弹窗内部还会再拦一道，防止配额在校准后变化；两处口径同源，都是后端下发的
+           imageCount / imageLimit，即 models.js 系列规则表里的数。） */
+      if (role !== 'audio' && s.imageLimit != null && (s.imageCount || 0) >= s.imageLimit) {
+        toast('已达参考图上限：当前模型（' + s.model + '）最多 ' + s.imageLimit + ' 张，本分镜已用满 ' + s.imageCount +
+          ' 张。请先移除部分图片释放名额' +
+          (s.imageLimit < 30 ? '，或把该分镜改用 Seedance 2.5（上限 30 张）' : '') + '。', 'err');
+        return;
+      }
+      /* bindTarget 保留原语义：它同时驱动素材面板的「本分镜素材」区与快捷点选路径
+         （弹窗是显式路径，面板那条快捷路径仍然可用，见 onAssetClick ②）。 */
+      S.bindTarget = { id: s.id, role };
+      S.panelTab = ROLE_META[role].type;
       S.panelKeyword = '';
-      toast('请从右侧「素材库全部」点选要添加的' + ROLE_META[bind.dataset.bind].label);
       await loadAssets();
-      openPanelIfOverlay();   // 窄屏面板在屏外：点「＋」后必须主动唤起，否则无处点选
+      openPanelIfOverlay();   // 窄屏面板在屏外：点「＋」后主动唤起，弹窗关掉后仍可点选
+      const added = await openAssetPicker(s, role);   // 弹出资产选择弹窗（本次新增的主路径）
+      if (added) {
+        // 确定后：收掉绑定态、刷新表格槽位（让「已添加资产」立刻显示）与素材面板
+        S.bindTarget = null;
+        await loadList({ skeleton: false });
+        await loadAssets();
+      }
       return;
     }
     const unb = t.closest('[data-unbind]');
     if (unb) { await unbind(s, unb.dataset.unbind); return; }
+
+    /* 已绑定的素材格 → 预览 + 替换弹窗。必须排在 data-unbind 之后：
+       × 是 .thumb 的子元素，先命中上面的分支才算「移除」，否则会变成点开预览。 */
+    const bnd = t.closest('[data-bound]');
+    if (bnd) { await openBoundAsset(s, bnd.dataset.role, bnd.dataset.bound); return; }
 
     if (t.closest('[data-preview]')) { openDetail(s, true); return; }
 
@@ -1296,12 +1722,12 @@
   /* 素材详情弹窗的图片全屏展示：原图直出、object-fit:contain 适配任意屏幕。
      退出方式：右上角关闭按钮 / ESC / 点击图片外空白区域。
      ESC 监听挂在捕获阶段并 stopPropagation——避免同一按键把底下的详情弹窗也关掉。 */
-  function openFullscreenViewer(url, alt) {
+  /* 全屏查看器的公共外壳：遮罩 + 关闭钮 + Esc / 点空白退出。inner 由调用方给，返回 close()。 */
+  function openFullscreenShell(innerHTML, extraClass) {
     const v = document.createElement('div');
-    v.className = 'fs-viewer';
+    v.className = 'fs-viewer' + (extraClass ? ' ' + extraClass : '');
     v.style.zIndex = 300;
-    v.innerHTML =
-      '<img src="' + esc(url) + '" alt="' + esc(alt || '') + '" />' +
+    v.innerHTML = innerHTML +
       '<button class="fs-close" title="退出全屏 (Esc)">' + I.x + '</button>' +
       '<span class="fs-hint">按 Esc、点击空白处或右上角 × 退出全屏</span>';
     document.body.appendChild(v);
@@ -1324,6 +1750,20 @@
     return close;
   }
 
+  function openFullscreenViewer(url, alt) {
+    return openFullscreenShell('<img src="' + esc(url) + '" alt="' + esc(alt || '') + '" />');
+  }
+
+  /* 提示词全屏查看：内容已是转义过的 HTML（含素材名着色），面板内可滚动。
+     点面板内部不会关闭 —— 关闭只在点遮罩本身时触发（外壳里判的是 ev.target === v）。 */
+  function openFullscreenText(title, html) {
+    return openFullscreenShell(
+      '<div class="fs-panel">' +
+        '<div class="fs-panel-head"><b>' + esc(title) + '</b></div>' +
+        '<div class="fs-panel-body">' + html + '</div>' +
+      '</div>', 'fs-textview');
+  }
+
   function openAssetSettings(asset) {
     return new Promise((resolve) => {
       const accept = asset.type === 'audio' ? 'audio/*' : 'image/*';
@@ -1332,16 +1772,15 @@
       const previewHTML = (asset.type === 'audio')
         ? '<span class="note">' + I.note + '</span>'
         : (asset.url ? '<img id="asPreviewImg" src="' + esc(asset.url) + '" alt="' + esc(asset.name) + '" />' : '');
-      const kindLabel = { character: '角色', scene: '场景', prop: '道具', audio: '音频' }[asset.type] || asset.type;
+      const kindLabel = ASSET_TAB_LABEL[asset.type] || asset.type;
       // 提示词编辑区：音频无提示词概念，不展示
       const isAudio = asset.type === 'audio';
       const promptVal = asset.prompt || '';
-      // 全屏预览按钮：仅当有真实图片可看时出现；悬停预览区淡入（样式见 .fs-btn）
-      // 图片上的悬浮操作钮：全屏 + 更换文件（与下方「更换文件」按钮同源，都触发同一个 #asFile）
-      const fsBtn = hasPic
-        ? '<button class="fs-btn" id="asFull" title="全屏预览（查看细节）">' + I.expand + '</button>' +
-          '<button class="fs-btn pick" id="asPicPick" title="更换图片文件">' + I.swap + '</button>'
-        : '';
+      /* 图片上的悬浮钮只留「全屏预览」：换图入口就是图片区本身（点击即选文件），
+         再挂一个换图钮纯属重复。全屏要有图才有意义，故无图时先 hidden，
+         选中文件后由 showLocalPreview 放出来。 */
+      const fsBtn = isAudio ? '' :
+        '<button class="fs-btn" id="asFull" title="全屏预览（查看细节）"' + (hasPic ? '' : ' hidden') + '>' + I.expand + '</button>';
       const promptHTML = isAudio ? '' :
         '<div class="sec-title" style="margin-top:12px">文生图提示词</div>' +
         '<div class="asset-promptwrap">' +
@@ -1355,21 +1794,18 @@
           '<div class="modal-head"><h2>素材详情</h2><span class="grow"></span>' +
             '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
           '<div class="modal-body">' +
-            '<div class="asset-preview' + (isAudio ? ' audio' : '') + '"' +
-              (!hasPic && !isAudio ? ' style="--g:' + asset.grad + ';background-image:var(--g)"' : (isAudio ? ' style="--g:' + asset.grad + ';background-image:var(--g)"' : '')) + '>' +
+            /* 无图时不铺渐变：改由 CSS 给一个半透明的「图片样式」占位（见 .asset-preview.pickable） */
+            '<div class="asset-preview' + (isAudio ? ' audio' : ' pickable' + (hasPic ? ' has-pic' : '')) + '"' +
+              (isAudio ? ' style="--g:' + asset.grad + ';background-image:var(--g)"' : '') + '>' +
               previewHTML +
               fsBtn +
-              (!hasPic && !isAudio ? '<span class="empty-ph">尚未上传图片<br/><small>下方「更换文件」可补图</small></span>' : '') +
+              (!hasPic && !isAudio ? '<span class="empty-ph">' + I.img + '<span>点击上传图片</span></span>' : '') +
             '</div>' +
             '<div class="row-inline"><span class="label-sm">名称</span>' +
               '<input class="input-sm" id="asName" style="flex:1;min-width:0" maxlength="60" value="' + esc(asset.name) + '" /></div>' +
             (isAudio ? '' : '<div class="row-inline"><span class="label-sm">类型</span><span class="hint-sm">' + esc(kindLabel) + '</span></div>') +
             promptHTML +
-            /* 更换入口已悬浮在图片上（.fs-btn.pick），有图时下方不再重复；
-               仅无图（提示词占位 / 音频）保留此行作为补图 / 换文件入口 */
-            (hasPic ? '' :
-              '<div class="row-inline" style="margin-top:12px"><span class="label-sm">素材文件</span>' +
-              '<button class="btn-mini" id="asPick">更换文件</button></div>') +
+            /* 上传入口只有图片区本身（点击即选文件），下方不再有「素材文件 / 更换文件」行 */
             '<input type="file" id="asFile" accept="' + accept + '" hidden />' +
           '</div>' +
           '<div class="modal-foot">' +
@@ -1382,6 +1818,7 @@
 
       let picked = null;
       let previewBlobUrl = null;                  // 本地即时预览用的 blob URL（关闭弹窗时回收）
+      let currentImgUrl = hasPic ? asset.url : null;   // 当前预览图地址（本地新选的指向 blob URL）
       /* 选中文件后立即本地预览：不等保存。此前 change 只更新 picked 与提示文字，
          预览区是打开弹窗时一次性渲染的静态 HTML，状态变了视图没跟着更新 ——
          表现为"图片要等点确定之后才换"。保存逻辑不受影响（仍上传 picked 原文件）。 */
@@ -1399,6 +1836,14 @@
         if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
         previewBlobUrl = URL.createObjectURL(f);
         img.src = previewBlobUrl;
+        currentImgUrl = previewBlobUrl;
+        /* 视图要跟着状态一起变，否则按钮/占位和实际能力对不上：
+           · 空槽位的虚线框让位（.has-pic），点进去才知道已经有图了；
+           · 无图时 hidden 的「全屏」钮放出来（无图点它没意义）。 */
+        const box = mask.querySelector('.asset-preview');
+        if (box) { box.classList.add('has-pic'); box.title = '点击更换图片'; }
+        const fsBtnEl = mask.querySelector('#asFull');
+        if (fsBtnEl) fsBtnEl.hidden = false;
       }
       const nameEl = mask.querySelector('#asName');
       const promptEl = mask.querySelector('#asPrompt');
@@ -1407,12 +1852,18 @@
           mask.querySelector('#asPromptCount').textContent = promptEl.value.length + ' / 10000';
         });
       }
-      const pickRow = mask.querySelector('#asPick');
-      if (pickRow) pickRow.addEventListener('click', () => mask.querySelector('#asFile').click());
       const fsEl = mask.querySelector('#asFull');
-      if (fsEl) fsEl.addEventListener('click', () => openFullscreenViewer(asset.url, asset.name));
-      const pickEl = mask.querySelector('#asPicPick');
-      if (pickEl) pickEl.addEventListener('click', () => mask.querySelector('#asFile').click());
+      if (fsEl) fsEl.addEventListener('click', () => { if (currentImgUrl) openFullscreenViewer(currentImgUrl, asset.name); });
+      /* 图片区本身就是上传入口：整块可点。悬浮的「全屏」钮有自己的动作，
+         点它时不能被这里抢走 —— 否则点全屏会弹出文件选择框。 */
+      const previewBox = mask.querySelector('.asset-preview');
+      if (previewBox && !isAudio) {
+        previewBox.title = hasPic ? '点击更换图片' : '点击上传图片';
+        previewBox.addEventListener('click', (ev) => {
+          if (ev.target.closest('.fs-btn')) return;
+          mask.querySelector('#asFile').click();
+        });
+      }
       mask.querySelector('#asFile').addEventListener('change', (ev) => {
         const f = ev.target.files && ev.target.files[0];
         if (!f) return;                            // 取消选择：picked 保持原状，无需恢复
@@ -1468,6 +1919,146 @@
     } catch (e) { fail(e); }
   }
 
+  /* ---------------------------------------------------------- 已绑定素材：预览 / 替换 */
+  /* 点分镜素材格打开（用户 2026-09-20 要求：「点击已上传的素材就可以预览这个素材和替换」）。
+     与「素材详情」(openAssetSettings) 的分工要说清楚，否则用户分不清两者 ——
+     那里编辑的是**素材库里的资产本身**，改一次所有引用它的分镜都会跟着变；
+     这里额外给了一个**本分镜作用域**的入口，两个按钮各自写明作用范围：
+       · 替换素材 = 在本分镜中改绑素材库里的另一个资产（不动原素材，其它分镜不受影响）
+       · 更换文件 = 换掉该资产自己的图片（与素材详情同效，会波及所有引用它的分镜）
+     素材格上还有 ×（data-unbind）：那个仍然是「移除绑定」，委托处理器里排在本分支之前。 */
+  function openBoundAsset(sb, role, assetId) {
+    const meta = ROLE_META[role] || { label: role, type: role };
+    const a = (sb.assets || []).find((x) => x.assetId === assetId && x.role === role);
+    if (!a) { toast('该素材已不在本分镜中，请刷新后重试', 'err'); return Promise.resolve(false); }
+    const isAudio = a.type === 'audio';
+    const hasPic = !!(a.url && !/^(mock|cli):/.test(a.url) && !isAudio);
+    const kindLabel = ASSET_TAB_LABEL[a.type] || a.type;
+    /* 图号 = 提交时 --image 的上传顺序 = 提示词里该写的 @图片N，与后端 asset-lock.imageCatalog 同源。
+       预览时把这句话摆出来，作者才知道该在提示词里怎么写。 */
+    const numText = a.imageIndex
+      ? '图片' + a.imageIndex + '（提交时第 ' + a.imageIndex + ' 张 --image；提示词里写 @图片' + a.imageIndex + ' 引用它）'
+      : (a.audioIndex
+          ? '音频' + a.audioIndex + '（走 --audio，不占图片号）'
+          : '未占用图号');
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.className = 'mask'; mask.style.zIndex = 210;
+      mask.innerHTML =
+        '<div class="modal narrow">' +
+          '<div class="modal-head"><h2>素材预览</h2>' +
+            '<span class="hint-sm">分镜 ' + sb.seq + ' · ' + esc(meta.label) + '</span>' +
+            '<span class="grow"></span>' +
+            '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
+          '<div class="modal-body">' +
+            /* 有图就原图直出（object-fit:contain，不裁不缩略）；点击整块进全屏看细节。
+               无图（提示词导入的那批）沿用「半透明图片占位」，与卡片视觉同一套语言。 */
+            '<div class="asset-preview' + (isAudio ? ' audio' : (hasPic ? ' has-pic zoomable' : '')) + '"' +
+              (isAudio ? ' style="--g:' + a.grad + ';background-image:var(--g)"' : '') + '>' +
+              (isAudio
+                ? '<span class="note">' + I.note + '</span>'
+                : (hasPic
+                    ? '<img src="' + esc(a.url) + '" alt="' + esc(a.name) + '" />' +
+                      '<button class="fs-btn" title="全屏预览（查看细节）">' + I.expand + '</button>'
+                    : '<span class="empty-ph">' + I.img + '<span>该素材还没有图片</span></span>')) +
+            '</div>' +
+            '<div class="row-inline"><span class="label-sm">名称</span>' +
+              '<span class="hint-sm">' + esc(a.name) + '</span></div>' +
+            '<div class="row-inline"><span class="label-sm">类型</span>' +
+              '<span class="hint-sm">' + esc(kindLabel) + ' · 槽位「' + esc(meta.label) + '」</span></div>' +
+            '<div class="row-inline"><span class="label-sm">图号</span>' +
+              '<span class="hint-sm">' + esc(numText) + '</span></div>' +
+            (a.notCounted
+              ? '<div class="banner warn"><span>未计入图号：' + esc(a.notCounted) +
+                '（后面的图号不会因它顺延；点「更换文件」补上图片即可恢复）</span></div>'
+              : '') +
+            '<div class="hint-sm" style="line-height:1.9">' +
+              '· <b>替换素材</b>：在本分镜中改绑素材库里的另一个资产，原素材与其它分镜不受影响。<br/>' +
+              '· <b>更换文件</b>：把该素材的图片换成新文件，<b>所有</b>引用它的分镜都会一起换。' +
+            '</div>' +
+            '<input type="file" id="bpFile" accept="' + (isAudio ? 'audio/*' : 'image/*') + '" hidden />' +
+          '</div>' +
+          '<div class="modal-foot">' +
+            '<span class="hint-sm" id="bpHint"></span><span class="grow"></span>' +
+            '<button class="btn-outline" data-file title="把该素材的图片换成另一个本地文件；素材 id 与全部分镜绑定不变，但所有引用它的分镜都会跟着换图">更换文件</button>' +
+            '<button class="btn-primary" data-swap title="在本分镜中改绑素材库里的另一个资产；原素材与其它分镜不受影响">替换素材</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(mask);
+
+      let busy = false, pickerOpen = false;
+      const q = (s) => mask.querySelector(s);
+      const setHint = (t) => { const el = q('#bpHint'); if (el) el.textContent = t || ''; };
+      const done = () => { mask.remove(); resolve(true); };
+
+      /* 预览区（含悬浮的全屏钮）统一走全屏查看器：这里看的就是原图本身，不再套第二层弹窗 */
+      const box = q('.asset-preview');
+      if (box && hasPic) {
+        box.title = '点击全屏查看原图';
+        box.addEventListener('click', () => openFullscreenViewer(a.url, a.name));
+        /* 文件被删掉、但素材记录里还留着旧 url 时，<img> 会 404 成一张"碎图"。
+           槽位里的背景图 404 是看不见的，这里却能看见 —— 所以退化成占位并说明原因。 */
+        const img = box.querySelector('img');
+        if (img) img.addEventListener('error', () => {
+          box.classList.remove('zoomable');
+          box.removeAttribute('title');
+          img.remove();
+          const fsb = box.querySelector('.fs-btn');
+          if (fsb) fsb.remove();
+          box.insertAdjacentHTML('afterbegin',
+            '<span class="empty-ph">' + I.img + '<span>图片文件读不到（可能已被删除）<br/>点「更换文件」重新上传</span></span>');
+          const bar = q('#bpHint');
+          if (bar) bar.textContent = '图片文件读不到，可用「更换文件」补上';
+        });
+      }
+
+      q('#bpFile').addEventListener('change', async (ev) => {
+        const f = ev.target.files && ev.target.files[0];
+        ev.target.value = '';                       // 允许连续选同一个文件
+        if (!f || busy) return;
+        busy = true; setHint('上传中…');
+        q('[data-file]').disabled = true; q('[data-swap]').disabled = true;
+        try {
+          await Api.replaceAsset(a.assetId, f, a.name);   // 保留素材 id 与全部分镜绑定
+          toast('已更换「' + a.name + '」的图片', 'ok');
+          await loadAssets();
+          await loadList({ skeleton: false });     // 槽位缩略图立刻跟着换
+          done();
+        } catch (e) {
+          busy = false; setHint('');
+          q('[data-file]').disabled = false; q('[data-swap]').disabled = false;
+          fail(e);
+        }
+      });
+
+      q('[data-swap]').addEventListener('click', async () => {
+        if (busy || pickerOpen) return;
+        /* 替换复用同一个资产选择弹窗（数据源、类型过滤、配额口径都是同一套），
+           只是切到 replace 语义：标题/提示不同，且单值槽位不被"已满额"拦住（换绑不增数）。
+           预览弹窗先让位 —— 选择弹窗的 z-index 是 200，压不过这里的 210。 */
+        pickerOpen = true;
+        mask.style.display = 'none';
+        const ok = await openAssetPicker(sb, role, { replace: true, replaceFrom: a.assetId });
+        pickerOpen = false;
+        mask.style.display = '';
+        if (ok) {
+          await loadAssets();
+          await loadList({ skeleton: false });
+          done();
+        }
+      });
+
+      const close = () => { mask.remove(); resolve(false); };
+      q('[data-x]').addEventListener('click', close);
+      mask.addEventListener('click', (ev) => { if (ev.target === mask) close(); });
+      document.addEventListener('keydown', function escBa(ev) {
+        if (ev.key !== 'Escape') return;
+        if (pickerOpen) return;                     // 选择弹窗自己处理 ESC，别把两层一起关掉
+        document.removeEventListener('keydown', escBa); close();
+      });
+    });
+  }
+
   /* ---------------------------------------------------------- 导入资产（双模式弹窗） */
   /* 模式一：导入本地图片/音频文件（按当前面板 tab 的类型上传，可多选）；
      模式二：粘贴提示词文本 → 后端按「@ 分段」自动识别 场景/道具/角色 → 预览 → 确认导入。
@@ -1477,11 +2068,15 @@
     let mode = 'file';                        // 'file' | 'text' | 'conflict'
     let pickedFiles = [];                     // 文件模式待传清单
     let parsed = null;                        // 文本模式解析结果
+    /* 文本模式的唯一原文来源。render() 会整体重建 mask.innerHTML，粘贴进去的 textarea
+       节点随之被销毁重建（新节点没有值）—— 若还从 DOM 读原文，「解析预览」后点
+       「确认导入」必然读到空串（服务端以 PARAM「提示词文本为空」拒绝）。 */
+    let rawText = '';
     let importPlan = null;                    // 文件模式匹配计划（conflict 视图暂存）
     let conflictAction = 'merge';             // 冲突处理默认「两者并存」（最安全，不破坏原图）
     let busy = false;
-    const typeLabel = { character: '角色', scene: '场景', prop: '道具', audio: '音频' };
-    const tabLabel = { character: '角色', scene: '场景', prop: '道具', audio: '音频' };
+    const typeLabel = ASSET_TAB_LABEL;
+    const tabLabel = ASSET_TAB_LABEL;
 
     const mask = document.createElement('div');
     mask.className = 'mask'; mask.style.zIndex = 200;
@@ -1490,7 +2085,7 @@
     function render() {
       const filePane =
         '<div class="imp-pane">' +
-          '<div class="hint-sm" style="margin-bottom:8px">选择一个或多个本地' + (isAudioTab ? '音频' : '图片') + '文件，导入到「' + tabLabel[S.panelTab] + '」分类。文件名（忽略扩展名、首尾空格，大小写不敏感）与资产名一致时：<b>无图资产自动补图</b>；<b>已有图资产会先询问</b>你覆盖 / 跳过 / 并存。</div>' +
+          '<div class="hint-sm" style="margin-bottom:8px">选择一个或多个本地' + (isAudioTab ? '音频' : '图片') + '文件。文件名（忽略扩展名、首尾空格，大小写不敏感）与<b>全库任意分类</b>的资产名一致时：<b>无图资产自动补图</b>；<b>已有图资产会先询问</b>你覆盖 / 跳过 / 并存。匹配不到任何资产的文件，按当前「' + tabLabel[S.panelTab] + '」分类新增（文件名无法判断类型，需要你切到对应分类再导入）。</div>' +
           '<button class="btn-mini" id="impPick"' + (busy ? ' disabled' : '') + '>选择文件…</button>' +
           '<input type="file" id="impFile" accept="' + (isAudioTab ? 'audio/*' : 'image/*') + '" multiple hidden />' +
           (pickedFiles.length
@@ -1502,10 +2097,14 @@
       const textPane = isAudioTab ? '' :
         '<div class="imp-pane">' +
           '<div class="hint-sm" style="margin-bottom:8px">粘贴多段文生图提示词，段与段之间用<b>单独一行的 @</b> 分隔。系统自动识别每段的资产类型（场景 / 道具 / 角色）与名称，并按类型归类导入。</div>' +
-          '<textarea id="impText" class="asset-prompt tall" placeholder="角色描述信息如下：林晚…&#10;@&#10;按照下方场景描述内容生成…&#10;@&#10;根据道具描述内容生成…" spellcheck="false"></textarea>' +
+          '<textarea id="impText" class="asset-prompt tall" placeholder="角色描述信息如下：林晚…&#10;@&#10;按照下方场景描述内容生成…&#10;@&#10;根据道具描述内容生成…" spellcheck="false">' + esc(rawText) + '</textarea>' +
           '<div class="row-inline" style="margin-top:8px">' +
             '<button class="btn-mini" id="impParse"' + (busy ? ' disabled' : '') + '>解析预览</button>' +
-            '<span class="hint-sm" id="impParseHint">' + (parsed ? '识别 ' + parsed.items.length + ' 段' + (parsed.skipped.length ? '，未识别 ' + parsed.skipped.length + ' 段' : '') : '粘贴后先解析，再确认导入') + '</span>' +
+            '<span class="hint-sm" id="impParseHint">' + (parsed
+              ? '可导入 ' + parsed.items.length + ' 个资产' +
+                ((parsed.duplicates || []).length ? '，重复跳过 ' + parsed.duplicates.length + ' 个' : '') +
+                (parsed.skipped.length ? '，未识别 ' + parsed.skipped.length + ' 段' : '')
+              : '粘贴后先解析，再确认导入') + '</span>' +
           '</div>' +
           (parsed ? renderParseResult(parsed) : '') +
         '</div>';
@@ -1568,10 +2167,17 @@
       const skips = p.skipped.map((sk) =>
         '<div class="parse-item bad" title="' + esc(sk.preview || '') + '"><span class="type-badge b-skip">跳过</span>' +
         '<span class="nm">第 ' + sk.index + ' 段</span><span class="hint-sm">' + esc(sk.reason) + '</span></div>').join('');
+      /* 重复段：库里已有同名同类资产，或本批里出现两次 —— 不会再建一份，单独列出来告知用户，
+         否则他会以为"粘了 27 段怎么只导入 14 个"。 */
+      const dups = (p.duplicates || []).map((d) =>
+        '<div class="parse-item warn" title="' + (d.source === 'batch' ? '本批内前面已出现过同名段落' : '素材库里已有同名同类资产') + '">' +
+        '<span class="type-badge b-conf">重复</span>' +
+        '<span class="nm">' + esc(d.name) + '</span>' +
+        '<span class="hint-sm">' + (d.source === 'batch' ? '本批内重复' : '已存在，跳过') + '</span></div>').join('');
       return '<div class="imp-parse"><div class="sec-head" style="margin:10px 0 6px"><b>识别结果（' +
         '角色 ' + p.items.filter((x) => x.type === 'character').length +
         ' · 场景 ' + p.items.filter((x) => x.type === 'scene').length +
-        ' · 道具 ' + p.items.filter((x) => x.type === 'prop').length + '）</b></div>' + rows + skips + '</div>';
+        ' · 道具 ' + p.items.filter((x) => x.type === 'prop').length + '）</b></div>' + rows + dups + skips + '</div>';
     }
 
     function bind() {
@@ -1621,14 +2227,20 @@
       } else {
         const parseBtn = mask.querySelector('#impParse');
         const textEl = mask.querySelector('#impText');
+        textEl.addEventListener('input', () => { rawText = textEl.value; });
         parseBtn.addEventListener('click', async () => {
-          const text = String(textEl.value || '');
-          if (!text.trim()) { toast('请先粘贴提示词文本', 'err'); return; }
+          rawText = String(textEl.value || '');
+          if (!rawText.trim()) { toast('请先粘贴提示词文本', 'err'); return; }
           busy = true; parseBtn.disabled = true;
           mask.querySelector('#impParseHint').textContent = '解析中…';
           try {
-            parsed = await Api.importAssetPrompts(text, false);
-            if (!parsed.items.length) toast('没有识别出任何资产段，请检查 @ 分隔与段首类型标识', 'err');
+            parsed = await Api.importAssetPrompts(rawText, false);
+            if (!parsed.items.length) {
+              // 全是重复项时不能报"没识别出来" —— 那是两回事，提示语要对得上
+              toast((parsed.duplicates || []).length
+                ? '这些段落都已存在，没有新资产可导入'
+                : '没有识别出任何资产段，请检查 @ 分隔与段首类型标识', 'err');
+            }
           } catch (e) { parsed = null; fail(e); }
           busy = false;
           render();
@@ -1638,11 +2250,13 @@
           if (!parsed || !parsed.items.length || busy) return;
           busy = true; go.disabled = true;
           try {
-            const r = await Api.importAssetPrompts(String(textEl.value || ''), true);
+            const r = await Api.importAssetPrompts(rawText, true);
             const c = { character: 0, scene: 0, prop: 0 };
             (r.created || []).forEach((x) => { c[x.type]++; });
+            const dupN = (r.duplicates || []).length;
             toast('导入完成：角色 ' + c.character + ' · 场景 ' + c.scene + ' · 道具 ' + c.prop +
-              (r.skipped.length ? '（另有 ' + r.skipped.length + ' 段未识别被跳过）' : ''), 'ok');
+              (dupN ? '（重复已跳过 ' + dupN + ' 个）' : '') +
+              (r.skipped.length ? '（未识别 ' + r.skipped.length + ' 段）' : ''), 'ok');
             close();
             await loadAssets();
             await loadList({ skeleton: false });
@@ -1693,6 +2307,239 @@
     }
     // ③ 其余情况：打开素材设置（不再隐式添加到分镜）
     await editAsset(assetId);
+  }
+
+  /* ---------------------------------------------------------- 分镜「添加资产」弹窗 */
+  /* 从分镜表格的「＋」槽位进入：列出该槽位对应类型的**全部素材**（与右侧素材面板同源，
+     都是 GET /assets?type=…），可搜索、可点选，确定后逐个绑定。
+     交互约定：
+       · 点一项 = 选中（高亮 + 打勾），再点一次 = 取消选中；
+       · 角色是多值槽位 → 可多选；场景/道具/首帧图/分镜图/音频是单值槽位 → 只能选一个，
+         选第二个会替换掉前一个（与后端 bindAsset 的 single/multi 规则一致）；
+       · 已绑定在本分镜上的素材标「已添加」且不可再选 —— 重复添加在这里就被拦住并给出提示
+         （后端对重复绑定是静默忽略，不会报错，所以必须由前端提示）；
+       · 取消 / 关闭 / Esc / 点遮罩 → 不做任何变更。
+     完成后由调用方刷新表格（loadList）与素材面板（loadAssets），让「已添加资产」立刻可见。 */
+  /* 资产选择弹窗。opts.replace = true 时切到「替换」语义（由素材预览弹窗的「替换素材」按钮打开）：
+       · 单选（一换一），确定后把本分镜原来绑的那个（opts.replaceFrom）解绑 —— 多值槽位
+         （角色/道具）不会因此多出一个绑定；
+       · 配额按「换掉一个」算，即已用满时仍可替换（换绑不增加图片数）；
+       · 标题与提示改口为「替换」，避免用户以为是在新增。 */
+  function openAssetPicker(sb, role, opts) {
+    const meta = ROLE_META[role];
+    const typeLabel = ASSET_TAB_LABEL[meta.type] || meta.type;
+    const replacing = !!(opts && opts.replace);
+    const replaceFrom = (opts && opts.replaceFrom) || null;
+    return new Promise((resolve) => {
+      const bound = new Set((sb.assets || []).filter((r) => r.role === role).map((r) => r.assetId));
+      const sel = new Set();
+      let list = [], keyword = '', busy = false, loaded = false;
+      /* 参考图配额：X = 该分镜当前**真会发出**的图片数（后端 imageCatalog 口径，只算有本地文件的），
+         Y = 当前模型的上限（models.js 的系列规则表下发）。音频槽位不占图片名额，故不显示。
+         打开时先用列表行的值（同一份服务端计算），随后拉一次详情校准。
+         替换模式要先把「即将解绑的那一张」从占用里扣掉，否则满额时明明能换却换不了。 */
+      const isImageRole = role !== 'audio';
+      let quota = { count: sb.imageCount || 0, limit: sb.imageLimit != null ? sb.imageLimit : 9 };
+      const isFull = () => isImageRole && (quota.count - (replacing ? 1 : 0)) >= quota.limit;
+      const isReplace = () => replacing || !meta.multi;   // 单选语义（一换一）
+
+      const mask = document.createElement('div');
+      mask.className = 'mask'; mask.style.zIndex = 200;
+      mask.innerHTML =
+        '<div class="modal narrow">' +
+          '<div class="modal-head"><h2>' + (replacing ? '替换素材' : '添加资产') + ' · ' + meta.label + '</h2>' +
+            '<span class="hint-sm">分镜 ' + sb.seq + '</span>' +
+            '<span class="grow"></span>' +
+            (isImageRole ? '<span class="ap-quota" id="apQuota"></span>' : '') +
+            '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
+          '<div class="modal-body">' +
+            '<label class="panel-search">' + I.search +
+              '<input id="apSearch" placeholder="搜索' + typeLabel + '名称" /></label>' +
+            '<div class="banner warn" id="apFull" hidden><span id="apFullTxt"></span></div>' +
+            '<div class="sec-head"><b id="apCount">素材库</b><span class="grow"></span>' +
+              '<span>' + (isReplace()
+                ? '点击选中，再次点击取消（单选，确定后替换当前绑定的素材）'
+                : '点击选中，再次点击取消（可多选）') + '</span></div>' +
+            '<div class="ap-list" id="apList"></div>' +
+          '</div>' +
+          '<div class="modal-foot">' +
+            '<span class="hint-sm" id="apHint">未选择</span>' +
+            '<span class="grow"></span>' +
+            '<button class="btn-outline" data-cancel>取消</button>' +
+            '<button class="btn-primary" data-ok disabled>' + (replacing ? '替换' : '确定') + '</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(mask);
+
+      const q = (s) => mask.querySelector(s);
+      const visible = () => {
+        const k = keyword.trim().toLowerCase();
+        return k ? list.filter((a) => String(a.name || '').toLowerCase().includes(k)) : list;
+      };
+
+      /* 缩略图：有图用图，无图沿用面板那套「半透明图片占位」（与卡片视觉一致） */
+      function thumbStyle(a) {
+        const hasPic = a.url && !/^(mock|cli):/.test(a.url) && a.type !== 'audio';
+        return hasPic
+          ? 'background-image:url(' + a.url + ');background-size:cover;background-position:center;'
+          : '--g:' + a.grad + ';background-image:var(--g)';
+      }
+
+      /* 配额状态：头部「已添加 X / 上限 Y」+ 满额时的说明条。满额后行不可选、确定不可点。 */
+      function renderQuota() {
+        if (!isImageRole) return;
+        const full = isFull();
+        const quotaEl = q('#apQuota');
+        if (quotaEl) {
+          quotaEl.textContent = '已添加 ' + quota.count + ' / 上限 ' + quota.limit;
+          quotaEl.classList.toggle('full', full);
+        }
+        const bar = q('#apFull');
+        if (bar) {
+          bar.hidden = !full;
+          if (full) {
+            /* 替换模式下"已满额"的含义要换一套说法：这里扣掉的是即将被换掉的那一张，
+               所以用户能做的动作是「换掉其中一张」而不是「先移除再加」。 */
+            q('#apFullTxt').textContent = replacing
+              ? '本分镜已用满 ' + quota.count + ' 张（上限 ' + quota.limit + '）。仍可替换其中一张 —— ' +
+                '换绑不会增加图片数；要新增请先移除部分图片。'
+              : '已达参考图上限：当前模型（' + (sb.model || '—') + '）最多 ' + quota.limit +
+                ' 张，本分镜已用满 ' + quota.count + ' 张。请先移除部分图片释放名额' +
+                (quota.limit < 30 ? '，或把该分镜改用 Seedance 2.5（上限 30 张）' : '') + '。';
+          }
+        }
+      }
+
+      function renderList() {
+        const rows = visible();
+        const host = q('#apList');
+        q('#apCount').textContent = '素材库' + (loaded ? '（' + list.length + '）' : '');
+        renderQuota();
+        if (!loaded) { host.innerHTML = '<div class="empty-mini">加载中…</div>'; return; }
+        if (!list.length) {
+          host.innerHTML = '<div class="empty-mini">素材库里还没有' + typeLabel + '资产<br/>' +
+            '<small>先在右侧素材面板「导入资产」，再回来添加</small></div>';
+          return;
+        }
+        if (!rows.length) {
+          host.innerHTML = '<div class="empty-mini">没有匹配「' + esc(keyword.trim()) + '」的资产</div>';
+          return;
+        }
+        host.innerHTML = rows.map((a) => {
+          const isBound = bound.has(a.id);
+          const isSel = sel.has(a.id);
+          return '<div class="ap-row' + (isSel ? ' sel' : '') + (isBound ? ' bound' : '') + '" data-ap="' + a.id + '"' +
+            ' title="' + esc(a.name) + (isBound ? '（已在此分镜中）' : '') + '">' +
+            '<span class="ap-thumb" style="' + thumbStyle(a) + '"></span>' +
+            '<span class="ap-name">' + esc(a.name) + '</span>' +
+            '<span class="ap-type">' + esc(ASSET_TAB_LABEL[a.type] || a.type) + '</span>' +
+            (isBound ? '<span class="ap-bound">已添加</span>' : '') +
+            '<span class="ap-tick">' + I.tick + '</span>' +
+          '</div>';
+        }).join('');
+      }
+
+      function renderFoot() {
+        const n = sel.size;
+        const names = Array.from(sel).map((id) => ((list.find((a) => a.id === id) || {}).name || id));
+        q('#apHint').textContent = n ? (replacing ? '将替换为：' : '已选 ' + n + ' 个：') + names.join('、') : '未选择';
+        const ok = q('[data-ok]');
+        ok.disabled = busy || !n || isFull();
+        ok.textContent = busy
+          ? (replacing ? '替换中…' : '添加中…')
+          : ((replacing ? '替换' : '确定') + (n ? '（' + n + '）' : ''));
+        q('[data-cancel]').disabled = busy;
+      }
+
+      function toggle(a) {
+        if (busy) return;
+        if (isFull()) {
+          toast('已达参考图上限：当前模型（' + (sb.model || '—') + '）最多 ' + quota.limit +
+            ' 张，本分镜已用满 ' + quota.count + ' 张。请先移除部分图片，或改用上限更高的模型', 'err');
+          return;
+        }
+        if (bound.has(a.id)) { toast('「' + a.name + '」已在此分镜中，无需重复添加', 'err'); return; }
+        if (sel.has(a.id)) sel.delete(a.id);
+        else {
+          if (isReplace()) sel.clear();   // 单值槽位 / 替换模式：选了新的就换掉旧的（一换一）
+          sel.add(a.id);
+        }
+        renderList(); renderFoot();
+      }
+
+      async function confirm() {
+        if (busy || !sel.size) return;
+        busy = true; renderFoot();
+        const ids = Array.from(sel);
+        const errs = [];
+        for (const id of ids) {
+          try { await Api.bindAsset(sb.id, id, role); }
+          catch (e) { errs.push(((list.find((a) => a.id === id) || {}).name || id) + '：' + errText(e)); }
+        }
+        if (errs.length) {
+          // 有失败就保持弹窗打开、把已成功的从选择集里摘掉，用户可直接重试
+          busy = false;
+          ids.forEach((id) => { if (!errs.some((x) => x.startsWith(((list.find((a) => a.id === id) || {}).name || id)))) sel.delete(id); });
+          await refreshQuota();   // 成功的那些已占名额：把「已添加 X」同步到最新，避免重复占额
+          renderList(); renderFoot();
+          toast('添加失败 ' + errs.length + ' 个：' + errs.join('；'), 'err');
+          return;
+        }
+        /* 替换模式：新绑定落库后再解绑原来那张（顺序不能反 —— 先解绑万一绑定失败就白丢了）。
+           多值槽位（角色/道具）必须补这一步，否则"替换"会变成"多绑一个"；
+           单值槽位在后端 bindAsset 里已被替换掉，这一步是空操作（filter 掉不存在的绑定不报错）。 */
+        if (replacing && replaceFrom && !ids.includes(replaceFrom)) {
+          try { await Api.unbindAsset(sb.id, replaceFrom); }
+          catch (e) { toast('新素材已绑定，但旧绑定未能解除：' + errText(e), 'err'); }
+        }
+        toast(replacing
+          ? '已替换分镜 ' + sb.seq + ' 的' + meta.label + '素材'
+          : '已添加 ' + ids.length + ' 个' + meta.label + '到分镜 ' + sb.seq, 'ok');
+        close(true);
+      }
+
+      function close(done) {
+        document.removeEventListener('keydown', onKey);
+        mask.remove();
+        resolve(!!done);
+      }
+      const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); close(false); } };
+
+      mask.querySelector('[data-x]').addEventListener('click', () => close(false));
+      mask.querySelector('[data-cancel]').addEventListener('click', () => close(false));
+      mask.querySelector('[data-ok]').addEventListener('click', confirm);
+      mask.addEventListener('click', (ev) => { if (ev.target === mask) close(false); });
+      document.addEventListener('keydown', onKey);
+      mask.querySelector('#apSearch').addEventListener('input', (ev) => { keyword = ev.target.value; renderList(); });
+      mask.addEventListener('click', (ev) => {
+        const row = ev.target.closest('[data-ap]');
+        if (!row) return;
+        const a = list.find((x) => x.id === row.dataset.ap);
+        if (a) toggle(a);
+      });
+
+      /* 拉一次详情校准配额（列表行的值可能已被轮询之外的操作改动过）——
+         口径仍然后端算，前端不自己数。失败就沿用列表行的值，不阻断弹窗。 */
+      async function refreshQuota() {
+        if (!isImageRole) return;
+        try {
+          const d = await Api.getStoryboard(sb.id);
+          if (d && d.imageLimit != null) quota = { count: d.imageCount || 0, limit: d.imageLimit };
+        } catch (e) { /* 校准失败：保持现有配额值 */ }
+      }
+
+      renderList(); renderFoot();
+      mask.querySelector('#apSearch').focus();
+
+      /* 数据源 = 素材库（与右侧面板同一接口、同一份数据），只取该槽位对应的类型；
+         同时拉一次分镜详情校准配额。两者并行，互不阻塞。 */
+      Promise.all([
+        Api.listAssets({ projectId: Api.CFG.projectId, type: meta.type })
+          .then((res) => { list = (res && res.library) || []; })
+          .catch((e) => { list = []; fail(e); }),
+        refreshQuota()
+      ]).then(() => { loaded = true; renderList(); renderFoot(); });
+    });
   }
 
   /* ---------------------------------------------------------- 批量操作 */
@@ -1858,8 +2705,28 @@
     '</div>';
   }
 
-  function copyText(txt, okMsg) {
-    const done = () => toast(okMsg);
+  /* 长文本块右上角的悬浮复制钮。默认隐形、悬停才浮现（正文是整段密集文字，
+     常驻按钮会压住开头几行），点击后原地变「已复制」再退回 —— 反馈落在按钮上，
+     不必让用户去看角落的 toast。 */
+  const copyBtnHTML = (what, title) =>
+    '<button class="copy-btn" data-copy="' + what + '" title="' + title + '">' +
+    I.copy + '<span>复制</span></button>';
+
+  /* 复制成功后在按钮上原地显示「已复制」，1.4s 后复原 */
+  function flashCopied(btn) {
+    if (!btn || btn.classList.contains('done')) return;
+    const label = btn.querySelector('span');
+    const old = label ? label.textContent : '';
+    btn.classList.add('done');
+    if (label) label.textContent = '已复制';
+    setTimeout(() => {
+      btn.classList.remove('done');
+      if (label) label.textContent = old;
+    }, 1400);
+  }
+
+  function copyText(txt, okMsg, btn) {
+    const done = () => { toast(okMsg); flashCopied(btn); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(txt).then(done).catch(() => fallback());
     } else fallback();
@@ -1917,13 +2784,16 @@
   function closeAuto() { $('#autoMask').hidden = true; }
 
   function renderAutoPanel() {
-    const st = S.autoStats || { bound: 0, kept: 0, occupied: 0, noMatch: 0, storyboards: 0 };
+    const st = S.autoStats || { bound: 0, kept: 0, occupied: 0, noMatch: 0, overLimit: 0, storyboards: 0 };
     const rows = S.autoRows || [];
     const n = st.bound || 0;
     const ow = isAutoOverwrite();
     $('#autoTitle').textContent = '自动匹配参考图 · 将绑定 ' + n + ' 个';
+    /* 超额未绑要出现在计数里 —— 否则用户会疑惑"明明命中了却没绑上"。
+       名额口径与「添加资产」弹窗完全一致（后端 imageCount / imageLimit）。 */
     $('#autoHint').textContent = '扫描 ' + (st.storyboards || 0) + ' 条 · 命中 ' + n + ' · 已存在 ' +
-      (st.kept || 0) + ' · 类型已占 ' + (st.occupied || 0) + ' · 无匹配 ' + (st.noMatch || 0);
+      (st.kept || 0) + ' · 类型已占 ' + (st.occupied || 0) + ' · 无匹配 ' + (st.noMatch || 0) +
+      (st.overLimit ? ' · 超上限未绑 ' + st.overLimit : '');
     $('#autoApply').disabled = !n || S.autoBusy;
     $('#autoApply').textContent = S.autoBusy ? '应用中…' : (n ? '应用（绑定 ' + n + ' 个）' : '无匹配，无需应用');
 
@@ -1942,12 +2812,19 @@
         '<i>' + esc(roleLabelOf(m.role)) + ' · ' + esc(viaLabelOf(m.via)) + '「' + esc(m.keyword) + '」</i></span>';
       const box = [];
       if (r.toBind.length) box.push('<div class="mk-line"><b>将绑定</b>' + r.toBind.map((m) => tag(m)).join('') + '</div>');
+      /* 命中但名额已满：单独列出来并说明原因（模型上限 + 当前已占），
+         不能默默丢掉 —— 用户需要知道"为什么这个没绑上"以及怎么腾名额。 */
+      if (r.overLimit && r.overLimit.length) {
+        box.push('<div class="mk-line"><b>超上限未绑</b>' + r.overLimit.map((m) =>
+          '<span class="mk-tag occ">' + esc(m.name) + '<i>' + esc(roleLabelOf(m.role)) +
+          ' · 当前模型上限 ' + r.imageLimit + ' 张，本分镜已占 ' + r.imageCount + ' 张，名额已满</i></span>').join('') + '</div>');
+      }
       if (r.occupied.length) box.push('<div class="mk-line"><b>类型已占</b>' + r.occupied.map((o) =>
         '<span class="mk-tag occ">' + esc(o.want.name) + '<i>与已绑定的「' + esc(o.currentName) + '」同为' + esc(roleLabelOf(o.role)) +
         '，' + (ow ? '将替换' : '已跳过（勾选「覆盖同类型已有绑定」可替换）') + '</i></span>').join('') + '</div>');
       if (r.rivals.length) box.push('<div class="mk-line"><b>同类落选</b>' + r.rivals.map((m) => tag(m, 'rival')).join('') + '</div>');
       if (r.kept.length) box.push('<div class="mk-line"><b>已绑定</b>' + r.kept.map((m) => tag(m, 'done')).join('') + '</div>');
-      if (!r.toBind.length && !r.occupied.length && !r.rivals.length) {
+      if (!r.toBind.length && !r.occupied.length && !r.rivals.length && !(r.overLimit || []).length) {
         box.push('<div class="hint-sm">未匹配到任何素材 —— 提示词里没有出现素材名或它的主干词</div>');
       }
       h.push('<div class="cmd-card"><div class="cmd-card-head"><b>分镜 ' + r.seq + '</b>' +
@@ -2083,6 +2960,17 @@
     // 按时长标注重算：允许不选（不选 = 作用于全部「未提交」分镜）
     if (kind === 'reduration') { await openDurRecalc(ids); return; }
 
+    // 全选 / 反选 / 区间：必须在「无选中就返回」之前处理 —— 没选中时正是要点全选的时候
+    if (kind === 'all') {
+      S.list.forEach((r) => S.sel.add(r.id));
+      renderTable(); renderPanel(); renderStatusbar(); return;
+    }
+    if (kind === 'invert') {
+      const next = new Set();
+      S.list.forEach((r) => { if (!S.sel.has(r.id)) next.add(r.id); });
+      S.sel = next;
+      renderTable(); renderPanel(); renderStatusbar(); return;
+    }
     if (!ids.length) return;
 
     if (kind === 'clear') { S.sel.clear(); renderTable(); renderPanel(); renderStatusbar(); return; }
@@ -2114,6 +3002,18 @@
   }
 
   document.addEventListener('click', async (e) => {
+    /* 区间选择的「选中区间」按钮：素材面板与分镜列表共用一套标记，靠 data-rangego 区分目标 */
+    const rg = e.target.closest('[data-rangego]');
+    if (rg) {
+      if (rg.dataset.rangego === 'as') {
+        applyRange('as', S.assets.map((a) => a.id), S.assetRange, S.assetSel, renderPanel);
+      } else {
+        applyRange('sb', S.list.map((r) => r.id), S.selRange, S.sel, () => {
+          renderTable(); renderPanel(); renderStatusbar();
+        });
+      }
+      return;
+    }
     const b = e.target.closest('[data-batch]');
     if (b) await onBatch(b.dataset.batch);
     if (e.target.closest('#btnSubmitSel')) await submitSelected();
@@ -2126,9 +3026,12 @@
     }
     const cp = e.target.closest('[data-copy]');
     if (cp) {
-      const al = (S.detailFull && S.detailFull.assetLock) || {};
-      if (cp.dataset.copy === 'lockblock') copyText(al.block || '', '已复制素材锁定区块');
-      else if (cp.dataset.copy === 'promptwithlock') copyText(al.promptWithLock || '', '已复制注入后的完整提示词');
+      const d = S.detailFull || {};
+      const al = d.assetLock || {};
+      if (cp.dataset.copy === 'lockblock') copyText(al.block || '', '已复制素材锁定区块', cp);
+      else if (cp.dataset.copy === 'promptwithlock') copyText(al.promptWithLock || '', '已复制注入后的完整提示词', cp);
+      else if (cp.dataset.copy === 'detailprompt') copyText(d.prompt || '', '已复制提示词', cp);
+      else if (cp.dataset.copy === 'detailcmd') copyText(d.cliCommand || '', '已复制 CLI 命令', cp);
     }
     const cl = e.target.closest('[data-copylock]');
     if (cl) {
@@ -2148,6 +3051,11 @@
       if (act === 'exit') { S.assetSelMode = false; S.assetSel.clear(); renderPanel(); return; }
       if (act === 'all') { S.assets.forEach((a) => S.assetSel.add(a.id)); renderPanel(); return; }
       if (act === 'none') { S.assetSel.clear(); renderPanel(); return; }
+      if (act === 'invert') {                    // 反选：已选变未选、未选变已选
+        const next = new Set();
+        S.assets.forEach((a) => { if (!S.assetSel.has(a.id)) next.add(a.id); });
+        S.assetSel = next; renderPanel(); return;
+      }
       if (act === 'del') { await deleteSelectedAssets(); return; }
       if (act === 'openImport') { if (!S.assetBusy) openAssetImport(); return; }
       return;
@@ -2525,7 +3433,19 @@
             '<span class="switch' + (s.queue.autoRetry ? ' on' : '') + '" data-toggle="autoRetry"><i></i></span></div>' +
         '</div>' +
       '</section>' +
-      /* —— 卡片 4 · 生成引擎与账号（全局的「检测」升到卡片头，两个 CLI 各自成组） —— */
+      /* —— 卡片 4 · 个性化（显示偏好；2026-09-20 新增，原顶栏「紧凑视图」按钮并入此处） —— */
+      '<section class="scard">' +
+        '<div class="scard-hd"><div class="scard-hd-t">' +
+          '<h3>个性化</h3><p>界面显示偏好，只影响本页外观，不改动任何生成参数</p></div></div>' +
+        '<div class="scard-bd">' +
+          '<div class="srow"><span class="k">紧凑视图</span>' +
+            '<span class="switch' + (isCompact() ? ' on' : '') + '" data-toggle="compact" title="行高与缩略图缩小，同屏看到更多分镜"><i></i></span></div>' +
+          '<p class="hint-sm">开启后行高 132px、素材格 32×40、产物格 56×36，一屏能多看几条分镜；关闭即标准视图。' +
+            '与原来顶栏那个「紧凑视图」按钮是同一套逻辑（切换 <code>#app</code> 上的 <code>.compact</code> 类），' +
+            '只是入口挪到了这里。此项为即时生效的显示偏好，不写入服务端配置，刷新后回到标准视图。</p>' +
+        '</div>' +
+      '</section>' +
+      /* —— 卡片 5 · 生成引擎与账号（全局的「检测」升到卡片头，两个 CLI 各自成组） —— */
       '<section class="scard">' +
         '<div class="scard-hd">' +
           '<div class="scard-hd-t"><h3>生成引擎与账号</h3>' +
@@ -2589,13 +3509,22 @@
     const no = '<span style="color:#7A7A7A">已完成，已锁定时长</span>';
     $('#detailTitle').textContent = previewOnly ? ('产物预览 · 分镜 ' + full.seq) : ('分镜 ' + full.seq + ' · 详情');
     $('#detailBody').innerHTML =
+      /* 产物预览：真播放器（2026-09-19 修复）。
+         原先这里只是一块渐变底 + 播放图标 + 把 videoUrl 当文字打出来 —— 根本播不了，
+         用户点开「产物预览」看不到任何视频。现在换成 <video controls>，
+         并把地址做成可点链接（同一份地址，想用外部播放器打开也行）。
+         后端已支持 HTTP Range（见 server/index.js 的 serveFile），所以进度条能拖动。 */
       (previewOnly && full.videoUrl
-        ? '<div style="border-radius:12px;height:260px;background:' + full.grad + ';display:grid;place-items:center">' +
-          '<div style="text-align:center;color:#fff">' + I.play + '<div style="margin-top:10px;font-size:12.5px">' + esc(full.ratio) + ' · ' + full.durationSec + 's · ' + esc(full.resolution) + '</div>' +
-          '<div style="font-family:var(--mono);font-size:11px;opacity:.8;margin-top:4px">' + esc(full.videoUrl) + '</div></div></div>'
-        : '') +
+        ? '<video class="pv-video" controls preload="metadata" playsinline' +
+            (full.coverUrl ? ' poster="' + esc(mediaUrl(full.coverUrl)) + '"' : '') +
+            ' src="' + esc(mediaUrl(full.videoUrl)) + '"></video>' +
+          '<div class="pv-meta">' + esc(full.ratio) + ' · ' + full.durationSec + 's · ' + esc(full.resolution) +
+            ' · <a href="' + esc(mediaUrl(full.videoUrl)) + '" target="_blank" rel="noopener">在新窗口打开 ↗</a></div>'
+        : (previewOnly ? '<div class="pv-meta">这条分镜还没有产物（未生成或已失败）</div>' : '')) +
       '<div class="sec-title">提示词</div>' +
-      '<div style="font-size:12.5px;line-height:1.7;color:var(--ink80)">' + esc(full.prompt) + '</div>' +
+      '<div class="copywrap">' + copyBtnHTML('detailprompt', '复制提示词') +
+        '<div style="font-size:12.5px;line-height:1.7;color:var(--ink80)">' + esc(full.prompt) + '</div>' +
+      '</div>' +
       assetLockHTML(full) +
       '<div class="sec-title">参数</div>' +
       '<dl class="kv">' +
@@ -2615,11 +3544,27 @@
             ? '<div class="banner warn"><span>这条干跑记录是在提示词 / 绑定素材 / 参数变动<b>之前</b>生成的，命令内容已不代表实际会执行的内容。' +
               '请重新「干跑提交」后再核对。</span></div>'
             : '') +
-          '<div class="codebox">$ ' + esc(full.cliCommand) + '</div>'
+          '<div class="copywrap on-dark">' + copyBtnHTML('detailcmd', '复制 CLI 命令') +
+            '<div class="codebox">$ ' + esc(full.cliCommand) + '</div>' +
+          '</div>'
         : '') +
       (full.logs && full.logs.length ? '<div class="sec-title">执行日志</div>' + full.logs.map((l) => '<div class="logline ' + esc(l.level || '') + '">' + esc(l.msg) + '</div>').join('') : '');
     S.detailFull = full;    // 供「复制区块 / 复制完整提示词」按钮取文本
     $('#detailMask').hidden = false;
+  }
+
+  /* 关闭详情 / 产物预览弹窗。
+     ⚠ 必须先停掉 <video>（2026-09-19 用户上报的 bug）：
+     只把遮罩 `hidden` 掉，视频元素仍留在 DOM 里**继续播放** —— 表现为"关掉预览窗口后
+     还能听到声音，一直到它播完"。实测：关闭 1.5 秒后 currentTime 从 0.92 涨到 2.45、
+     paused 仍为 false。三处关闭入口（右上角 ×、点遮罩空白、Esc）原先都只做了 hidden。
+     pause() 停掉音频；removeAttribute('src') + load() 让浏览器释放解码器，
+     并中断仍在进行的 Range 下载（否则窗口关了还在后台拉数据）。 */
+  function closeDetail() {
+    $$('#detailBody video').forEach((v) => {
+      try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) { /* 元素可能已不存在 */ }
+    });
+    $('#detailMask').hidden = true;
   }
 
   /* ---------------------------------------------------------- 素材锁定展示
@@ -2677,6 +3622,32 @@
 
   /* ---------------------------------------------------------- 事件绑定 */
   function bindStatic() {
+    /* 快速多选：素材网格与分镜列表各挂一次框选引擎。
+       两边共用同一套拖拽/区间逻辑，差异只在「项选择器」与「选择态怎么落地」。
+       素材侧在确认起拖时才自动进批量模式 —— 普通点击（没超过阈值）不拦，
+       卡片编辑弹窗照常打开，不影响既有习惯。 */
+    attachMarquee($('#panel'), {
+      areaSel: '.panel-list',
+      itemSel: '.acard',
+      idOf: (el) => el.dataset.asset,
+      selSet: () => S.assetSel,
+      onEnter: () => { if (!S.assetSelMode) { S.assetSelMode = true; S.assetSel.clear(); renderPanel(); } },
+      applySel: (el, on) => el.classList.toggle('sel', on),
+      commit: (set) => { S.assetSel = set; renderPanel(); },
+    });
+    attachMarquee($('#table'), {
+      areaSel: '#table',
+      itemSel: '.row',
+      idOf: (el) => el.dataset.id,
+      selSet: () => S.sel,
+      applySel: (el, on) => {
+        el.classList.toggle('sel', on);
+        const c = $('.cbx', el);
+        if (c) c.classList.toggle('on', on);
+      },
+      commit: (set) => { S.sel = set; renderTable(); renderPanel(); renderStatusbar(); },
+    });
+
     $('#btnImport').addEventListener('click', openImport);
     $('#importClose').addEventListener('click', closeImport);
     $('#importCancel').addEventListener('click', closeImport);
@@ -2684,8 +3655,8 @@
     $('#btnSettings').addEventListener('click', openSettings);
     $('#settingsClose').addEventListener('click', closeSettings);
     $('#settingsMask').addEventListener('click', closeSettings);
-    $('#detailClose').addEventListener('click', () => { $('#detailMask').hidden = true; });
-    $('#detailMask').addEventListener('click', (e) => { if (e.target.id === 'detailMask') $('#detailMask').hidden = true; });
+    $('#detailClose').addEventListener('click', closeDetail);
+    $('#detailMask').addEventListener('click', (e) => { if (e.target.id === 'detailMask') closeDetail(); });
 
     // 干跑命令核对弹层
     $('#cmdClose').addEventListener('click', closeCmd);
@@ -2714,10 +3685,8 @@
     $('#durApply').addEventListener('click', applyDurRecalc);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#durMask').hidden) closeDur(); });
 
-    $('#btnDensity').addEventListener('click', (e) => {
-      const on = $('#app').classList.toggle('compact');
-      e.currentTarget.textContent = on ? '标准视图' : '紧凑视图';
-    });
+    /* 「紧凑视图」按钮已从顶栏移除，改由设置 →「个性化」里的开关控制（见 renderSettings 与
+       settingsBody 的 data-toggle 分派）。这里不再有 #btnDensity 的监听。 */
     $('#btnHistory').addEventListener('click', openRecords);
 
     /* 素材面板窄屏抽屉化：≤1180px 时面板固定在屏外（CSS），顶栏「素材」唤起、遮罩/Esc 关闭。
@@ -2729,8 +3698,8 @@
       if (e.key === 'Escape' && $('#panel').classList.contains('open')) closePanelIfOverlay();
     });
     bindRecords();
-    $('#pillModel').addEventListener('click', () => toast('模型为全局默认值，可在「设置」里修改'));
-    $('#pillRatio').addEventListener('click', () => toast('画幅为全局默认值，可在「设置」里修改'));
+    /* 「模型」「画幅」两个胶囊已合并为一个纯文本 span（#modelRatioTxt），不再可点，
+       故原来那两句"点一下弹提示"的监听一并删除 —— 说明改由该元素的 title 承担。 */
 
     // 素材面板搜索：防抖 250ms，仅刷新面板，不重绘表格
     $('#panel').addEventListener('input', (e) => {
@@ -2798,7 +3767,17 @@
         S.settings.queue.concurrency = Math.max(lim.min, Math.min(max, S.settings.queue.concurrency + Number(conc.dataset.conc)));
         renderSettings(); return;
       }
-      if (e.target.closest('[data-toggle]')) { S.settings.queue.autoRetry = !S.settings.queue.autoRetry; renderSettings(); return; }
+      /* 开关：按 data-toggle 的值分派。
+         · autoRetry 改的是生成行为（写 S.settings.queue）
+         · compact   改的是显示偏好（写 #app 的类，与旧顶栏按钮同源）
+         两者互不影响，各自只动自己的那一份状态。 */
+      const tg = e.target.closest('[data-toggle]');
+      if (tg) {
+        const k = tg.dataset.toggle;
+        if (k === 'autoRetry') S.settings.queue.autoRetry = !S.settings.queue.autoRetry;
+        else if (k === 'compact') applyDensity(!isCompact());
+        renderSettings(); return;
+      }
     });
     // 默认参数下拉：change 即改本地状态，「保存设置」时统一 PUT
     $('#settingsBody').addEventListener('change', (e) => {
@@ -2837,9 +3816,20 @@
         S.adapter = await Api.getAdapter();
         const adj = S.settings.adjustments;
         if (adj && adj.length) adj.forEach((a) => toast('已按模型规格调整：' + a, 'err'));
-        else toast('设置已保存', 'ok');
+        /* 默认模型 / 画幅 / 分辨率变更会同步到已有分镜（时长不同步）—— 必须告诉用户改了多少条，
+           否则"我改了默认模型"和"我那 15 条分镜现在用什么"之间的关系仍然是隐形的。 */
+        const sy = S.settings.synced;
+        if (sy && sy.updated) {
+          const head = sy.fields.length
+            ? sy.fields.map((f) => f.label + ' ' + (f.from || '—') + ' → ' + f.to).join('；')
+            : '对齐到当前默认值（' + sy.defaults.map((f) => f.label + ' ' + f.value).join('、') + '）';
+          toast('已同步 ' + sy.updated + ' 条分镜：' + head +
+            (sy.skippedGenerating ? '（' + sy.skippedGenerating + ' 条生成中已跳过）' : ''), 'ok');
+        } else if (!(adj && adj.length)) {
+          toast('设置已保存', 'ok');
+        }
         closeSettings();
-        await loadList({ skeleton: false });
+        await loadList({ skeleton: false });   // 同步后表格里的模型/画幅要立刻反映出来
       } catch (e) { fail(e); }
     });
     $('#settingsReset').addEventListener('click', async () => {
@@ -2855,7 +3845,7 @@
       closeMenu();
       if (!$('#importMask').hidden) closeImport();
       if ($('#settingsDrawer').classList.contains('open')) closeSettings();
-      $('#detailMask').hidden = true;
+      closeDetail();   // 同样要先停视频，否则 Esc 关窗后声音还在放
     });
   }
   const persetsFix = (v) => (v && v.trim()) ? v : ';;';

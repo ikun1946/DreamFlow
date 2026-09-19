@@ -41,13 +41,49 @@ const MIME = {
   '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.flac': 'audio/flac'
 };
 
-function serveFile(res, absPath) {
-  try {
-    const data = fs.readFileSync(absPath);
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(absPath)] || 'application/octet-stream' });
-    res.end(data);
-    return true;
-  } catch (e) { return false; }
+/* 静态文件服务：流式发送 + 支持单段 HTTP Range（206）。
+   ⚠ 2026-09-19 修复：原来用 readFileSync 整块读入再一次性写出，两个后果 ——
+   · 产物视频（实测一条 5.4 MB）整块进内存，多开几个大产物会顶住事件循环；
+   · 不返回 206 / Content-Range，浏览器**无法定位播放进度**：即使页面上放了
+     <video>，拖进度条也得把整个文件重下一遍（实测带 Range 的请求收到的是全部字节）。
+   现在按 Range 返回片段；浏览器据此可以边下边播、任意跳转。
+   小文件仍走一次读取，避免为一张缩略图多开一条流。 */
+const STREAM_MIN_BYTES = 256 * 1024;
+
+function serveFile(req, res, absPath) {
+  let st;
+  try { st = fs.statSync(absPath); } catch (e) { return false; }
+  if (!st.isFile()) return false;
+  const type = MIME[path.extname(absPath)] || 'application/octet-stream';
+  const total = st.size;
+  let start = 0, end = total - 1, status = 200;
+
+  const range = req.headers && req.headers.range;
+  if (range) {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
+    if (m) {
+      if (m[1] === '') { start = Math.max(0, total - Number(m[2] || 0)); end = total - 1; }   // bytes=-N：末尾 N 字节
+      else { start = Number(m[1]); if (m[2] !== '') end = Math.min(Number(m[2]), total - 1); }
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start >= total || start > end) {
+        res.writeHead(416, { 'Content-Range': 'bytes */' + total, 'Accept-Ranges': 'bytes' });
+        return res.end(), true;
+      }
+      status = 206;
+    }
+  }
+  const headers = {
+    'Content-Type': type,
+    'Accept-Ranges': 'bytes',
+    'Content-Length': end - start + 1
+  };
+  if (status === 206) headers['Content-Range'] = 'bytes ' + start + '-' + end + '/' + total;
+  res.writeHead(status, headers);
+  if (req.method === 'HEAD') { res.end(); return true; }
+  if (total < STREAM_MIN_BYTES) { res.end(fs.readFileSync(absPath)); return true; }
+  const rs = fs.createReadStream(absPath, { start, end });
+  rs.on('error', () => { try { res.destroy(); } catch (e) { /* socket 可能已断 */ } });
+  rs.pipe(res);
+  return true;
 }
 
 /* 应用首页：读取 app/index.html，把三个相对资源改写到 /app/ 下
@@ -65,21 +101,56 @@ function serveDemo(res) {
 }
 
 /* ---------------- 请求处理 ---------------- */
-const server = http.createServer(async (req, res) => {
-  // CORS：前端可能以 file:// 或其它本地端口打开
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Idempotency-Key');
-  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+/* ---------------- 本地 API 的跨域边界 ----------------
+   ⚠ 2026-09-19 修复：原来是 `Access-Control-Allow-Origin: *` + token 默认为空 ——
+   等于本机任何网页（包括浏览器里打开的任意站点）都能读写这个 API，而这里的接口
+   可以**提交真实生成、花掉即梦积分**。攻击面与"本机服务"这个前提完全不匹配。
 
+   现在的边界：
+     · 同源（由本服务托管的前端，http://127.0.0.1:8787）永远放行 —— 主流程不需要 CORS；
+     · 只对**本地** Origin 回 ACAO（127.0.0.1 / localhost / [::1]，含其它本地端口，
+       方便用别的本地 dev server 调试前端）；
+     · 非本地 Origin 一律不回 ACAO 并在 API 上直接拒绝 —— 未知网页的请求进不来；
+     · `Origin: null`（file:// 打开发布版）默认放行以保留既有体验，
+       可用 JC_ALLOW_FILE_ORIGIN=0 关掉（见 config.js 的说明）。 */
+const LOCAL_ORIGIN_RE = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
+
+function originPolicy(req, cfg) {
+  const origin = req.headers['origin'];
+  if (!origin) return { allow: true, echo: null, why: 'no-origin' };       // 同源导航 / curl
+  if (LOCAL_ORIGIN_RE.test(origin)) return { allow: true, echo: origin, why: 'local' };
+  if (origin === 'null') {
+    return cfg.allowFileOrigin
+      ? { allow: true, echo: 'null', why: 'file-origin-allowed' }
+      : { allow: false, echo: null, why: 'file-origin-blocked' };
+  }
+  return { allow: false, echo: null, why: 'foreign-origin' };
+}
+
+const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
   const pathname = decodeURIComponent(u.pathname);
+  const apiRoute = pathname === '/api/v1' || pathname.startsWith('/api/v1/');
+  const op = originPolicy(req, cfg);
+
+  // 只对可信 Origin 回 ACAO；未知网页拿不到授权头，预检就会失败，真正的请求根本发不出去
+  if (op.echo) {
+    res.setHeader('Access-Control-Allow-Origin', op.echo);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Idempotency-Key');
+  }
+  if (req.method === 'OPTIONS') { res.writeHead(op.allow ? 204 : 403); return res.end(); }
+  if (!op.allow) {
+    if (apiRoute) return sendJson(res, 200, { code: 40100, message: '请求来源不被信任（' + op.why + '）', data: null, traceId: 'origin' });
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('Forbidden: untrusted origin');
+  }
 
   try {
     // 可选 Bearer 校验
     if (cfg.token) {
       const auth = req.headers['authorization'] || '';
-      const apiRoute = pathname === '/api/v1' || pathname.startsWith('/api/v1/');
       if (apiRoute && auth !== 'Bearer ' + cfg.token) {
         return sendJson(res, 200, { code: 40100, message: '未登录或 token 无效', data: null, traceId: 'auth' });
       }
@@ -89,22 +160,22 @@ const server = http.createServer(async (req, res) => {
     if (pathname.startsWith('/app/')) {
       const p = path.normalize(path.join(PROJECT_ROOT, pathname));
       if (!p.startsWith(path.join(PROJECT_ROOT, 'app'))) { res.writeHead(403); return res.end(); }
-      if (serveFile(res, p)) return;
+      if (serveFile(req, res, p)) return;
     }
     if (pathname.startsWith('/dist/')) {
       const p = path.normalize(path.join(PROJECT_ROOT, pathname));
       if (!p.startsWith(path.join(PROJECT_ROOT, 'dist'))) { res.writeHead(403); return res.end(); }
-      if (serveFile(res, p)) return;
+      if (serveFile(req, res, p)) return;
     }
     if (pathname.startsWith('/files/')) {
       const p = path.normalize(path.join(OUTPUT_DIR, pathname.slice('/files/'.length)));
       if (!p.startsWith(OUTPUT_DIR)) { res.writeHead(403); return res.end(); }
-      if (serveFile(res, p)) return;
+      if (serveFile(req, res, p)) return;
     }
     if (pathname.startsWith('/media/assets/')) {
       const p = path.normalize(path.join(ASSET_DIR, decodeURIComponent(pathname.slice('/media/assets/'.length))));
       if (!p.startsWith(ASSET_DIR)) { res.writeHead(403); return res.end(); }
-      if (serveFile(res, p)) return;
+      if (serveFile(req, res, p)) return;
     }
 
     if (pathname === '/api/v1' || pathname.startsWith('/api/v1/')) {
@@ -164,6 +235,11 @@ const srv = server.listen(cfg.port, cfg.host, () => {
   setTimeout(() => {
     if (dreamina && dreamina.probe) dreamina.probe(true).catch(() => {});
   }, 300);
+  /* 启动期封面补齐：给本次改动之前生成的产物补封面（创作 CLI 不给封面，靠本机 ffmpeg 抽帧）。
+     不阻塞监听、失败静默 —— 详见 worker.backfillCovers 的说明。 */
+  setTimeout(() => {
+    worker.backfillCovers(store.load()).catch((e) => console.error('[封面补齐] 失败：' + (e && e.message)));
+  }, 1200);
 });
 
 process.on('SIGINT', () => { store.flush(); srv.close(() => process.exit(0)); });
