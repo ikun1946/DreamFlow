@@ -557,7 +557,6 @@
        selSet()  读当前选择集（引擎只取快照，不直接改）
        commit(set)  提交新选择集（调用方负责写回 state 并重绘一次）
        applySel(el, on)  把单项选中态落到 DOM（拖拽期间每帧调用，必须廉价、幂等）
-       onEnter() 可选：确认起拖时调用一次（素材用它自动进批量模式）
      关键取舍：
      · 拖拽期间**只改 class、不重绘**——每帧 renderTable/renderPanel 会把整列表重建，
        素材/分镜一多就卡；真正的选择集只在 mouseup 时提交一次；
@@ -613,8 +612,6 @@
       if (!dragging) {
         if (Math.abs(e.clientX - sx) < MARQUEE_THRESHOLD && Math.abs(e.clientY - sy) < MARQUEE_THRESHOLD) return;
         dragging = true;
-        // onEnter 会重绘（素材：进批量模式），所以 base 与项快照都必须排在它之后取
-        if (cfg.onEnter) { cfg.onEnter(); base = new Set(cfg.selSet()); }
         snapshot();
         box = document.createElement('div');
         box.className = 'marquee';
@@ -3624,16 +3621,26 @@
   function bindStatic() {
     /* 快速多选：素材网格与分镜列表各挂一次框选引擎。
        两边共用同一套拖拽/区间逻辑，差异只在「项选择器」与「选择态怎么落地」。
-       素材侧在确认起拖时才自动进批量模式 —— 普通点击（没超过阈值）不拦，
-       卡片编辑弹窗照常打开，不影响既有习惯。 */
+       普通点击（没超过 4px 阈值）不拦，卡片编辑弹窗照常打开，不影响既有习惯。
+
+       ⚠ 批量模式改在 **commit 时按结果** 进入，不再挂在起拖上（用户报的缺陷：
+       「框选没选中任何资产，底部也会弹出批量操作条」）。原实现只要拖过 4px 就进模式，
+       哪怕一个卡片都没框到，操作条照样弹出来而且不再收回。现在拖到了东西才进模式；
+       一个都没框到就什么都不做，底部条自然保持收起。
+
+       注意「批量选择」按钮走的是**另一条路**（显式进模式），那里 0 选中也要显示操作条 ——
+       用户是主动进来的、正要开始选，此时把条收掉反而像按钮坏了。 */
     attachMarquee($('#panel'), {
       areaSel: '.panel-list',
       itemSel: '.acard',
       idOf: (el) => el.dataset.asset,
       selSet: () => S.assetSel,
-      onEnter: () => { if (!S.assetSelMode) { S.assetSelMode = true; S.assetSel.clear(); renderPanel(); } },
       applySel: (el, on) => el.classList.toggle('sel', on),
-      commit: (set) => { S.assetSel = set; renderPanel(); },
+      commit: (set) => {
+        S.assetSel = set;
+        if (set.size) S.assetSelMode = true;   // 拖出了东西才进批量模式
+        renderPanel();
+      },
     });
     attachMarquee($('#table'), {
       areaSel: '#table',
