@@ -22,9 +22,14 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 │
 ├── server/                          后端：本地桥接服务（零 npm 依赖）
 │   ├── index.js                     入口：HTTP 服务 + 首页托管 + CLI worker
-│   ├── routes.js                    /api/v1 路由表（22 个接口）
+│   ├── routes.js                    /api/v1 路由表（含 Project / Workspace 作用域）
 │   ├── services.js                  业务逻辑
-│   ├── cli.js                       即梦 CLI 适配层（spawn/探测/恢复协议）
+│   ├── projects.js                  Project / Workspace 数据层 + 作用域解析唯一出口
+│   ├── schema.js                    schemaVersion 与迁移框架（旧库升级唯一入口）
+│   ├── dreamina-cli.js              即梦创作 CLI 适配层（spawn/探测/恢复协议）
+│   ├── worker.js                    队列派发与写入守卫
+│   ├── models.js / task-state.js    模型注册表 / 任务状态机（各自的事实来源）
+│   ├── asset-lock.js / records.js   素材图号表 / 生成记录快照
 │   ├── store.js                     JSON 持久化（原子写，空库启动）
 │   ├── util.js / config.js          统一信封与错误码 / 配置加载
 │   ├── README.md                    后端使用说明
@@ -156,6 +161,58 @@ JC_BACKUP_KEEP=5 bash scripts/backup-data.sh      # 只保留最近 5 份（默�
 
 ---
 
+## 多项目架构与数据隔离
+
+**层级**：`Project`（项目）→ `Workspace`（工作区，UI 上叫「页面」）→ `Storyboard`（分镜）。
+`Asset`（素材）属于**项目**，因此同一项目下的所有页面天然共享一份素材库。
+
+**四条不可违反的规则**（实现与测试都以此为准）：
+
+| 规则 | 落地位置 |
+|---|---|
+| Project 是数据隔离边界 | 所有查询按作用域过滤；跨项目读写一律 404 |
+| Workspace 是分镜容器 | 分镜归属 `workspaceId`，序号也按工作区独立编号 |
+| Asset 属于 Project，不属于 Workspace | 素材只有 `projectId`，**刻意不加** `workspaceId` |
+| 后端不存在「当前项目」全局变量 | 作用域一律 request-scoped，由 `projects.resolveScope()` 统一解析并校验 |
+
+**作用域怎么传**：三种路径形态都支持，作用域优先级为「路径 > 查询串 > 旧式扁平兜底」。
+
+```
+/workspaces/ws_x/storyboards     工作区作用域（推荐）
+/projects/pj_x/storyboards       项目作用域 → 落到该项目的 defaultWorkspaceId
+/storyboards?workspaceId=ws_x    旧式扁平路径 + 查询串
+/assets?projectId=pj_x           素材按项目（这正是"后端按 projectId 查询"的入口）
+```
+
+**父子关系必须一致**：`/projects/A/workspaces/B` 这种组合若 `B.projectId !== A`，直接 404，不返回任何数据。
+
+**设置分层**（不一次大拆，用「项目覆盖 ⊕ 全局默认」的兼容策略）：
+
+| 层 | 内容 | 说明 |
+|---|---|---|
+| 项目级 | `delimiter`、`defaults`（模型/画幅/分辨率/时长/…） | 存 `project.settings`，未设的项自动回落全局 |
+| 系统级 | `queue`（Worker 总并发）、`adapter`（CLI 登录态/版本） | CLI 账号是整机一份，不复制到每个项目 |
+
+**删除策略**：项目与工作区第一版一律**软删除**（打 `deletedAt`），不做级联物理销毁 —— 分镜、素材、生成记录都完整保留，记录靠**生成时刻的名称快照**继续正确显示"当时属于哪个项目/页面"。存在排队中/生成中/`submitting` 的任务时禁止删除。
+
+**新增接口**（旧接口全部保留，因此是向后兼容的 MINOR 升级）：
+
+```
+GET/POST         /projects                    项目列表（含工作区数/资产数/分镜数）/ 创建
+GET/PATCH/DELETE /projects/:id                详情 / 改名 / 软删除
+GET/POST         /projects/:id/workspaces     页面列表 / 新建
+GET/PATCH/DELETE /workspaces/:id              详情 / 改名 / 软删除
+GET              /projects/:id/assets         项目资产
+GET              /projects/:id/records        项目记录（支持 workspaceId 过滤）
+GET/POST         /workspaces/:id/storyboards  工作区分镜
+```
+
+> ⚠ **前端尚未接入**：`app/` 目前仍是单工作区界面（没有首页与项目页）。后端已完整支持多项目，
+> 现有界面通过旧式路径继续工作 —— 迁移后你原有的数据会归入「原有项目 / 原有分镜」，界面照常可用。
+> 多项目的前端入口（首页 / 项目主页 / 页面切换）是下一个增量。
+
+---
+
 ## 已知边界
 
 1. **素材删除不可恢复且不留痕**：`DELETE /assets/{id}` 会同时删掉素材记录与磁盘上的图片文件，且**不写 `records` / `logs`** —— 误删后无法查证是谁、何时删的。`db.json.bak-*` 轮转备份只保得住记录，保不住图片（重新启用须重新上传原图）。
@@ -171,7 +228,7 @@ JC_BACKUP_KEEP=5 bash scripts/backup-data.sh      # 只保留最近 5 份（默�
 
 ## 版本
 
-当前版本：**`0.11.3`**
+当前版本：**`0.12.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -179,10 +236,32 @@ JC_BACKUP_KEEP=5 bash scripts/backup-data.sh      # 只保留最近 5 份（默�
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-测试：`node --test server/model-limits.test.js server/task-state.test.js server/worker-guard.test.js`（共 19 项；项目无 npm 依赖，用 Node 自带测试运行器）。
+测试：`node --test server/*.test.js`（共 51 项：模型上限 6 · 状态机 5 · Worker 守卫 8 · 迁移 10 · 项目隔离 22；项目无 npm 依赖，用 Node 自带测试运行器）。
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.12.0` — 2026-09-19
+
+**多项目架构升级 · 第一增量（后端）**。把单工作区结构正式升级为 `Project → Workspace → Storyboard` 多项目生产架构。**旧接口与旧前端一行不改即可继续工作**，故为 MINOR 升级。
+
+- **新增正式 schema 版本与迁移框架**（`server/schema.js`）。升级前项目**没有版本概念**，兼容旧库靠两套临时机制：`store.load()` 里 9 处 `if (!db.X)` 垫片，以及更危险的一处 —— `getOptions()` **借 `GET /meta/options` 请求改写并落盘**（它会重写 `settings.defaults`、**所有分镜的 model**、**所有 cliJobs 的 cliModel** 然后 `store.save()`）。也就是说"迁移"藏在一个只读接口里，靠用户打开页面才触发、每次刷新都可能重跑、并发请求还会互相交错。现在收敛为「读版本 → 按序迁移 → 校验 → 写版本」；迁移**只在克隆体上跑**，任一步失败原库一个字节都不动且拒绝写盘；迁移前自动留一份不会被轮转挤掉的独立备份。
+- **新增 Project / Workspace 数据层**（`server/projects.js`）。含 CRUD、软删除、活动任务删除保护，以及**作用域解析的唯一出口** `resolveScope()`。后端**不存在**任何"当前项目"全局变量，作用域一律 request-scoped。
+- **17 条读路径全部加作用域**。升级前 `projectId` 是**只写元数据、从不参与查询**：`listStoryboards(db,q,projectId)` 收了参数却从不引用它，路由 `/projects/{任意id}/storyboards` 用非捕获组把 id 直接丢弃。于是分镜、素材、记录、进度、自动匹配、时长重算、导入查重、设置同步**全都是全库范围**。
+- **素材属于项目、不属于工作区**：素材只有 `projectId`，**刻意不加** `workspaceId` —— 加了会破坏"项目内资产共享"这个核心需求。跨项目绑定在后端拒绝（不是靠前端过滤）。
+- **生成记录补上下文与名称快照**：新增 `workspaceId` / `workspaceName` / `projectName` / `storyboardTitle`。名称按**生成时刻**存值，因此项目改名、工作区软删之后，旧记录仍显示当时的名字。记录查询与导出按项目过滤，CSV / Markdown 导出补上项目与页面两列。
+- **CLI 任务带上下文**：`cliJobs` 补 `projectId` / `workspaceId` 供审计；Worker 的写入守卫额外拒绝**工作区已被软删**的分镜（分镜本身还在库里，原存在性检查拦不住它）。
+- **分镜序号改为按工作区独立**。原来 `renumber()` 全局重编、`db.seq` 全局自增，多页面之后两个页面的分镜会互相插队（"镜头 3" 出现在另一个页面里）。
+
+**顺带修掉三个审计中发现的既有缺陷**（都属本次改造的必经之路，不是顺手扩范围）：
+
+1. **幂等键跨项目回放**：`db.idempotency` 原来只拿客户端 header 当键，键里没有项目/路径身份 —— 同一把 key 打到另一个项目会**回放第一个项目的响应**。现在键 = 路径 + 作用域 + 客户端键。
+2. **`PUT /settings` 无键白名单**：原来 `Object.assign({}, db.settings, s, …)` 会把请求体里**任何**顶层键原样落库；多项目之后一个 `{"projects":[…]}` 就能改写项目集合本身。现在只允许 `delimiter` / `defaults` / `queue`，其余丢弃并如实回报被忽略的键。
+3. **`PUT /settings` 部分提交丢键**：原来整对象覆盖，一次只带 `{defaults:{model}}` 的 PUT 会把 `resolution`/`ratio`/`durationSec`/`motion` 全部丢掉（`queue` 同理，`autoRetry` 变 `undefined` 导致自动重试静默失效）。现在逐键合并。
+
+**旧数据迁移结果**（真实库，已在启动时执行）：16 条分镜、15 个素材、5 条生成记录、4 条 CLI 任务**全部保留**，id / 顺序 / 提示词 / 绑定 / 状态 / 模型逐字段不变，归入自动创建的「原有项目」与「原有分镜」。迁移前备份：`server/data/backup/pre-schema-v2-*.json`。
+
+**验证**：`node --test` 三套件扩到 **51 项全绿**（原 19 项 + 迁移 10 项 + 隔离 22 项）；隔离测试走的是**真实路由 + 真实 services**（只把 `store` 的落盘副作用换成空实现），覆盖 project/workspace 隔离、项目内资产共享、跨项目绑定拒绝、自动匹配隔离与歧义、删除保护、记录快照，另补幂等键作用域与 `getProgress` 归属两项。**现有前端 `app/` 一行未改即正常运行**（16 行分镜、素材、记录页均实测通过）—— 这是向后兼容最硬的证据。
 
 #### `0.11.3` — 2026-09-19
 

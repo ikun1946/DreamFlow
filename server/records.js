@@ -27,6 +27,7 @@ const store = require('./store');
 const { nowIso, rid } = require('./util');
 const AL = require('./asset-lock');
 const models = require('./models');
+const P = require('./projects');   // 项目/工作区归属与名称快照
 
 const KEEP = 800;            // 最多保留的记录条数（新的在前，超出丢最旧）
 const TEXT_CAP = 60000;      // 单条记录中单个文本字段的上限（防单条超大提示词把库撑爆）
@@ -80,12 +81,23 @@ function snapshot(db, sb, extra) {
   }
   const outcome = o.outcome || 'succeeded';
 
+  /* 项目 / 工作区归属与**名称快照**（2026-09-19 多项目升级）。
+     ⚠ 名称必须是"生成那一刻"的：项目改名、工作区改名或被软删之后，旧记录仍要能显示
+     当时叫什么（指令 §13/§47）。所以这里存的是值，不是引用 —— 不做任何回填。
+     归属优先从工作区推导（workspace.projectId 是权威来源，§10.1）。 */
+  const ws = sb.workspaceId ? P.workspaceOf(db, sb.workspaceId) : null;
+  const proj = ws ? P.projectOf(db, ws.projectId) : P.projectOf(db, sb.projectId);
+
   return {
     id: rid('rc_'),
     at: nowIso(),
-    projectId: sb.projectId || 'pj_1',
+    projectId: proj ? proj.id : (sb.projectId || null),
+    projectName: proj ? proj.name : null,
+    workspaceId: ws ? ws.id : (sb.workspaceId || null),
+    workspaceName: ws ? ws.name : null,
     storyboardId: sb.id,
     seq: sb.seq,
+    storyboardTitle: '镜头 ' + sb.seq,
 
     action: o.action || 'generate',
     outcome: outcome,
@@ -166,6 +178,10 @@ const dateOf = (r) => String(r.at || '').slice(0, 10);
 function filtered(db, q) {
   const o = q || {};
   let list = Array.isArray(db.records) ? db.records.slice() : [];
+  /* 项目 / 工作区作用域必须由**后端**过滤，不能让前端拉全量再自己筛（指令 §29）。
+     旧记录在 v1→v2 迁移时已补上归属，所以这里不会漏掉历史数据。 */
+  if (o.projectId && o.projectId !== 'all') list = list.filter((r) => r.projectId === o.projectId);
+  if (o.workspaceId && o.workspaceId !== 'all') list = list.filter((r) => r.workspaceId === o.workspaceId);
   if (o.action && o.action !== 'all') list = list.filter((r) => r.action === o.action);
   if (o.outcome && o.outcome !== 'all') list = list.filter((r) => r.outcome === o.outcome);
   if (o.engine && o.engine !== 'all') list = list.filter((r) => r.engine === o.engine);
@@ -186,6 +202,11 @@ function filtered(db, q) {
 function lite(r) {
   return {
     id: r.id, at: r.at,
+    /* 归属与生成时的名称快照：列表与导出都要能显示"这条属于哪个项目/页面"，
+       且名称取自记录本身而不是现查（项目改名后仍显示当时的名字）。 */
+    projectId: r.projectId || null, projectName: r.projectName || null,
+    workspaceId: r.workspaceId || null, workspaceName: r.workspaceName || null,
+    storyboardTitle: r.storyboardTitle || null,
     action: r.action, actionLabel: ACTION_LABEL[r.action] || r.action,
     outcome: r.outcome, outcomeLabel: OUTCOME_LABEL[r.outcome] || r.outcome,
     engine: r.engine, engineLabel: r.engineLabel,
@@ -257,19 +278,25 @@ function deleteRecord(db, id) {
 function clearRecords(db, body) {
   const b = body || {};
   const all = Array.isArray(db.records) ? db.records : [];
+  /* 作用域（指令 §29）：只清理**本项目**的记录。
+     ⚠ 原来 {all:true} 会清掉全库历史 —— 多项目之后那就是把别的项目的记录一起抹掉，
+     属于数据事故。projectId 缺失时保持旧的全量行为，供兼容路径使用。 */
+  const inScope = (r) => !b.projectId || !r || !r.projectId || r.projectId === b.projectId;
+  let removed = 0;
+  const keep = (hit) => { if (hit) removed++; return !hit; };
+
   if (Array.isArray(b.ids) && b.ids.length) {
-    const ids = b.ids;
-    db.records = all.filter((r) => !ids.includes(r.id));
+    const ids = new Set(b.ids);
+    db.records = all.filter((r) => keep(inScope(r) && ids.has(r.id)));
   } else if (b.before) {
-    db.records = all.filter((r) => String(r.at || '') >= String(b.before));
+    db.records = all.filter((r) => keep(inScope(r) && String(r.at || '') < String(b.before)));
   } else if (b.action) {
-    db.records = all.filter((r) => r.action !== b.action);
+    db.records = all.filter((r) => keep(inScope(r) && r.action === b.action));
   } else if (b.all === true) {
-    db.records = [];
+    db.records = all.filter((r) => keep(inScope(r)));
   } else {
     return { removed: 0, kept: all.length, message: '未指定清理口径（ids / before / action / all），未做任何改动' };
   }
-  const removed = all.length - db.records.length;
   store.save();
   return { removed: removed, kept: (db.records || []).length };
 }
@@ -294,9 +321,10 @@ function exportRecords(db, q, format) {
   }
 
   if (f === 'csv') {
-    const head = ['时间', '动作', '结果', '引擎', '模型', 'CLI 型号', '镜头', '摘要', '画幅', '分辨率', '时长s', '图片数', '音频数', '耗时s', '提交ID', '产物地址', '错误码', '错误信息'];
+    const head = ['时间', '项目', '页面', '动作', '结果', '引擎', '模型', 'CLI 型号', '镜头', '摘要', '画幅', '分辨率', '时长s', '图片数', '音频数', '耗时s', '提交ID', '产物地址', '错误码', '错误信息'];
     const rows = list.map((r) => [
-      r.at, ACTION_LABEL[r.action] || r.action, OUTCOME_LABEL[r.outcome] || r.outcome,
+      r.at, r.projectName || r.projectId || '', r.workspaceName || r.workspaceId || '',
+      ACTION_LABEL[r.action] || r.action, OUTCOME_LABEL[r.outcome] || r.outcome,
       r.engineLabel, r.model, r.cliModel, r.seq, r.summary,
       (r.params || {}).ratio, (r.params || {}).resolution, (r.params || {}).durationSec,
       (r.images || []).length, (r.audios || []).length,
@@ -320,6 +348,8 @@ function exportRecords(db, q, format) {
     lines.push('## ' + (i + 1) + '. ' + r.at + ' · ' + (ACTION_LABEL[r.action] || r.action) + ' · ' + (OUTCOME_LABEL[r.outcome] || r.outcome));
     lines.push('');
     lines.push('- 镜头：' + r.seq + '（分镜 ' + r.storyboardId + '）');
+    /* 项目/页面用**生成时的名称快照**，而不是现查 —— 改名或软删后这里仍显示当时的名字 */
+    lines.push('- 归属：' + (r.projectName || r.projectId || '—') + ' › ' + (r.workspaceName || r.workspaceId || '—'));
     lines.push('- 引擎：' + r.engineLabel + ' · 模型 ' + r.model + (r.modelLabel ? '（' + r.modelLabel + '）' : '') + ' → CLI 型号 ' + (r.cliModel || '—'));
     lines.push('- 参数：' + (fmtParams(r) || '—') + ' · 耗时 ' + fmtElapsed(r.elapsedMs));
     if (r.images && r.images.length) lines.push('- 素材锁定：' + r.images.map((x) => '图片' + x.n + '=' + x.name + '（' + x.roleLabel + '）').join('、'));

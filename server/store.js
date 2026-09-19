@@ -10,12 +10,20 @@ const fs = require('fs');
 const path = require('path');
 const { DATA_DIR, OUTPUT_DIR, ASSET_DIR, DB_FILE } = require('./config');
 const { nowIso } = require('./util');
+const schema = require('./schema');   // schema 版本与迁移框架（迁移唯一入口）
 
 let db = null;
 let saveTimer = null;
 
+/* 空库：**不预置任何项目/工作区**。
+   全新安装时首页应该是一张空的项目卡片墙 + 「创建项目」，而不是凭空多出一个
+   用户没建过的项目。因此这里 projects/workspaces 为空、schemaVersion 直接是当前版本
+   （空库没有旧数据可迁，跳过迁移）。 */
 function emptyDb() {
   return {
+    schemaVersion: schema.SCHEMA_VERSION,
+    projects: [],
+    workspaces: [],
     storyboards: [],
     assets: [],
     settings: {
@@ -29,7 +37,7 @@ function emptyDb() {
     },
     seq: 0,
     idempotency: {},     // key -> { response, createdAt }
-    cliJobs: {},         // storyboardId -> { submitId, state, command, argv, mode, cliModel, engine, ... }
+    cliJobs: {},         // storyboardId -> { submitId, state, command, argv, mode, cliModel, engine, projectId, workspaceId, ... }
     logs: {},            // storyboardId -> [{ level, msg, ts }]
     records: [],         // 生成记录：追加式快照（见 records.js），新记录在前
     recordSeq: 0         // 累计落过多少条（删记录不回退，用于展示"第 N 条"）
@@ -48,6 +56,21 @@ function quarantine(file, why) {
   }
 }
 
+/* 迁移前额外留一份带版本号的备份（2026-09-19 多项目升级）。
+   为什么不能只靠 rotateBackup：那个是**滚动**的（只留最近 12 份、且 2 分钟内只复制一次），
+   一次迁移事故之后很容易被后续写入挤出保留窗口。迁移是不可逆的数据改写，
+   必须有名字可辨识、不会被轮转挤掉的独立副本。
+   ⚠ 备份失败即**中止迁移** —— 没有回退点的迁移不许做。 */
+function backupBeforeMigration(fromVersion) {
+  const dir = path.join(DATA_DIR, 'backup');
+  fs.mkdirSync(dir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const dest = path.join(dir, 'pre-schema-v' + (fromVersion + 1) + '-' + ts + '.json');
+  fs.copyFileSync(DB_FILE, dest);
+  console.log('[迁移] 迁移前备份：' + path.relative(path.join(__dirname, '..'), dest));
+  return dest;
+}
+
 function load() {
   if (db) return db;
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -61,29 +84,53 @@ function load() {
       else { quarantine(DB_FILE, '内容不是对象：' + String(parsed)); db = null; }
     } catch (e) { quarantine(DB_FILE, '解析失败：' + e.message); db = null; }
   }
-  if (!db) { db = emptyDb(); saveNow(); console.log('[store] 空库初始化完成'); }
-  // 兼容旧库：补齐缺失字段；丢弃历史演示数据
-  if (!db.settings) db.settings = emptyDb().settings;
-  if (!db.settings.adapter) db.settings.adapter = { dreaminaAvailable: false, dreaminaVersion: null };
-  /* 清理画布 CLI 时代的字段（2026-09-18 画布 CLI 已移除）。
-     不清掉的话，前端会读到 engine / cliAvailable / canvasAccount 这些已经没有任何含义的字段，
-     界面上就会出现"画布 CLI 已就绪"之类的幽灵状态。 */
-  ['engine', 'cliAvailable', 'cliVersion', 'canvasAccount', 'authUrl'].forEach((k) => { delete db.settings.adapter[k]; });
-  delete db.settings.adapter.mode;
-  /* 素材上的画布节点引用（cliNodeId / cliResourceId）：原本用于 `--ref node:<id>`，
-     画布 CLI 移除后这些引用既不能提交也无处展示，一并清掉，避免留下"看起来还有用"的死字段。 */
-  (db.assets || []).forEach((a) => { delete a.cliNodeId; delete a.cliResourceId; });
-  // 兼容旧库：生成记录是后加的字段，老库没有 → 补空数组（不是"损坏"，不隔离）
-  if (!Array.isArray(db.records)) db.records = [];
-  if (!Number.isFinite(db.recordSeq)) db.recordSeq = 0;
+  if (!db) { db = emptyDb(); saveNow(); console.log('[store] 空库初始化完成'); return db; }
+
+  /* 旧版演示库（带种子标记）：清空重置，避免假数据流入真实链路。
+     这一步必须排在迁移**之前** —— 它丢弃的是数据本身，不是结构。 */
   if (db.seededAt !== undefined) {
-    // 旧版演示库（带种子标记）：清空重置，避免假数据流入真实链路
     const fresh = emptyDb();
     fresh.idempotency = db.idempotency || {};
     db = fresh;
     saveNow();
     console.log('[store] 检测到旧演示数据，已清空重置');
+    return db;
   }
+
+  /* ---------------- 版本化迁移 ----------------
+     这是结构变更的**唯一入口**。原先散落的 `if (!db.X)` 垫片与
+     services.getOptions() 里"借 GET 请求改写并落盘"的模型名迁移，
+     全部收敛到 schema.js 的迁移链里，从此可以回答"这个库是第几版、还需要跑什么"。
+
+     ⚠ 失败处理：runMigrations 在克隆体上跑，抛错时 db 一个字节都没变。
+       此时**拒绝写盘并让 load() 抛错** —— 服务起不来，远好于带着半迁移的库继续跑。
+       旧库与迁移前备份都在磁盘上，可人工恢复。 */
+  const fromVersion = schema.readVersion(db);
+  if (fromVersion < schema.SCHEMA_VERSION) {
+    console.log('[迁移] 检测到 schema v' + fromVersion + '，目标 v' + schema.SCHEMA_VERSION);
+    backupBeforeMigration(fromVersion);
+    try {
+      const res = schema.runMigrations(db);
+      saveNow();
+      (res.log || []).forEach((m) => console.log('[迁移] ' + m));
+      console.log('[迁移] 完成：' + res.ran.join(' → '));
+    } catch (e) {
+      console.error('[迁移] 失败，已拒绝写盘（磁盘上的旧库与迁移前备份均未被改动）：' + e.message);
+      throw e;
+    }
+  }
+
+  /* 非版本化的防御性兜底：只保证"字段存在"，不改数据结构、不做迁移。
+     结构变更一律走上面的迁移链，不要往这里加。 */
+  if (!Array.isArray(db.projects)) db.projects = [];
+  if (!Array.isArray(db.workspaces)) db.workspaces = [];
+  if (!Array.isArray(db.storyboards)) db.storyboards = [];
+  if (!Array.isArray(db.assets)) db.assets = [];
+  if (!Array.isArray(db.records)) db.records = [];
+  if (!Number.isFinite(db.recordSeq)) db.recordSeq = 0;
+  if (!db.cliJobs || typeof db.cliJobs !== 'object') db.cliJobs = {};
+  if (!db.logs || typeof db.logs !== 'object') db.logs = {};
+  if (!db.settings || typeof db.settings !== 'object') db.settings = emptyDb().settings;
   return db;
 }
 

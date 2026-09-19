@@ -67,6 +67,10 @@ function loadConfig() {
     /* fast 路径下"从未探测过"时允许等待的上限（毫秒）。超过就先用占位返回，
        由前端显示"读取中…"，绝不把一次 9 秒的探测变成用户点击后的等待。 */
     adapterFastWaitMs: Number(env.JC_ADAPTER_FAST_WAIT_MS || fileCfg.adapterFastWaitMs || 2500),
+    /* ⚠ 已废弃（2026-09-19 多项目架构升级）：项目归属现在是 request-scoped 的 ——
+       由 URL / 查询串携带并由后端校验，后端不存在"当前项目"这种全局配置
+       （指令 §3.4 / §34 明确禁止）。这个字段仅为兼容旧 config.json / 环境变量而保留，
+       不再参与任何作用域判断；启动时会提示它已失效。 */
     projectId: env.JC_PROJECT_ID || fileCfg.projectId || 'pj_1'
   };
 }

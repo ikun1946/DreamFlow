@@ -25,6 +25,7 @@ const models = require('./models');   // 模型注册表：名称归一/能力�
 const TS = require('./task-state');   // 任务状态迁移与写入权限的唯一事实来源
 const AL = require('./asset-lock');   // 素材锁定签名（干跑记录带指纹，用于判断记录是否过期）
 const REC = require('./records');     // 生成记录：成功/失败/取消/干跑各落一条快照（落盘失败不影响任务）
+const P = require('./projects');      // 项目/工作区归属（任务上下文与软删守卫）
 
 function makeWorker(cfg, deps) {
   deps = deps || {};
@@ -49,9 +50,22 @@ function makeWorker(cfg, deps) {
      要留痕就写系统日志。 */
   function guard(db, sb, attemptId, to) {
     if (!(db.storyboards || []).some((x) => x.id === sb.id)) return { ok: false, reason: 'deleted' };
+    /* 工作区被软删 → 这次派发已失去父对象，不得继续写入（指令 §48：不能让 Worker 失去父对象）。
+       注意分镜**本身还在库里**，所以上面那条存在性检查拦不住它 —— 必须单独判一次。 */
+    if (sb.workspaceId && !P.workspaceOf(db, sb.workspaceId)) return { ok: false, reason: 'workspace-deleted' };
     if (attemptId && !TS.ownsAttempt(sb, attemptId)) return { ok: false, reason: 'stale-attempt' };
     if (!TS.canTransition(sb.status, to)) return { ok: false, reason: 'illegal:' + sb.status + '→' + to };
     return { ok: true };
+  }
+
+  /* 本次任务的项目/工作区上下文，供 cliJobs 落库与审计（指令 §14）。
+     权威归属取自工作区；工作区缺失时退回分镜上的冗余 projectId。 */
+  function jobContext(db, sb) {
+    const ws = sb.workspaceId ? P.workspaceOf(db, sb.workspaceId) : null;
+    return {
+      projectId: (ws && ws.projectId) || sb.projectId || null,
+      workspaceId: (ws && ws.id) || sb.workspaceId || null
+    };
   }
 
   /* 被拒后的统一留痕：被删的写系统日志，其余写该分镜日志（此时它还在库里） */
@@ -237,7 +251,7 @@ function makeWorker(cfg, deps) {
     state.running.set(sb.id, { startedAt: Date.now(), submitId: null, engine: 'dreamina' });
     db.cliJobs[sb.id] = Object.assign(db.cliJobs[sb.id] || {}, {
       engine: 'dreamina', state: 'submitting', startedAt: nowIso(), updatedAt: nowIso()
-    });
+    }, jobContext(db, sb));
     store.save();
 
     let res;
@@ -287,7 +301,7 @@ function makeWorker(cfg, deps) {
       argv: m.argv || null, mode: m.subcommand || null, cliModel: m.cliModel || null,
       engine: 'dreamina', submitId: res.submitId || null,
       state: res.ok ? 'succeeded' : 'failed', updatedAt: nowIso()
-    });
+    }, jobContext(db, sb));
     store.save();
     if (!res.ok) { mapTaskError(db, sb, res.code || String(ERR.INTERNAL), res.message || '创作 CLI 任务失败', null, dctx, attemptId); return; }
     const dl = await D.downloadResult(db, sb, res.submitId).catch(() => ({ videoUrl: null, coverUrl: null }));

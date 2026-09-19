@@ -12,6 +12,7 @@ const models = require('./models');   // 模型注册表：归属/命名/路由�
 const TS = require('./task-state');   // 任务状态迁移与写入权限的唯一事实来源
 const AL = require('./asset-lock');   // 素材图号 / 素材锁定区块 / 引用校验的唯一事实来源
 const REC = require('./records');     // 生成记录：查询 / 详情 / 删除 / 清空 / 导出
+const P = require('./projects');      // 项目/工作区归属与作用域解析的唯一出口
 const fs = require('fs');
 const path = require('path');
 const { ASSET_DIR, loadConfig } = require('./config');
@@ -52,7 +53,7 @@ function staticModels() {
 
 /* ---------------- 静态枚举（与 app/api.js META 同源） ---------------- */
 const META = {
-  projectName: '雨夜归途',
+  projectName: '',   // 项目名由请求作用域解析后填入（原来硬编码 '雨夜归途'，那是模块级常量、不是用户数据）
   models: staticModels(),
   // 模型下拉的分组维度：按引擎归属（前端据此渲染 optgroup）
   modelGroups: [
@@ -89,6 +90,53 @@ const DEFAULT_SETTINGS = () => ({
 const bySeq = (a, b) => a.seq - b.seq;
 const findAsset = (db, id) => db.assets.find((a) => a.id === id);
 const findSb = (db, id) => db.storyboards.find((x) => x.id === id);
+
+/* ============================================================
+   作用域（多项目架构，2026-09-19）
+   ------------------------------------------------------------
+   铁律：**隔离必须由后端做**，绝不允许"查出全部再让前端过滤"（指令 §29/§30）。
+   因此下面每个带 scope 的函数都真的按 scope 过滤，而不是把 scope 当提示。
+
+   scope 由路由层用 P.resolveScope() 解析后传入（request-scoped，
+   后端不存在任何"当前项目"全局变量，指令 §3.4/§34）。
+   scope = { project, workspace, projectId, workspaceId }
+   ============================================================ */
+
+/* 当前作用域内的分镜。workspaceId 是分镜的归属键（指令 §3.2）。 */
+function scopeStoryboards(db, scope) {
+  return db.storyboards.filter((s) => s && s.workspaceId === scope.workspaceId);
+}
+
+/* 按 id 取分镜，并**校验它在本作用域内**。
+   不在作用域内一律按"不存在"处理（404 而不是 403）—— 不泄露别的项目里是否存在这个 id。 */
+function findScopedSb(db, id, scope) {
+  const s = findSb(db, id);
+  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
+  if (s.workspaceId !== scope.workspaceId) {
+    throw new ApiError(ERR.NOTFOUND, '分镜不属于当前页面：' + id);
+  }
+  return s;
+}
+
+/* 作用域内的素材。Asset 属于 **Project**（指令 §3.3），因此同一项目的所有工作区共享。 */
+function scopeAssets(db, scope) {
+  return db.assets.filter((a) => a && a.projectId === scope.projectId);
+}
+
+/* 取素材并校验它属于当前项目（跨项目绑定必须被拒，指令 §43）。 */
+function findScopedAsset(db, id, scope) {
+  const a = findAsset(db, id);
+  if (!a) throw new ApiError(ERR.NOTFOUND, '素材不存在');
+  if (a.projectId !== scope.projectId) {
+    throw new ApiError(ERR.NOTFOUND, '素材不属于当前项目（素材 ' + id + '）');
+  }
+  return a;
+}
+
+/* 项目级生效设置：项目覆盖 ⊕ 全局默认（指令 §15.3 兼容策略，不一次大拆）。
+   queue / adapter 保持系统级，不随项目变化。 */
+const effectiveDefaults = (db, scope) => P.resolveProjectSettings(db, scope.projectId);
+const effectiveDelimiter = (db, scope) => P.resolveProjectDelimiter(db, scope.projectId);
 
 /* 展示用引擎归属：按「模型归属 + 音频绑定」推演（规则与 worker 派发同一出口，
    展示态不代入可用性回退——真实派发时的回退会写进任务日志）。 */
@@ -143,8 +191,10 @@ function decorate(db, s) {
   });
 }
 
-function stats(db) {
-  const all = db.storyboards;
+/* 统计。**按作用域统计**（多项目升级）—— 原来统计整个库，
+   于是项目 A 的页面里会显示项目 B 的进度与预计剩余。scope 缺省时保持全局行为。 */
+function stats(db, scope) {
+  const all = scope ? scopeStoryboards(db, scope) : db.storyboards;
   const c = { draft: 0, queued: 0, generating: 0, succeeded: 0, failed: 0, canceled: 0 };
   all.forEach((s) => { c[s.status] = (c[s.status] || 0) + 1; });
   const finished = c.succeeded + c.failed + c.canceled;
@@ -161,9 +211,19 @@ function stats(db) {
   };
 }
 
-function renumber(db) {
-  db.storyboards.slice().sort(bySeq).forEach((s, i) => { s.seq = i + 1; });
+/* 序号重编。**必须按工作区**（多项目升级）：seq 是分镜在页面内的展示序号，
+   原来全局重编会让两个页面的分镜互相插队（bySeq 排序把它们混在一起，
+   "镜头 3" 可能出现在另一个页面里）。 */
+function renumber(db, scope) {
+  const list = scope ? scopeStoryboards(db, scope) : db.storyboards;
+  list.slice().sort(bySeq).forEach((s, i) => { s.seq = i + 1; });
+  /* db.seq 保留为历史遗留计数（不再作为序号来源），新序号一律用 nextSeq 现算 */
   db.seq = db.storyboards.length;
+}
+
+/* 工作区内的下一个序号。不能用全局 db.seq —— 那样两个页面会共用一串号。 */
+function nextSeq(db, scope) {
+  return scopeStoryboards(db, scope).reduce((m, s) => Math.max(m, Number(s.seq) || 0), 0) + 1;
 }
 
 /* 分隔符拆分：与前端 splitSegments() 逐字一致 */
@@ -180,8 +240,10 @@ function splitSegments(rawText, delimiter) {
 }
 
 /* ---------------- 各接口实现 ---------------- */
-function listStoryboards(db, q, projectId) {
-  let list = db.storyboards.slice().sort(bySeq);
+/* 分镜列表。**只返回本工作区的分镜**（指令 §30：后端必须限定 workspaceId，
+   并已由 resolveScope 校验该工作区确实属于请求里的项目）。 */
+function listStoryboards(db, q, scope) {
+  let list = scopeStoryboards(db, scope).sort(bySeq);
   if (q.status) {
     const want = String(q.status).split(',').map((s) => s.trim()).filter(Boolean);
     if (want.length) list = list.filter((s) => want.includes(s.status));
@@ -195,10 +257,12 @@ function listStoryboards(db, q, projectId) {
   const slice = list.slice((page - 1) * pageSize, page * pageSize);
   slice.forEach((s) => { s.dirty = false; });
   store.save();
-  return { list: slice.map((s) => decorate(db, s)), page, pageSize, total, stats: stats(db) };
+  return { list: slice.map((s) => decorate(db, s)), page, pageSize, total, stats: stats(db, scope) };
 }
 
-function getProgress(db, idsParam) {
+/* 进度轮询。⚠ 加作用域校验（指令 §30）：原来只按客户端传来的 id 查，
+   任何调用方都能按 id 读到别的项目里分镜的进度与错误信息。 */
+function getProgress(db, idsParam, scope) {
   const ids = String(idsParam || '').split(',').map((s) => s.trim()).filter(Boolean);
   /* ⚠ 不再「读后清」（2026-09-19 修复）。
      原实现在这里 `s.dirty = false`，等于让"谁先问谁消费掉这次变化"：同时开两个标签页时，
@@ -207,7 +271,7 @@ function getProgress(db, idsParam) {
      现在只读取、不清除；dirty 由 listStoryboards（列表刷新）统一清 —— 那是"确实拿到过完整状态"
      的时点。代价是生成期间前端不再退避到 10s（每轮都有变化），对本地服务可忽略。
      前端侧配套：按载荷签名判断"真的没变"再退避，见 app/app.js 的 pollOnce。 */
-  const changed = db.storyboards.filter((s) => ids.includes(s.id) && s.dirty);
+  const changed = scopeStoryboards(db, scope).filter((s) => ids.includes(s.id) && s.dirty);
   return changed.map((s) => ({
     id: s.id, status: s.status, progress: Math.round(s.progress),
     etaSeconds: s.etaSeconds, currentFrameUrl: s.currentFrameUrl,
@@ -217,9 +281,8 @@ function getProgress(db, idsParam) {
   }));
 }
 
-function getStoryboard(db, id, cfg) {
-  const s = findSb(db, id);
-  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
+function getStoryboard(db, id, cfg, scope) {
+  const s = findScopedSb(db, id, scope);
   // 命令回显按「实际会被路由到的引擎」生成（与 worker 派发同一套判定）
   const pe = plannedEngineFor(db, s);
 
@@ -275,9 +338,8 @@ function getStoryboard(db, id, cfg) {
 /* 干跑校验：不提交、不改任务状态，只给出「提交后会执行的完整命令」。
    （原实现还支持让画布 CLI 做 --dry-run 本地校验；创作 CLI 没有该 flag，
     命令由适配层按能力表组装并本地校验，见 worker.planFor。） */
-async function dryRunStoryboard(db, id, adapter, opts) {
-  const s = findSb(db, id);
-  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
+async function dryRunStoryboard(db, id, adapter, opts, scope) {
+  const s = findScopedSb(db, id, scope);
   if (!adapter || typeof adapter.planFor !== 'function') {
     throw new ApiError(ERR.INTERNAL, '适配器不支持干跑校验（请重启服务）');
   }
@@ -293,14 +355,16 @@ async function dryRunStoryboard(db, id, adapter, opts) {
   }, plan);
 }
 
-function createStoryboard(db, b) {
-  const d = db.settings.defaults;
+/* 新建分镜。归属由作用域决定（不再硬编码 pj_1），序号在工作区内现算。 */
+function createStoryboard(db, b, scope) {
+  const d = effectiveDefaults(db, scope);
   /* 先定模型再钳时长：时长上限取决于**该分镜实际用的模型**（seedance2.5 到 30s，
      其余到 15s）。原先统一按全局 META.duration（4–15）钳，于是"设置页能选 30、
      创建出来却是 15"（2026-09-19 修复）。 */
   const model = b.model || d.model;
   const s = {
-    id: rid('st_'), projectId: 'pj_1', batchId: 'bt_21', seq: ++db.seq,
+    id: rid('st_'), projectId: scope.projectId, workspaceId: scope.workspaceId,
+    batchId: 'bt_21', seq: nextSeq(db, scope),
     prompt: b.prompt || '', negativePrompt: b.negativePrompt != null ? b.negativePrompt : d.negativePrompt,
     durationSec: models.clampDuration(model, b.durationSec || d.durationSec),
     model: model, ratio: b.ratio || d.ratio,
@@ -316,9 +380,8 @@ function createStoryboard(db, b) {
   return decorate(db, s);
 }
 
-function patchStoryboard(db, id, b) {
-  const s = findSb(db, id);
-  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
+function patchStoryboard(db, id, b, scope) {
+  const s = findScopedSb(db, id, scope);
   if (b.durationSec != null && !s.canEditDuration) {
     throw new ApiError(ERR.CONFLICT, '分镜已完成，修改时长需重新生成');
   }
@@ -342,11 +405,13 @@ function patchStoryboard(db, id, b) {
   return decorate(db, s);
 }
 
-function batchDuration(db, b) {
+function batchDuration(db, b, scope) {
   const updated = [], skipped = [];
   (b.ids || []).forEach((id) => {
     const s = findSb(db, id);
     if (!s) return skipped.push({ id, reason: 'not_found', message: '分镜不存在' });
+    /* 不在本页面内的一律按"不存在"处理，绝不改写（隔离由后端强制） */
+    if (s.workspaceId !== scope.workspaceId) return skipped.push({ id, reason: 'not_found', message: '分镜不在当前页面内' });
     if (!s.canEditDuration) return skipped.push({ id, reason: 'completed_locked', message: '已完成，已锁定时长' });
     s.durationSec = models.clampDuration(s.model, b.durationSec);
     s.dirty = true; updated.push(id);
@@ -355,7 +420,7 @@ function batchDuration(db, b) {
   return { updated, skipped };
 }
 
-function batchSubmit(db, b, adapter, cfg) {
+function batchSubmit(db, b, adapter, cfg, scope) {
   const D = adapter && adapter.dreamina;
   if (!D) return Promise.reject(new ApiError(ERR.CLI_DOWN, '创作 CLI 适配器未加载（请重启服务）'));
   /* 提交前的可用性闸。刻意**不**无条件强制探测：单次 `dreamina user_credit` 实测 8–9 秒，
@@ -373,15 +438,20 @@ function batchSubmit(db, b, adapter, cfg) {
       if (!p || !p.available) throw new ApiError(ERR.CLI_DOWN, (p && p.message) || '创作 CLI 未连接，无法提交');
       return p;
     });
-  return gate.then(() => doSubmit(db, b));
+  return gate.then(() => doSubmit(db, b, scope));
 }
 
-function doSubmit(db, b) {
+function doSubmit(db, b, scope) {
   const accepted = [], rejected = [];
   const dry = b.dryRun === true;   // 本批次干跑：进队列组装命令但不派发
   (b.ids || []).forEach((id) => {
     const s = findSb(db, id);
     if (!s) return rejected.push({ id, code: String(ERR.NOTFOUND), message: '分镜不存在' });
+    /* ⚠ 跨页面/跨项目提交必须拒绝（指令 §30/§43）：否则构造一个请求就能把
+       别的项目里排队的任务拉进来跑，等于绕过隔离。 */
+    if (s.workspaceId !== scope.workspaceId) {
+      return rejected.push({ id, code: String(ERR.NOTFOUND), message: '分镜不在当前页面内' });
+    }
     if (TS.isRunning(s.status)) {
       return rejected.push({ id, code: String(ERR.CONFLICT), message: '该分镜已在队列中' });
     }
@@ -412,9 +482,8 @@ function doSubmit(db, b) {
   return { accepted, rejected, dryRun: dry };
 }
 
-function cancel(db, id) {
-  const s = findSb(db, id);
-  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
+function cancel(db, id, scope) {
+  const s = findScopedSb(db, id, scope);
   if (s.status === 'succeeded') throw new ApiError(ERR.CONFLICT, '已完成的分镜无法取消');
   if (s.status === 'draft') throw new ApiError(ERR.CONFLICT, '未提交的分镜无需取消，直接删除或编辑即可');
   if (!TS.canCancel(s.status)) throw new ApiError(ERR.CONFLICT, '当前状态（' + s.status + '）无法取消');
@@ -445,9 +514,8 @@ function cancel(db, id) {
   return decorate(db, s);
 }
 
-function retry(db, id) {
-  const s = findSb(db, id);
-  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
+function retry(db, id, scope) {
+  const s = findScopedSb(db, id, scope);
   /* ⚠ 状态限制（2026-09-19 修复）：原先 retry 没有任何校验，generating 也能 retry
      ⇒ 同一分镜同时跑两轮生成，**直接重复扣费**。现在只允许 failed / canceled。
      界面上的重试按钮本就只在失败行出现，这里是让后端对齐界面已有的意图。 */
@@ -466,9 +534,15 @@ function retry(db, id) {
   return decorate(db, s);
 }
 
-function batchDelete(db, b) {
+function batchDelete(db, b, scope) {
   const ids = b.ids || [];
-  const running = db.storyboards.filter((s) => ids.includes(s.id) && TS.isRunning(s.status));
+  const inScope = scopeStoryboards(db, scope);
+  const scopedIds = new Set(inScope.map((s) => s.id));
+  /* 不在本页面内的 id 一律按"不存在"处理、**绝不删除**（指令 §29/§30） */
+  const mine = ids.filter((id) => scopedIds.has(id));
+  const notInScope = ids.filter((id) => !scopedIds.has(id));
+
+  const running = inScope.filter((s) => mine.includes(s.id) && TS.isRunning(s.status));
   if (running.length && !b.force) {
     throw new ApiError(ERR.CONFLICT, '存在运行中的分镜，请确认后强制删除', { ids: running.map((s) => s.id) });
   }
@@ -482,19 +556,20 @@ function batchDelete(db, b) {
     s.attemptId = null;
     store.pushLog(s.id, 'warn', '运行中被强制删除：已先中止本地跟踪（CLI 无取消命令，即梦侧任务可能仍在运行并照常计费）');
   });
-  const deleted = db.storyboards.filter((s) => ids.includes(s.id)).map((s) => s.id);
-  db.storyboards = db.storyboards.filter((s) => !ids.includes(s.id));
+  const deleted = inScope.filter((s) => mine.includes(s.id)).map((s) => s.id);
+  db.storyboards = db.storyboards.filter((s) => !deleted.includes(s.id));
   deleted.forEach((id) => { delete db.logs[id]; delete db.cliJobs[id]; });
-  renumber(db);
+  renumber(db, scope);
   store.save();
-  return { deleted, canceledBeforeDelete: running.map((s) => s.id) };
+  return { deleted, canceledBeforeDelete: running.map((s) => s.id), notInScope };
 }
 
-function reorder(db, id, b) {
-  const s = findSb(db, id);
-  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
-  const idx = db.storyboards.slice().sort(bySeq).findIndex((x) => x.id === s.id);
-  const sorted = db.storyboards.slice().sort(bySeq);
+function reorder(db, id, b, scope) {
+  const s = findScopedSb(db, id, scope);
+  /* 只在**本工作区内**换位：原来按全库排序取邻居，多工作区之后会把两个页面的
+     分镜互换 seq，表现为"上移一下跳到了别的页面"。 */
+  const sorted = scopeStoryboards(db, scope).slice().sort(bySeq);
+  const idx = sorted.findIndex((x) => x.id === s.id);
   const to = b.direction === 'up' ? idx - 1 : idx + 1;
   if (to >= 0 && to < sorted.length) {
     const other = sorted[to];
@@ -505,16 +580,23 @@ function reorder(db, id, b) {
   return { id: s.id };
 }
 
-function listAssets(db, q) {
+/* 素材列表。**只返回本项目的素材**（指令 §29：禁止"查全部再让前端按 projectId 过滤"）。
+   同一项目内的所有工作区都能看到同一份素材库（Asset 属于 Project，§3.3）。 */
+function listAssets(db, q, scope) {
   const type = q.type || 'character';
   const kw = q.keyword ? String(q.keyword).toLowerCase() : '';
-  let pool = db.assets.filter((a) => a.type === type);
+  const projectAssets = scopeAssets(db, scope);
+  let pool = projectAssets.filter((a) => a.type === type);
   if (kw) pool = pool.filter((a) => a.name.toLowerCase().includes(kw));
   pool = pool.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));   // 新素材在前
-  const shot = q.inShotId ? findSb(db, q.inShotId) : null;
-  const usedIds = shot ? shot.assets.map((r) => r.assetId) : [];
+  /* inShotId 也必须落在本工作区内 —— 否则可以借别的页面的分镜 id 反查它的绑定 */
+  let usedIds = [];
+  if (q.inShotId) {
+    const shot = findSb(db, q.inShotId);
+    if (shot && shot.workspaceId === scope.workspaceId) usedIds = shot.assets.map((r) => r.assetId);
+  }
   const view = (a) => viewAsset(a, usedIds);
-  const currentShot = usedIds.length ? db.assets.filter((a) => usedIds.includes(a.id)).map(view) : [];
+  const currentShot = usedIds.length ? projectAssets.filter((a) => usedIds.includes(a.id)).map(view) : [];
   return {
     currentShot,
     library: pool.map(view),
@@ -531,7 +613,7 @@ function viewAsset(a, usedIds) {
 }
 
 /* ---------------- 创建 / 批量导入素材（本地上传，文件名默认为素材名） ---------------- */
-function createAsset(db, opts) {
+function createAsset(db, opts, scope) {
   const type = String(opts.type || '');
   const kind = ASSET_TYPE_KIND[type];
   if (!kind) throw new ApiError(ERR.PARAM, '素材类型不合法：' + type + '（支持 ' + Object.keys(ASSET_TYPE_KIND).join('/') + '）');
@@ -550,7 +632,7 @@ function createAsset(db, opts) {
   fs.writeFileSync(path.join(ASSET_DIR, fname), buf);
   const base = filename.replace(/\.[^.]+$/, '').trim() || ('素材-' + id.slice(3, 9));
   const asset = {
-    id, projectId: 'pj_1', name: base, type,
+    id, projectId: scope.projectId, name: base, type,
     url: '/media/assets/' + fname,
     thumbUrl: kind === 'audio' ? null : '/media/assets/' + fname,
     width: 0, height: 0, size: buf.length, tags: [],
@@ -562,15 +644,16 @@ function createAsset(db, opts) {
   return viewAsset(asset);
 }
 
-function bindAsset(db, id, b) {
-  const s = findSb(db, id);
-  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
+function bindAsset(db, id, b, scope) {
+  const s = findScopedSb(db, id, scope);
   const role = b.role;
   /* role 与资产类型一一对应（本项目 type 即 role），故直接以类型表为准，避免两处漂移 */
   if (!Object.keys(ASSET_TYPE_KIND).includes(role)) {
     throw new ApiError(ERR.PARAM, 'role 不合法');
   }
-  if (!findAsset(db, b.assetId)) throw new ApiError(ERR.NOTFOUND, '素材不存在');
+  /* ⚠ 跨项目绑定必须拒绝（指令 §43）：分镜所在工作区的项目 == 素材的 projectId。
+     即使调用方构造请求传入别的项目的素材 id，也必须在这里被拦下 —— 这是隔离的最后一道闸。 */
+  const asset = findScopedAsset(db, b.assetId, scope);
   const single = !isMultiRole(role);
   if (single) s.assets = s.assets.filter((r) => r.role !== role);
   if (!s.assets.some((r) => r.assetId === b.assetId && r.role === role)) {
@@ -578,12 +661,11 @@ function bindAsset(db, id, b) {
   }
   s.dirty = true;
   store.save();
-  return { id: s.id };
+  return { id: s.id, bound: asset.id };
 }
 
-function unbindAsset(db, id, assetId) {
-  const s = findSb(db, id);
-  if (!s) throw new ApiError(ERR.NOTFOUND, '分镜不存在');
+function unbindAsset(db, id, assetId, scope) {
+  const s = findScopedSb(db, id, scope);
   s.assets = s.assets.filter((r) => r.assetId !== assetId);
   s.dirty = true;
   store.save();
@@ -672,7 +754,7 @@ function matchByText(promptNorm, kw) {
  * body: { ids?: string[], apply?: boolean, overwrite?: boolean, onlyDraft?: boolean }
  * 不传 ids 时默认只扫「未提交(draft)」的分镜；apply 默认 false（只预览不写库）。
  */
-function autoMatchAssets(db, b) {
+function autoMatchAssets(db, b, scope) {
   const body = b || {};
   const apply = body.apply === true;
   const overwrite = body.overwrite === true;
@@ -680,19 +762,22 @@ function autoMatchAssets(db, b) {
   const onlyDraft = body.onlyDraft !== false;
   const ids = Array.isArray(body.ids) ? body.ids : [];
 
-  let pool = db.storyboards.slice();
+  /* 作用域（指令 §40）：分镜池限定在**当前工作区**，候选素材限定在**当前项目**。
+     自动匹配绝不能跨项目 —— 否则会拿别的项目的素材名去命中本项目的提示词。 */
+  let pool = scopeStoryboards(db, scope);
   if (ids.length) pool = pool.filter((s) => ids.includes(s.id));
   else if (onlyDraft) pool = pool.filter((s) => s.status === 'draft');
   pool.sort((a, b2) => a.seq - b2.seq);
 
+  const projectAssets = scopeAssets(db, scope);
   const rows = [];
-  const stat = { storyboards: pool.length, bound: 0, kept: 0, occupied: 0, noMatch: 0, overLimit: 0 };
+  const stat = { storyboards: pool.length, bound: 0, kept: 0, occupied: 0, noMatch: 0, overLimit: 0, ambiguous: 0 };
 
   pool.forEach((s) => {
     const p = normKey(s.prompt);
     const hits = [];
-    // ① 逐素材试匹配
-    db.assets.forEach((a) => {
+    // ① 逐素材试匹配（只在本项目的素材里找）
+    projectAssets.forEach((a) => {
       const k = nameKeys(a.name);
       const hit = matchByText(p, k);
       if (!hit) return;
@@ -703,17 +788,37 @@ function autoMatchAssets(db, b) {
       });
     });
 
-    // ② 按 role 收敛：先同名去重（同一角色的多张素材只留最优），character 可多绑、其余取最高分
+    // ② 按 role 收敛
     const byRole = {};
     hits.forEach((h) => { (byRole[h.role] = byRole[h.role] || []).push(h); });
     const won = [];
-    const rivals = [];   // 同一 role 命中多个时，落选的候选（告知用户"为什么没选它"）
+    const rivals = [];      // 同一 role 命中多个时，落选的候选（告知用户"为什么没选它"）
+    const ambiguous = [];   // 同名同类型的多个素材：报歧义，不绑（指令 §41）
     Object.keys(byRole).forEach((role) => {
       let list = byRole[role].slice().sort((x, y) => (y._score - x._score) || (y.name.length - x.name.length));
+
+      /* ⚠ 指令 §41：同一项目内「同名同类型」的多个素材**不得静默挑一个绑上**，必须报歧义。
+         原来的 dedupe 会按分数悄悄留一个 —— 那正是 §41 要禁的行为。现在这类候选整体转入
+         ambiguous：既不绑、也不假装成"落选"糊过去。
+         同时仍放进 rivals，这样**未改动的旧前端**至少还能在「同类落选」里看到它们，
+         不会出现"预览里凭空少了几项却没有任何说明"。 */
+      const byGroup = {};
+      list.forEach((m) => { (byGroup[m.group] = byGroup[m.group] || []).push(m); });
+      const conflicted = new Set(Object.keys(byGroup).filter((g) => byGroup[g].length > 1));
+      if (conflicted.size) {
+        list.forEach((m) => { if (conflicted.has(m.group)) { ambiguous.push(m); rivals.push(m); } });
+        list = list.filter((m) => !conflicted.has(m.group));
+        if (!list.length) return;
+      }
+
       if (dedupe) {
         const seen = {};
         list = list.filter((m) => (seen[m.group] ? false : (seen[m.group] = true)));
       }
+      /* ⚠ 这里与 ROLE_MULTI **不一致**：prop 在 ROLE_MULTI 里也是多值（bindAsset 与下面
+         第③④步都走 isMultiRole），但自动匹配这里只让 character 保留全部命中、prop 被压成一张。
+         这是**既有行为**，改它会让道具素材的匹配结果明显变化（本库 15 个素材里 9 个是道具），
+         属于需要单独验证的行为变更，故本次多项目升级刻意不动，只记在这里备查。 */
       if (role === 'character') { won.push.apply(won, list); return; }
       list.slice(1).forEach((m) => rivals.push(m));
       won.push(list[0]);
@@ -765,6 +870,7 @@ function autoMatchAssets(db, b) {
     stat.kept += kept.length;
     stat.occupied += occupied.length;
     stat.overLimit = (stat.overLimit || 0) + overLimit.length;
+    stat.ambiguous += ambiguous.length;
     if (!won.length) stat.noMatch++;
 
     const strip = (m) => ({ assetId: m.assetId, name: m.name, type: m.type, role: m.role, via: m.via, keyword: m.keyword });
@@ -775,6 +881,9 @@ function autoMatchAssets(db, b) {
       overLimit: overLimit.map(strip),               // 命中但名额不够，未绑定（前端单独列出并说明）
       kept: kept.map(strip),
       rivals: rivals.map(strip),
+      /* 同名同类型的歧义候选（指令 §41）：既不绑、也不静默丢弃。
+         新前端可以单独渲染「同名歧义，请手工确认」；旧前端会从 rivals 里看到它们。 */
+      ambiguous: ambiguous.map(strip),
       occupied: occupied.map((o) => ({ role: o.role, currentAssetId: o.currentAssetId, currentName: o.currentName, want: strip(o.want) })),
       noMatch: won.length === 0
     });
@@ -783,7 +892,7 @@ function autoMatchAssets(db, b) {
   if (apply) store.save();
   return {
     applied: apply, overwrite, scanned: pool.length,
-    rows: rows.filter((r) => r.toBind.length || r.kept.length || r.occupied.length || r.rivals.length || r.noMatch),
+    rows: rows.filter((r) => r.toBind.length || r.kept.length || r.occupied.length || r.rivals.length || r.ambiguous.length || r.noMatch),
     stats: stat
   };
 }
@@ -835,13 +944,15 @@ function durationFromPrompt(s, fallbackSec) {
  * body: { ids?: string[], apply?: boolean, onlyDraft?: boolean }
  * apply 缺省 **true**（这是"自动匹配"的语义，可直接生效）；传 false 则只预览。
  */
-function autoDuration(db, b) {
+function autoDuration(db, b, scope) {
   const body = b || {};
   const apply = body.apply !== false;
   const onlyDraft = body.onlyDraft !== false;
   const ids = Array.isArray(body.ids) ? body.ids : [];
 
-  let pool = db.storyboards.slice();
+  /* 只扫**当前工作区**的分镜（指令 §30）。原来扫全库，于是项目 A 的页面里
+     会把项目 B 的分镜一起重算时长。 */
+  let pool = scopeStoryboards(db, scope);
   if (ids.length) pool = pool.filter((s) => ids.includes(s.id));
   else if (onlyDraft) pool = pool.filter((s) => s.status === 'draft');
   pool.sort((a, b2) => a.seq - b2.seq);
@@ -903,13 +1014,15 @@ function autoDuration(db, b) {
   };
 }
 
-function importPreview(db, b) {
+function importPreview(db, b, scope) {
   const segs = splitSegments(b.rawText, b.delimiter);
-  const existing = db.storyboards.map((s) => s.prompt);
-  /* 预览里"实际会采用的时长"必须与 importConfirm 的落库值同源：都按**当前默认模型**
+  /* 重复检测只在**本工作区**内比对（指令 §30）：原来扫全库，于是别的项目里
+     用过的提示词会被报成 DUPLICATE，而它们其实毫无关系。 */
+  const existing = scopeStoryboards(db, scope).map((s) => s.prompt);
+  /* 预览里"实际会采用的时长"必须与 importConfirm 的落库值同源：都按**当前生效的默认模型**
      的能力区间钳。否则 seedance2.5 下标注 30s 会被预览误报成"超出 4–15"，
      而真正导入进去的是 30（2026-09-19 修复）。 */
-  const model = db.settings.defaults.model;
+  const model = effectiveDefaults(db, scope).model;
   const cap = models.capsFor(models.dreaminaModelOf(model) || model).duration;
   const warnings = [];
   const out = segs.map((text, i) => {
@@ -931,15 +1044,21 @@ function importPreview(db, b) {
   return { total: out.length, delimiterEcho: b.delimiter, segments: out, warnings };
 }
 
-function importConfirm(db, b, idempotencyKey) {
+function importConfirm(db, b, scope) {
   const segs = splitSegments(b.rawText, b.delimiter);
-  const d = Object.assign({}, db.settings.defaults, b.defaults || {});
+  /* 默认值取**项目级生效值**（项目覆盖 ⊕ 全局默认），与 importPreview 同源 */
+  const d = Object.assign({}, effectiveDefaults(db, scope), b.defaults || {});
   const top = b.insertPosition !== 'bottom';
-  if (top) db.storyboards.forEach((s) => { s.seq += segs.length; });
+  /* ⚠ 序号重排必须限定在本工作区（多项目升级）：原来 `db.storyboards.forEach(s => s.seq += n)`
+     会把**所有项目**的分镜序号一起推高，别的页面凭空多出一段空号。 */
+  const inScope = scopeStoryboards(db, scope);
+  if (top) inScope.forEach((s) => { s.seq += segs.length; });
+  let next = nextSeq(db, scope) + (top ? 0 : 0);
   const created = segs.map((text, i) => {
     const s = {
-      id: rid('st_'), projectId: 'pj_1', batchId: b.batchId || 'bt_21',
-      seq: top ? (i + 1) : ++db.seq,
+      id: rid('st_'), projectId: scope.projectId, workspaceId: scope.workspaceId,
+      batchId: b.batchId || 'bt_21',
+      seq: top ? (i + 1) : next++,
       prompt: text, negativePrompt: d.negativePrompt || '',
       // 时长优先取提示词里的「总时长」标注（向上进位），没有标注才回落到默认值
       durationSec: (function () {
@@ -955,13 +1074,31 @@ function importConfirm(db, b, idempotencyKey) {
     db.storyboards.push(s);
     return { id: s.id, seq: s.seq, status: s.status, prompt: s.prompt };
   });
-  renumber(db);
+  renumber(db, scope);
   store.save();
   return { created, createdCount: created.length, batchId: b.batchId || 'bt_21', skipped: [] };
 }
 
-function getSettings(db) {
-  return JSON.parse(JSON.stringify(db.settings));
+/* 生效设置 = **项目覆盖 ⊕ 全局默认**（指令 §15.3 的兼容策略，不一次大拆）。
+   分层口径（指令 §15.1/§15.2）：
+     · delimiter / defaults —— **项目级**创作默认值，可被 project.settings 覆盖；
+     · queue（Worker 总并发）与 adapter（CLI 登录态）—— **系统级**，不复制到每个项目。
+   返回的是**合并后的生效值**，所以未改动的前端读到的东西与升级前完全一样。 */
+function getSettings(db, scope) {
+  const eff = scope ? effectiveDefaults(db, scope) : (db.settings.defaults || {});
+  const del = scope ? effectiveDelimiter(db, scope) : (db.settings.delimiter || {});
+  const out = {
+    delimiter: JSON.parse(JSON.stringify(del)),
+    defaults: JSON.parse(JSON.stringify(eff)),
+    queue: JSON.parse(JSON.stringify(db.settings.queue || {})),
+    adapter: JSON.parse(JSON.stringify(db.settings.adapter || {}))
+  };
+  if (scope && scope.project) {
+    out.project = { id: scope.project.id, name: scope.project.name };
+    /* 哪些项是项目自己的覆盖（其余继承全局）。前端可据此提示"已覆盖 / 继承全局" */
+    out.overridden = Object.keys((scope.project.settings && scope.project.settings.defaults) || {});
+  }
+  return out;
 }
 
 /* ---------------- 默认值变更 → 同步到已有分镜 ----------------
@@ -980,6 +1117,9 @@ function getSettings(db) {
    设置面板上写的就是所有分镜将采用的参数。
    实测无害：模型/画幅/分辨率**没有任何逐条修改的界面入口**，所以不存在"被误伤的手工偏离"。
 
+   ⚠ 多项目升级：同步范围**限定在当前项目**（指令 §30）。原来遍历全库，
+   于是改项目 A 的默认值会把项目 B 的分镜参数一起改掉 —— 典型的跨项目串线。
+
    返回摘要供接口回传、前端提示；一条都没动时返回 null（不产生任何写入）。 */
 const SYNC_FIELDS = [
   { key: 'model', label: '模型' },
@@ -987,9 +1127,11 @@ const SYNC_FIELDS = [
   { key: 'resolution', label: '分辨率' }
 ];
 
-function syncDefaultsToStoryboards(db, before, after) {
+function syncDefaultsToStoryboards(db, before, after, scope) {
   let updated = 0, skippedGenerating = 0;
-  db.storyboards.forEach((sb) => {
+  /* scope 给定时只同步该工作区的分镜；未给定时保持旧的全局行为（供兼容路径调用） */
+  const list = scope ? scopeStoryboards(db, scope) : db.storyboards;
+  list.forEach((sb) => {
     if (sb.status === 'generating') { skippedGenerating++; return; }
     let touched = false;
     SYNC_FIELDS.forEach((f) => { if (after[f.key] != null && sb[f.key] !== after[f.key]) { sb[f.key] = after[f.key]; touched = true; } });
@@ -1005,12 +1147,25 @@ function syncDefaultsToStoryboards(db, before, after) {
   };
 }
 
-async function putSettings(db, s, adapter) {
-  const prevDefaults = Object.assign({}, db.settings.defaults || {});   // 同步前快照：用来判断"哪些项真的变了"
-  // 并发上限：不再按账号档位限制；仅当配置了本地保护上限（concMax>0）时校验上限
+/* PUT /settings 允许写入的顶层键**白名单**。
+   ⚠ 原实现是 `db.settings = Object.assign({}, db.settings, s, {adapter})` ——
+   请求体里**任何**顶层键都会原样落进库，没有白名单。单项目时危害有限，
+   多项目之后这就成了隔离漏洞：一个 `{"projects":[…]}` 或 `{"workspaces":[…]}` 就能直接改写
+   项目集合本身。白名单之外的键一律丢弃，并在响应里如实回报被忽略的键。 */
+const WRITABLE_SETTINGS = ['delimiter', 'defaults', 'queue'];
+
+async function putSettings(db, s, adapter, scope) {
+  const body = s || {};
+  if (!scope || !scope.project) throw new ApiError(ERR.NOTFOUND, '保存设置需要项目上下文');
+  const project = scope.project;
+  const ignored = Object.keys(body).filter((k) => !WRITABLE_SETTINGS.includes(k));
+
+  const prevDefaults = Object.assign({}, effectiveDefaults(db, scope));   // 同步前快照：用来判断"哪些项真的变了"
+
+  // 并发上限（queue 是系统级）：仅当配置了本地保护上限（concMax>0）时校验
   let concMax = 0;
   try { concMax = (await adapter.resolveMaxConcurrency()).max; } catch (e) { /* 解析失败按不限制处理 */ }
-  if (s.queue && (s.queue.concurrency < 1 || (concMax > 0 && s.queue.concurrency > concMax))) {
+  if (body.queue && (body.queue.concurrency < 1 || (concMax > 0 && body.queue.concurrency > concMax))) {
     throw new ApiError(ERR.PARAM, '参数校验失败', {
       fields: [{
         path: 'queue.concurrency',
@@ -1018,71 +1173,77 @@ async function putSettings(db, s, adapter) {
       }]
     });
   }
-  if (s.delimiter && s.delimiter.type === 'custom' && !s.delimiter.value) {
+  if (body.delimiter && body.delimiter.type === 'custom' && !body.delimiter.value) {
     throw new ApiError(ERR.PARAM, '参数校验失败', { fields: [{ path: 'delimiter.value', message: '自定义分隔符不能为空' }] });
   }
-  // 默认值须落在「当前默认模型」的能力范围内：大小写差异（720P / 720p）先归一，
-  // 模型不支持的值按就近档位调整——调整项随响应返回（前端明确提示，不静默改）
+
+  /* 默认值须落在「当前默认模型」的能力范围内：大小写差异（720P / 720p）先归一，
+     模型不支持的值按就近档位调整——调整项随响应返回（前端明确提示，不静默改）。
+     能力表来自 models.js（唯一事实来源）；原实现调画布 CLI 的 model list，已随画布 CLI 移除。 */
   const adjustments = [];
-  /* 能力表来自 models.js（唯一事实来源）。原实现在这里调画布 CLI 的 model list
-     取"实时规格"，画布 CLI 移除后改用注册表内建的能力表。 */
+  /* ⚠ 逐键合并，不能整体替换（2026-09-19 既有缺陷，本次一并修）：
+     原实现把整个 defaults 子对象覆盖过去，于是"只带 model 的 PUT"会把
+     resolution/ratio/durationSec/motion/negativePrompt 全部丢掉（queue 同理，
+     autoRetry/maxRetry 变 undefined，worker 的自动重试静默失效）。 */
+  const nextDefaults = Object.assign({}, effectiveDefaults(db, scope));
+  if (body.defaults) {
+    Object.keys(body.defaults).forEach((k) => { if (body.defaults[k] !== undefined) nextDefaults[k] = body.defaults[k]; });
+  }
   {
-    const incoming = Object.assign({}, db.settings.defaults, s.defaults || {});
+    const incoming = nextDefaults;
     const dmName = models.dreaminaModelOf(incoming.model);
     if (dmName) {
       const caps = models.capsFor(dmName);
       const resList = caps.resolutions;
       const ratioList = models.DREAMINA_RATIOS;
       const durRange = { min: caps.duration[0], max: caps.duration[1] };
-      /* 请求体没带 defaults 时，基于**库中现值**拷一份，让下面「按模型能力归一」有地方可写。
-         ⚠ 原来这里写的是 `s.defaults = {}` —— 紧接着的 `db.settings = Object.assign({}, db.settings, s)`
-         会拿这个空对象把库里的默认参数**整体清空**。实测（2026-09-19）：一次只带 queue 的
-         PUT /settings 就让 defaults.model 变成 undefined，之后新导入的分镜 model 为空、提交即报
-         「模型当前不可用」。这是下面「默认值同步」功能的前提 —— defaults 一旦被清空，
-         同步会把 undefined 推给所有分镜。 */
-      if (!s.defaults) s.defaults = Object.assign({}, db.settings.defaults || {});
       if (resList.length) {
         const hit = resList.find((v) => String(v).toLowerCase() === String(incoming.resolution).toLowerCase());
         const pick = hit || resList.reduce((b, v) =>
           (Math.abs(resTier(v) - resTier(incoming.resolution)) < Math.abs(resTier(b) - resTier(incoming.resolution)) ? v : b), resList[0]);
         if (pick !== incoming.resolution) {
           adjustments.push('分辨率 ' + incoming.resolution + ' → ' + pick + '（模型 ' + incoming.model + ' 支持 ' + resList.join(' / ') + '）');
-          s.defaults.resolution = pick;
+          nextDefaults.resolution = pick;
         }
       }
       if (ratioList.length && !ratioList.includes(incoming.ratio)) {
         adjustments.push('画幅 ' + incoming.ratio + ' → ' + ratioList[0] + '（模型 ' + incoming.model + ' 支持 ' + ratioList.join(' / ') + '）');
-        s.defaults.ratio = ratioList[0];
+        nextDefaults.ratio = ratioList[0];
       }
       if (durRange) {
         const d = Number(incoming.durationSec);
         const clamped = Math.max(durRange.min, Math.min(durRange.max, d));
         if (clamped !== d) {
           adjustments.push('时长 ' + d + 's → ' + clamped + 's（模型 ' + incoming.model + ' 支持 ' + durRange.min + '–' + durRange.max + 's）');
-          s.defaults.durationSec = clamped;
+          nextDefaults.durationSec = clamped;
         }
       }
     }
   }
 
-  /* adapter 下的字段全部只读（引擎只有创作 CLI 一个，不再有可写的引擎选择项）；
-     显式重建而不是直接 merge，避免前端把自己读到的旧字段（如已删除的 engine）再写回库里。 */
-  db.settings = Object.assign({}, db.settings, s, {
-    adapter: {
-      dreaminaAvailable: db.settings.adapter.dreaminaAvailable, // 只读
-      dreaminaVersion: db.settings.adapter.dreaminaVersion      // 只读
-    }
-  });
-  /* 默认值变了就同步到已有分镜（模型 / 画幅 / 分辨率；时长不同步） */
-  const synced = syncDefaultsToStoryboards(db, prevDefaults, db.settings.defaults || {});
+  /* 落库：delimiter / defaults 写**项目级**覆盖；queue 写**系统级**（§15.1）。
+     adapter 保持只读，前端回传的旧字段一律不采纳。 */
+  project.settings = Object.assign({}, project.settings || {});
+  project.settings.defaults = nextDefaults;
+  if (body.delimiter) project.settings.delimiter = Object.assign({}, project.settings.delimiter || {}, body.delimiter);
+  if (body.queue) db.settings.queue = Object.assign({}, db.settings.queue || {}, body.queue);
+  project.updatedAt = nowIso();
+
+  /* 默认值变了就同步到**本项目**的已有分镜（模型 / 画幅 / 分辨率；时长不同步） */
+  const synced = syncDefaultsToStoryboards(db, prevDefaults, nextDefaults, scope);
   store.save();
-  const out = getSettings(db);
+  const out = getSettings(db, scope);
+  if (ignored.length) {
+    /* 如实回报被丢弃的键 —— 静默忽略会让调用方以为写进去了 */
+    out.ignored = ignored;
+    store.pushLog('system', 'warn', '保存设置时忽略了不可写的键：' + ignored.join('、') + '（允许的键：' + WRITABLE_SETTINGS.join('、') + '）');
+  }
   if (adjustments.length) {
     adjustments.forEach((a) => store.pushLog('system', 'info', '默认参数已按模型规格调整：' + a));
     out.adjustments = adjustments;
   }
   if (synced) {
-    store.pushLog('system', 'info', '默认值变更已同步到 ' + synced.updated + ' 条分镜：' +
+    store.pushLog('system', 'info', '默认值变更已同步到项目「' + project.name + '」的 ' + synced.updated + ' 条分镜：' +
       synced.fields.map((f) => f.label + ' ' + f.from + ' → ' + f.to).join('；') +
       (synced.skippedGenerating ? '（' + synced.skippedGenerating + ' 条生成中已跳过）' : ''));
     out.synced = synced;
@@ -1090,12 +1251,13 @@ async function putSettings(db, s, adapter) {
   return out;
 }
 
-function deleteAsset(db, id) {
-  const a = db.assets.find((x) => x.id === id);
-  if (!a) throw new ApiError(ERR.NOTFOUND, '素材不存在');
+function deleteAsset(db, id, scope) {
+  /* 只能删本项目的素材（指令 §29）。跨项目删除必须拒绝。 */
+  const a = findScopedAsset(db, id, scope);
   db.assets = db.assets.filter((x) => x.id !== id);
-  // 解绑所有分镜上的引用
-  db.storyboards.forEach((s) => { s.assets = (s.assets || []).filter((r) => r.assetId !== id); });
+  /* 解绑引用。⚠ 只遍历**本项目**的分镜即可 —— 跨项目绑定在 bindAsset 处已被拒绝，
+     所以其它项目不可能引用这个素材。这里仍按工作区收敛一次，避免"万一"改写别处数据。 */
+  scopeStoryboards(db, scope).forEach((s) => { s.assets = (s.assets || []).filter((r) => r.assetId !== id); });
   // 删除本地文件（url 形如 /media/assets/as_xxx.png）
   if (a.url && a.url.startsWith('/media/assets/')) {
     try { fs.unlinkSync(path.join(ASSET_DIR, a.url.slice('/media/assets/'.length))); } catch (e) { /* 文件可能已不存在 */ }
@@ -1106,9 +1268,8 @@ function deleteAsset(db, id) {
 
 /* 素材设置：更新（名称 / 文生图提示词；两者至少传一项，只更新传了的部分）
    —— prompt 用于素材详情弹窗的提示词编辑：先有提示词占位资产，图后补 */
-function updateAsset(db, id, body) {
-  const a = findAsset(db, id);
-  if (!a) throw new ApiError(ERR.NOTFOUND, '素材不存在');
+function updateAsset(db, id, body, scope) {
+  const a = findScopedAsset(db, id, scope);
   body = body || {};
   const hasName = body.name !== undefined;
   const hasPrompt = body.prompt !== undefined;
@@ -1131,9 +1292,8 @@ function updateAsset(db, id, body) {
 
 /* 素材设置：更换文件（保留素材 id 与全部分镜绑定，只替换磁盘文件与访问地址）
    —— name 显式传入优先；否则沿用既有约定：取新文件名去扩展名 */
-function replaceAsset(db, id, opts) {
-  const a = findAsset(db, id);
-  if (!a) throw new ApiError(ERR.NOTFOUND, '素材不存在');
+function replaceAsset(db, id, opts, scope) {
+  const a = findScopedAsset(db, id, scope);
   const kind = ASSET_TYPE_KIND[a.type];
   const filename = String(opts.filename || '');
   if (!filename) throw new ApiError(ERR.PARAM, '缺少文件名');
@@ -1230,15 +1390,16 @@ function parseAssetPromptSegments(rawText) {
    与前端图片导入的名称匹配规则一致，两处判定同一个"这是同一条素材"。 */
 function assetKey(type, name) { return String(type) + '\u0000' + String(name == null ? '' : name).trim().toLowerCase(); }
 
-function importAssetPrompts(db, b) {
+function importAssetPrompts(db, b, scope) {
   const rawText = String((b && b.rawText) || '');
   if (!rawText.trim()) throw new ApiError(ERR.PARAM, '提示词文本为空');
   const parsed = parseAssetPromptSegments(rawText);
   /* 去重：库里已有同「类型 + 名称」的视为重复，同一批里重复出现的段也只留第一段。
      不去重的话，把同一段提示词再粘一次就会整套复制一遍同名素材（2026-09-19 实测：
-     重复导入一次，场景 / 道具各多出一份，库里从 27 条堆到 40 条）。 */
+     重复导入一次，场景 / 道具各多出一份，库里从 27 条堆到 40 条）。
+     ⚠ 只在本**项目**的素材里判重（指令 §29）—— 别的项目有同名素材不算重复。 */
   const known = new Map();                       // key -> 库中已存在的 asset.id；null = 本批内前面已出现
-  (db.assets || []).forEach((a) => {
+  scopeAssets(db, scope).forEach((a) => {
     const k = assetKey(a.type, a.name);
     if (!known.has(k)) known.set(k, a.id);
   });
@@ -1266,7 +1427,7 @@ function importAssetPrompts(db, b) {
   for (const it of items) {
     const id = rid('as_');
     const asset = {
-      id, projectId: 'pj_1', name: it.name, type: it.type, prompt: it.prompt,
+      id, projectId: scope.projectId, name: it.name, type: it.type, prompt: it.prompt,
       url: null, thumbUrl: null,                  // 提示词资产：先占位，图后补（详情弹窗可上传）
       width: 0, height: 0, size: 0, tags: [],
       createdAt: nowIso(), updatedAt: null,
@@ -1279,13 +1440,22 @@ function importAssetPrompts(db, b) {
   return Object.assign(base, { created, applied: true });
 }
 
-function resetSettings(db, b) {
+/* 恢复默认。分层口径同 getSettings：
+   delimiter / defaults 属于**项目**，恢复默认 = **清掉项目覆盖**，于是自动回落到全局默认值
+   （而不是把项目值写成硬编码常量 —— 那样"恢复默认"会把项目钉死在当前内置值上，
+   之后改全局默认也带不动它）。queue 是系统级，直接复位为内置默认。 */
+function resetSettings(db, b, scope) {
   const scopes = (b && b.scopes) || ['delimiter', 'defaults', 'queue'];
-  if (scopes.includes('delimiter')) db.settings.delimiter = { type: 'custom', value: ';;' };
-  if (scopes.includes('defaults'))  db.settings.defaults  = DEFAULT_SETTINGS().defaults;
-  if (scopes.includes('queue'))     db.settings.queue     = DEFAULT_SETTINGS().queue;
+  const project = scope ? scope.project : null;
+  if (project) {
+    project.settings = Object.assign({}, project.settings || {});
+    if (scopes.includes('delimiter')) delete project.settings.delimiter;   // 清覆盖 → 回落全局
+    if (scopes.includes('defaults')) delete project.settings.defaults;
+    project.updatedAt = nowIso();
+  }
+  if (scopes.includes('queue')) db.settings.queue = DEFAULT_SETTINGS().queue;
   store.save();
-  return getSettings(db);
+  return getSettings(db, scope);
 }
 
 /* 从实时模型规格里提取某个 flag 的值域（如 --ratio / --resolution） */
@@ -1332,7 +1502,7 @@ function dedupeLevels(list) {
 }
 
 /* ---------------- meta/options：静态 ∪ 实时模型目录 ∪ 动态并发上限 ---------------- */
-async function getOptions(db, adapter) {
+async function getOptions(db, adapter, scope) {
   const meta = JSON.parse(JSON.stringify(META));
   // 服务级干跑模式（JC_DRY_RUN=1 / 配置文件 dryRun）：前端据此常驻提示「本服务不会真正派发」
   meta.dryRun = loadConfig().dryRun === true;
@@ -1391,53 +1561,44 @@ async function getOptions(db, adapter) {
   // 积分余额提醒阈值（前端在提交前据此做二次确认；与 worker 派发前的提醒同源）
   meta.creditWarnBelow = loadConfig().creditWarnBelow;
 
-  /* ---------------- 默认值与历史数据的模型名归一 ----------------
-     两件事必须分开做，顺序也不能反：
-       ① **无损改名**：历史画布域名（seedance_2.0_vip）→ 创作域名（seedance2.0_vip）。
-          同一底层模型，只是换了套命名；与"当前是否可用"无关，任何时候都能做。
-       ② **替代迁移**：改完之后仍然跑不了的名字（原仅画布模型，创作 CLI 无对应能力）→
-          改选一个当前可用的模型。
-     ⚠ 铁律（2026-09-18 的教训）：只有「名字确实跑不了」才允许改写用户的选择。
-       「名字有效、只是当前探测不可用」必须原样保留 —— 否则创作 CLI 探测瞬时失败时，
-       用户设的 seedance2.0fast 会被静默换掉，之后所有新分镜都按别的模型跑。 */
+  /* ---------------- 默认值：读**项目级生效值**，并只做"读时归一" ----------------
+     ⚠ 这里**不再改写数据库**（2026-09-19 多项目升级的清理）。
+     原实现借这个 GET 请求把 settings.defaults、**所有分镜的 model**、**所有 cliJobs 的
+     cliModel** 一起改写并 store.save() —— 也就是说"迁移"藏在一个只读接口里，
+     靠用户打开页面才触发、而且每次刷新都可能重跑，两个并发请求还会互相交错。
+     现在这些一次性改写全部搬到 schema.js 的版本化迁移里（跑一次、可校验、幂等）。
+
+     这里只保留"读时归一"：把历史模型名换成等价名**仅用于展示**，不写库。
+     铁律不变（2026-09-18 的教训）：只有「名字确实跑不了」才提示用户需要改；
+     「名字有效、只是当前探测不可用」必须原样保留 —— 否则探测瞬时失败时，
+     用户设的 seedance2.0fast 会被误报成需要更换。 */
   const avail = meta.models.filter((m) => m.enabled !== false).map((m) => m.value);
   const runnable = (v) => !!v && models.dreaminaModelOf(v) != null;
-  const d = db.settings.defaults;
-  let changed = false;
+  /* 展示用默认值：项目覆盖 ⊕ 全局默认（只读拷贝，不回写） */
+  const d = Object.assign({}, effectiveDefaults(db, scope));
   let defaultsNotice = null;
-  const renamedOnce = [];      // 收集本次发生的无损改名，供日志
-  const canon = (v) => {
-    if (!models.isLegacyName(v)) return v;
-    const nv = models.dreaminaModelOf(v);
-    renamedOnce.push(v + ' → ' + nv);
-    return nv;
-  };
 
   if (d.model) {
-    const before = d.model;
-    d.model = canon(d.model);
-    if (d.model !== before) {
-      changed = true;
+    const canonName = models.isLegacyName(d.model) ? models.dreaminaModelOf(d.model) : d.model;
+    if (canonName !== d.model) {
       defaultsNotice = {
-        model: d.model, reason: 'legacy', from: before,
-        message: '默认模型「' + before + '」是画布 CLI 时代的旧名字，已按创作 CLI 的等价型号改名为「' + models.labelOf(d.model) + '」（同一个底层模型，无需重新选择）'
+        model: canonName, reason: 'legacy', from: d.model,
+        message: '默认模型「' + d.model + '」是画布 CLI 时代的旧名字，已按创作 CLI 的等价型号显示为「' + models.labelOf(canonName) + '」（同一个底层模型，无需重新选择）'
       };
+      d.model = canonName;
     }
   }
-  /* 改完名还是跑不了 → 替代迁移。只在"确实存在可用模型"时改；
-     引擎整体不可用时（avail 为空）保留用户选择，只做标记。 */
+  /* 名字确实跑不了（创作 CLI 无对应型号）→ 提示需要改选。**不写库**。 */
   if (avail.length && d.model && !runnable(d.model)) {
     const alt = avail[0];
     if (alt && alt !== d.model) {
       defaultsNotice = {
         model: alt, reason: 'invalid', from: d.model,
-        message: '默认模型「' + d.model + '」已随画布 CLI 一并下线（创作 CLI 无对应型号），已自动迁移为「' + models.labelOf(alt) + '」'
+        message: '默认模型「' + d.model + '」已随画布 CLI 一并下线（创作 CLI 无对应型号），建议改选「' + models.labelOf(alt) + '」'
       };
-      d.model = alt; changed = true;
     }
   }
-  /* 名字有效但当前被禁用 → 保留用户的选择，只做标记。
-     这里刻意不改 d.model：用户的显式配置优先于"当下探测到的一时不可用"。 */
+  /* 名字有效但当前被禁用 → 保留用户的选择，只做标记 */
   if (!defaultsNotice && d.model) {
     const dEntry = meta.models.find((m) => m.value === d.model);
     if (dEntry && dEntry.enabled === false) {
@@ -1446,37 +1607,25 @@ async function getOptions(db, adapter) {
   }
   meta.defaultsNotice = defaultsNotice;
 
+  /* 分辨率 / 画幅的大小写归一也只在返回值上做（例如历史值 720P → 720p） */
   const pickCi = (list, cur) => (list || []).find((x) => String(x.value).toLowerCase() === String(cur).toLowerCase());
   const rMatch = pickCi(meta.resolutions, d.resolution);
-  if (rMatch && rMatch.value !== d.resolution) { d.resolution = rMatch.value; changed = true; }
+  if (rMatch && rMatch.value !== d.resolution) d.resolution = rMatch.value;
   const aMatch = pickCi(meta.ratios, d.ratio);
-  if (aMatch && aMatch.value !== d.ratio) { d.ratio = aMatch.value; changed = true; }
+  if (aMatch && aMatch.value !== d.ratio) d.ratio = aMatch.value;
 
-  /* 历史分镜与 cliJobs 里的模型名同样归一（先无损改名，再替代迁移） */
-  let migrated = 0, renamed = 0;
-  const fixName = (v) => {
-    const c = canon(v);
-    if (c !== v) return c;                                   // 无损改名
-    if (!runnable(c) && avail.length) { migrated++; return avail[0]; }   // 跑不了 → 替代
-    return c;
-  };
-  db.storyboards.forEach((s) => {
-    if (!s.model) return;
-    const nv = fixName(s.model);
-    if (nv !== s.model) { if (models.isLegacyName(s.model)) renamed++; s.model = nv; changed = true; }
-  });
-  Object.keys(db.cliJobs || {}).forEach((id) => {
-    const job = db.cliJobs[id];
-    if (job && job.cliModel) { const nv = fixName(job.cliModel); if (nv !== job.cliModel) job.cliModel = nv; }
-  });
-  if (changed || renamedOnce.length) {
-    store.save();
-    if (renamedOnce.length) {
-      store.pushLog('system', 'info', '已将 ' + renamedOnce.length + ' 处画布时代的模型名改为创作 CLI 等价名：' + renamedOnce.slice(0, 8).join('、') + (renamedOnce.length > 8 ? ' …' : ''));
-    }
-    if (migrated) store.pushLog('system', 'warn', '已将 ' + migrated + ' 条分镜的已下线模型名迁移为可用模型（仅"创作 CLI 无对应型号"的才会迁移）');
-  }
-  if (defaultsNotice && (defaultsNotice.reason === 'invalid' || defaultsNotice.reason === 'legacy')) store.pushLog('system', 'warn', defaultsNotice.message);
+  /* 下发给前端的默认值 —— 与 /settings 同源，都是"项目生效值" */
+  meta.defaults = d;
+
+  /* 项目上下文：项目名不再取自模块级常量 META.projectName（原来硬编码 '雨夜归途'），
+     而是请求作用域解析出来的真实项目。作用域缺失时（理论上不会）退回空名。 */
+  meta.projectName = scope && scope.project ? scope.project.name : '';
+  meta.project = scope && scope.project
+    ? { id: scope.project.id, name: scope.project.name }
+    : null;
+  meta.workspace = scope && scope.workspace
+    ? { id: scope.workspace.id, name: scope.workspace.name }
+    : null;
   return meta;
 }
 
@@ -1668,11 +1817,21 @@ function logDreaminaAuth(action, out) {
 /* ---------------- 生成记录（records.js 的接口层包装） ----------------
    记录本身是「落盘那一刻的快照」，永远可读；分镜被改被删都不影响它。 */
 
-function listRecords(db, q) { return REC.listRecords(db, q); }
+/* ---------------- 生成记录（项目作用域） ----------------
+   记录属于**项目**（指令 §7/§13）。作用域由后端注入查询条件，绝不依赖前端过滤（§29）。
+   ⚠ 记录里的 projectName / workspaceName 是**生成时刻的快照**，不是现查 ——
+     项目改名或软删后，旧记录仍显示当时的名字（§47）。 */
+function listRecords(db, q, scope) {
+  return REC.listRecords(db, Object.assign({}, q, { projectId: scope.projectId }));
+}
 
-function getRecordDetail(db, id) {
+function getRecordDetail(db, id, scope) {
   const r = REC.getRecord(db, id);
   if (!r) throw new ApiError(ERR.NOTFOUND, '生成记录不存在（可能已被清理）');
+  /* 跨项目读记录必须拒绝：记录里含完整提示词、命令与产物地址 */
+  if (r.projectId && r.projectId !== scope.projectId) {
+    throw new ApiError(ERR.NOTFOUND, '生成记录不属于当前项目：' + id);
+  }
   const sb = findSb(db, r.storyboardId);
   return Object.assign({}, r, {
     // 中文标签：列表走 records.lite() 会带，详情直接返回原记录，这里补齐
@@ -1687,19 +1846,41 @@ function getRecordDetail(db, id) {
   });
 }
 
-function deleteRecord(db, id) {
+function deleteRecord(db, id, scope) {
+  const r = REC.getRecord(db, id);
+  if (!r) throw new ApiError(ERR.NOTFOUND, '生成记录不存在（可能已被清理）');
+  if (r.projectId && r.projectId !== scope.projectId) {
+    throw new ApiError(ERR.NOTFOUND, '生成记录不属于当前项目：' + id);
+  }
   const out = REC.deleteRecord(db, id);
   if (!out.removed) throw new ApiError(ERR.NOTFOUND, '生成记录不存在（可能已被清理）');
   return out;
 }
 
-function clearRecords(db, body) {
-  const out = REC.clearRecords(db, body);
+/* 清空记录。⚠ 原实现的 {all:true} 会清掉**所有项目**的历史，多项目之后这是数据事故：
+   现在只在本项目内清理。口径仍然要求显式给出（ids / before / action / all）。 */
+function clearRecords(db, body, scope) {
+  const b = Object.assign({}, body || {});
+  const all = Array.isArray(db.records) ? db.records : [];
+  const mine = all.filter((r) => r && (!r.projectId || r.projectId === scope.projectId));
+  const foreignCount = all.length - mine.length;
+
+  if (Array.isArray(b.ids) && b.ids.length) {
+    /* 只允许删本项目的记录 */
+    const allowed = new Set(mine.filter((r) => b.ids.includes(r.id)).map((r) => r.id));
+    if (allowed.size !== b.ids.length) {
+      throw new ApiError(ERR.NOTFOUND, '有 ' + (b.ids.length - allowed.size) + ' 条记录不属于当前项目，未做任何改动');
+    }
+  }
+  const out = REC.clearRecords(db, Object.assign({}, b, { projectId: scope.projectId }));
   if (!out.removed && out.message) throw new ApiError(ERR.PARAM, out.message);
+  if (foreignCount) out.note = '仅清理当前项目的记录；另有 ' + foreignCount + ' 条属于其它项目，未受影响';
   return out;
 }
 
-function exportRecords(db, q, format) { return REC.exportRecords(db, q, format); }
+function exportRecords(db, q, format, scope) {
+  return REC.exportRecords(db, Object.assign({}, q, { projectId: scope.projectId }), format);
+}
 
 module.exports = {
   META, DEFAULT_SETTINGS, splitSegments, stats,
