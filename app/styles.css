@@ -764,6 +764,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   transform:translateX(100%);transition:transform .26s cubic-bezier(.4,0,.2,1);
 }
 .drawer.open{transform:none}
+/* ⚠ 必须有这条：.drawer 是 display:flex，会盖掉浏览器默认的 [hidden]{display:none}，
+   于是 `el.hidden = true` 对抽屉**完全无效**（与 .mask / .recview 同一个坑，
+   它们各自都有对应的 [hidden] 规则）。2026-09-19 实测踩到：就地模式卸载设置面板时
+   只摘了 .inline、没摘 .open，抽屉又因 hidden 无效而仍可见，结果从右侧滑出来盖住整页。 */
+.drawer[hidden]{display:none}
 .drawer-head{display:flex;align-items:center;gap:12px;height:68px;padding:0 24px 0 32px;flex:none}
 .drawer-body{padding:24px 32px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:14px}
 .drawer-foot{display:flex;align-items:center;gap:10px;height:76px;padding:0 32px;background:var(--pearl);border-top:1px solid var(--divider);flex:none}

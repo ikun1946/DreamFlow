@@ -243,7 +243,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.13.1`**
+当前版本：**`0.13.2`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -255,6 +255,25 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.13.2` — 2026-09-19
+
+- **修复：在项目页点过「项目设置」后，再点另外三个页签中的任意一个，设置面板会从右侧滑出来盖住整页**（用户实测上报）。两处叠加造成的：
+  1. **卸载时就地面板只摘了 `.inline`、没摘 `.open`。** 抽屉回到 `<body>` 后仍是 `position:fixed`，而 `.open` 把它设成 `transform:none`（本该 `translateX(100%)` 藏在屏幕外）—— 于是它显示在屏幕内。位置也解释了为什么是"从右侧弹出"：那正是抽屉的默认方位。
+  2. **`.drawer` 缺一条 `[hidden]` 规则。** 它是 `display:flex`，会盖掉浏览器默认的 `[hidden]{display:none}`，所以卸载时设的 `el.hidden = true` **完全无效**。`.mask` 与 `.recview` 各自都有这条规则，抽屉当初漏了。已补 `.drawer[hidden]{display:none}`。
+- **顺带修掉一处由上面第 2 条引出的回归**：`openSettings()` 一直没管 `hidden`（原先抽屉只靠 `transform` 藏，`hidden` 从没被设过，所以不管也没事）。补上 `[hidden]` 规则、且卸载会置 `hidden=true` 之后，**不还原 `hidden` 就再也打不开抽屉**了 —— 具体表现是"从项目页进过设置、再回控制台点设置，抽屉不出来"。现在 `openSettings()` 会显式 `hidden = false`。
+- 顺带做了一次**同类隐患审计**：遍历所有显式设了 `display` 的覆盖层，检查是否都有配套的 `[hidden]` 规则。结论：`.mask` / `.recview` / `.pageview` / `.drawer` 均已配套；`.toasts` 被标出但它是常驻容器、代码里从未 `hidden` 过，属误报。
+
+**验证**（真实浏览器，未改动业务数据）：
+
+| 项 | 结果 |
+|---|---|
+| 复现原始缺陷 | 点「项目设置」→ 再点「页面 / 资产库 / 生成记录」各一次：抽屉均为 `hidden=true`、`display:none`、`open=false`、`onScreen=false` ✓ |
+| 九个页签的完整来回 | `页面→资产库→设置→页面→记录→资产库→设置→记录→页面`：每一步**只有当前页签对应的面板可见**，另一个必为不可见；页面头与四个页签全程在位 ✓ |
+| 控制台路径 | 顶栏「生成记录」仍是整屏（5 条）；「设置」抽屉仍正常打开（`w=480`、遮罩 `display:grid`），关闭后回到屏外 ✓ |
+| 无 JS 错误 | 全程 `error` / `unhandledrejection` 均为空 ✓ |
+| `node --test server/*.test.js` | 54/54 ✓（本次只动前端） |
+| `node build.js` | 4 项结构校验通过（305.1 KB）✓ |
 
 #### `0.13.1` — 2026-09-19
 

@@ -1754,22 +1754,41 @@
     if (!inlinePanel) return;
     const which = inlinePanel;
     inlinePanel = null;
-    const el = which === 'records' ? $('#recView') : $('#settingsDrawer');
-    if (el) {
-      el.classList.remove('inline');
-      if (el.parentElement !== document.body) document.body.appendChild(el);
-      el.hidden = true;
-      el.setAttribute('aria-hidden', 'true');
-    }
-    if (which === 'settings') {
-      const m = $('#settingsMask');
-      if (m) m.hidden = true;
-      S.settingsDirty = false;
-    }
-    if (which === 'records') stopRecPoll();
     const mount = $('#projMount'), body = $('#projBody');
     if (mount) mount.hidden = true;
     if (body) body.hidden = false;
+
+    if (which === 'records') {
+      stopRecPoll();
+      const d = $('#recDetail');
+      if (d) d.classList.remove('on');       // 窄屏的详情抽屉类，别留给下次
+      const v = $('#recView');
+      if (v) {
+        v.classList.remove('inline');
+        if (v.parentElement !== document.body) document.body.appendChild(v);
+        v.hidden = true;
+        v.setAttribute('aria-hidden', 'true');
+      }
+      return;
+    }
+
+    /* 设置抽屉：必须**完整**走一遍关闭流程，不能只摘 .inline + 设 hidden。
+       ⚠ 漏掉 .open 会留下一个"看不见的开关"：抽屉回到 body 后仍是 position:fixed，
+         而 .open 让它 transform:none（本该 translateX(100%) 藏在屏幕外），
+         于是下一次切到别的页签时它会**从右侧滑出来盖住整页**
+         —— 用户实测报的正是这个现象（点项目设置 → 再点另外三个中的任意一个）。
+       ⚠ 抽屉的 hidden 还必须配一条 CSS 才生效：.drawer 是 display:flex，
+         会盖掉浏览器默认的 [hidden]{display:none}（见 styles.css 的 .drawer[hidden]）。 */
+    const dr = $('#settingsDrawer');
+    if (dr) {
+      dr.classList.remove('inline', 'open');
+      dr.hidden = true;
+      dr.setAttribute('aria-hidden', 'true');
+      if (dr.parentElement !== document.body) document.body.appendChild(dr);
+    }
+    const mk = $('#settingsMask');
+    if (mk) mk.hidden = true;
+    S.settingsDirty = false;
   }
 
   function mountInlinePanel(which) {
@@ -3854,6 +3873,11 @@
     if (inline) mountInlinePanel('settings');
     else $('#settingsMask').hidden = false;
     renderSettings();
+    /* ⚠ 必须显式清掉 hidden：抽屉原来只靠 transform 藏到屏幕外，hidden 从来没被设过，
+       所以 openSettings 一直没管它。自从补了 `.drawer[hidden]{display:none}`、
+       且就地模式卸载时会把 hidden 置 true 之后，**不还原 hidden 就再也打不开抽屉**了
+       （从项目页进过设置、再回控制台点设置，抽屉会是 display:none）。 */
+    $('#settingsDrawer').hidden = false;
     $('#settingsDrawer').classList.add('open');
     $('#settingsDrawer').setAttribute('aria-hidden', 'false');
     try {
