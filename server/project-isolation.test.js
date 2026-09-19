@@ -108,13 +108,27 @@ function emptyFixture() {
 }
 /* 直接往假库里塞素材（夹具构造，非被测路径）。
    url 为 null 表示"提示词资产"，不占参考图名额，也不涉及磁盘文件。 */
-function seedAsset(db, projectId, name, type, id) {
+function seedAsset(db, projectId, name, type, id, url) {
   db.assets.push({
     id: id || ('as_' + Math.random().toString(36).slice(2, 8)),
-    projectId, name, type, prompt: '', url: null, thumbUrl: null,
+    projectId, name, type, prompt: url ? '' : '', url: url || null, thumbUrl: null,
     width: 0, height: 0, size: 0, tags: [], createdAt: new Date().toISOString(), gradSeedKey: 'x', origin: 'prompt'
   });
   return db.assets[db.assets.length - 1];
+}
+
+/* 找一个**真实存在**的素材文件来给测试用。
+   为什么要这样做：asset-lock.imageCatalog 只把"有本地文件"的素材计入图号
+   （发不出去的图不该占号），所以 url 为 null 的夹具素材不会进锁定区块。
+   直接复用 data/assets 下已有的文件，既让文件存在性判定为真，又**不往磁盘写任何东西**。 */
+function existingAssetUrl() {
+  const fs = require('fs');
+  const path = require('path');
+  const { ASSET_DIR } = require('./config');
+  try {
+    const f = fs.readdirSync(ASSET_DIR).find((x) => /\.(png|jpg|jpeg|webp)$/i.test(x));
+    return f ? '/media/assets/' + f : null;
+  } catch (e) { return null; }
 }
 
 /* 建立指令 §57 要求的验收场景：
@@ -504,6 +518,79 @@ test('导入预览：别的工作区用过的提示词不算重复', async () =>
 
   const inA2 = await dataOf('POST', '/storyboards/import/preview?workspaceId=' + A2.id, { rawText: '同一段提示词', delimiter: { type: 'custom', value: ';;' } });
   assert.equal(inA2.warnings.filter((w) => w.code === 'DUPLICATE').length, 0, '别的页面的内容不该算重复（原实现扫全库）');
+});
+
+/* ============================================================
+   16. 多项目 Dry Run（指令 §52）
+   ------------------------------------------------------------
+   用**真实的命令组装器**（dreamina-cli.buildSubmitArgs，纯函数、不 spawn CLI）
+   分别对 A1 / A2 / B1 的分镜做干跑，确认提示词、模型、时长、素材锁定区块
+   都取自**各自作用域**，不会串线。
+   （图号的文件存在性判定需要真实文件，本用例不断言张数 —— 那部分由
+     asset-lock 的既有测试与真实库上的实测覆盖。） */
+test('多项目 Dry Run：各工作区组装出的命令只含自己的提示词与参数', async () => {
+  const { A, B, A1, A2, B1 } = await buildScenario();
+
+  const sbA1 = await dataOf('POST', '/workspaces/' + A1.id + '/storyboards', { prompt: 'A1 独有提示词', durationSec: 5 });
+  const sbA2 = await dataOf('POST', '/workspaces/' + A2.id + '/storyboards', { prompt: 'A2 独有提示词', durationSec: 6 });
+  const sbB1 = await dataOf('POST', '/workspaces/' + B1.id + '/storyboards', { prompt: 'B1 独有提示词', durationSec: 7 });
+
+  /* 给三个分镜各绑一个**本项目**的素材，确认锁定区块只列自己的。
+     素材指向真实存在的文件（否则不计入图号、不会有锁定区块）。 */
+  const realUrl = existingAssetUrl();
+  if (!realUrl) { console.log('  （跳过：data/assets 下没有可用图片，无法构造锁定区块）'); return; }
+  seedAsset(DB, A.id, 'A1 的角色', 'character', 'as_a1c', realUrl);
+  seedAsset(DB, A.id, 'A2 的场景', 'scene', 'as_a2s', realUrl);
+  seedAsset(DB, B.id, 'B1 的道具', 'prop', 'as_b1p', realUrl);
+  await dataOf('POST', '/storyboards/' + sbA1.id + '/assets?workspaceId=' + A1.id, { assetId: 'as_a1c', role: 'character' });
+  await dataOf('POST', '/storyboards/' + sbA2.id + '/assets?workspaceId=' + A2.id, { assetId: 'as_a2s', role: 'scene' });
+  await dataOf('POST', '/storyboards/' + sbB1.id + '/assets?workspaceId=' + B1.id, { assetId: 'as_b1p', role: 'prop' });
+
+  /* 用真实的 planFor（worker 上的那个）替换假适配器的 planFor —— 组装逻辑必须是生产代码 */
+  const { makeDreaminaAdapter } = require('./dreamina-cli');
+  const { makeWorker } = require('./worker');
+  const realDreamina = makeDreaminaAdapter({ dreaminaCliPath: 'dreamina', dreaminaProbeTtlMs: 1 });
+  const worker = makeWorker({ dryRun: false, creditWarnBelow: 0, dreaminaCliPath: 'dreamina', concCacheTtlMs: 60000, maxConcurrencySafety: 0 }, { dreamina: realDreamina });
+  const dryAdapter = Object.assign({}, adapter, { planFor: worker.planFor.bind(worker) });
+  const dryDispatch = makeRouter({ idempotencyTtlMs: 60000, uploadMaxBytes: 1024 * 1024, projectId: 'pj_1' }, dryAdapter);
+
+  async function dryRun(sbId, wsId) {
+    const res = mockRes();
+    const path = '/storyboards/' + sbId + '/dry-run?workspaceId=' + wsId;
+    await dryDispatch(mockReq('POST', path, {}), res, decodeURIComponent(path.split('?')[0]));
+    const j = JSON.parse(res.raw || '{}');
+    assert.equal(j.code, 0, '干跑应成功：' + j.message);
+    const p = j.data.plans.dreamina;
+    assert.ok(p && p.argv, '必须返回组装好的 argv');
+    return { prompt: p.argv[p.argv.indexOf('--prompt') + 1], duration: p.argv[p.argv.indexOf('--duration') + 1], model: p.model, images: p.argv.filter((a) => a === '--image').length };
+  }
+
+  const rA1 = await dryRun(sbA1.id, A1.id);
+  const rA2 = await dryRun(sbA2.id, A2.id);
+  const rB1 = await dryRun(sbB1.id, B1.id);
+
+  // 提示词：各自的原文必须在、别人的不能出现
+  assert.ok(rA1.prompt.includes('A1 独有提示词'), 'A1 的命令必须含 A1 的提示词');
+  assert.ok(!rA1.prompt.includes('A2 独有提示词') && !rA1.prompt.includes('B1 独有提示词'), 'A1 的命令不得含别人的提示词');
+  assert.ok(rA2.prompt.includes('A2 独有提示词') && !rA2.prompt.includes('A1 独有提示词'));
+  assert.ok(rB1.prompt.includes('B1 独有提示词') && !rB1.prompt.includes('A1 独有提示词'));
+
+  // 时长：各自的值，说明参数取自各自的分镜
+  assert.equal(rA1.duration, '5');
+  assert.equal(rA2.duration, '6');
+  assert.equal(rB1.duration, '7');
+
+  // 素材锁定区块：只列本分镜绑定的那个素材
+  assert.ok(rA1.prompt.includes('A1 的角色'), 'A1 的锁定区块应含自己的素材');
+  assert.ok(!rA1.prompt.includes('A2 的场景') && !rA1.prompt.includes('B1 的道具'), 'A1 的锁定区块不得含别人的素材');
+  assert.ok(rA2.prompt.includes('A2 的场景') && !rA2.prompt.includes('A1 的角色'));
+  assert.ok(rB1.prompt.includes('B1 的道具') && !rB1.prompt.includes('A1 的角色'));
+
+  // 跨作用域干跑必须被拒
+  const res = mockRes();
+  const bad = '/storyboards/' + sbA1.id + '/dry-run?workspaceId=' + B1.id;
+  try { await dryDispatch(mockReq('POST', bad, {}), res, decodeURIComponent(bad.split('?')[0])); } catch (e) { require('./util').fail(res, e); }
+  assert.equal(JSON.parse(res.raw).code, 40400, '用 B1 的作用域干跑 A1 的分镜必须 404');
 });
 
 /* ============================================================
