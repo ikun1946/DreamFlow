@@ -154,16 +154,63 @@ function compose(prompt, block) {
 }
 
 /**
- * 指纹：提示词 + 图号表 + 生成参数。
+ * 生成「音频参考」区块。与图片的「素材锁定」是**两块独立**的区块，因为约束完全不同：
+ * 图片锁的是**外形**（只取外形、忽略参考图的静止姿势），音频锁的是**声音特征**
+ * （只取音色、台词与节奏以分镜文字为准）。
+ *
+ * ⚠ 必须独立成块、不能并进 lockBlock：`lockBlock` 在没有图片时直接返回空串，
+ * 而**只绑音频的分镜**（seedance2.5 允许纯音频，2.0 家族要求至少一张图）此前
+ * 完全拿不到任何说明 —— 音频文件发出去了，提示词里却对它只字未提，模型无从知道
+ * 它是干什么用的。用户报「提交生成好像并不会参考音频」，这是其中一半原因。
+ *
+ * 区块用「音频N」编号，与命令里 `--audio` 的顺序一一对应，也与前端
+ * 「@音频N」的写法、以及 validate() 的越界检查同源。
+ */
+function audioBlock(audios, sb) {
+  const list = audios || [];
+  if (!list.length) return '';
+  const lines = ['【音频参考｜按本命令 --audio 的上传顺序编号；本区块只作补充，不改动下方分镜文字】'];
+  list.forEach((a, i) => {
+    const n = i + 1;
+    lines.push('音频' + n + ' = ' + a.name + ' → 分镜文字里的「' + a.name + '」即指本条音频：' +
+      '作为该角色的声音参考，只取音色特征（音高、音质、语速倾向、情绪底色）；' +
+      '台词内容与节奏以分镜文字为准，同一角色在全片中保持同一音色，不得前后换声。');
+  });
+  lines.push('禁止：不得把参考音频里的具体词句、配乐或环境噪声当作片子内容；音频只用于声音特征参考。');
+  return lines.join('\n');
+}
+
+/**
+ * 一次生成「图片区块 + 音频区块 + 合并区块 + 最终提示词」。
+ *
+ * 为什么要收在一处：这三个值原先在**三个文件里各拼一次** ——
+ * 分发（dreamina-cli）、记录快照（records）、详情/干跑视图（services）。
+ * 加音频区块时只改一处，就会出现"实际发出去的提示词"与"界面/记录里显示的"
+ * 不一致，而且这种不一致没有任何报错。现在三处都调这一个函数。
+ *
+ * 区块顺序：图片在前、音频在后，原文始终在最后（原文一字不改）。
+ */
+function buildPrompt(images, audios, sb) {
+  const imgBlock = lockBlock(images, sb);
+  const audBlock = audioBlock(audios, sb);
+  const block = [imgBlock, audBlock].filter(Boolean).join('\n');
+  return { imgBlock, audBlock, block, prompt: compose(sb && sb.prompt, block) };
+}
+
+/**
+ * 指纹：提示词 + 图号表 + 音频表 + 生成参数。
  * 干跑记录落盘时带上它，读取时比对即可判断「这条干跑记录是否已过期」
- * （提示词被改、绑定被增删、参数被改之后，旧记录里的命令就不再代表实际会执行的命令）。
+ * （提示词被改、绑定被增删、素材改名、参数被改之后，旧记录里的命令就不再代表实际会执行的命令）。
  */
 function signature(sb, db) {
   const cat = imageCatalog(sb, db);
   const raw = [
     String(sb.prompt || ''),
     cat.images.map((x) => x.n + ':' + x.assetId + ':' + x.name).join(','),
-    cat.audios.map((x) => x.assetId).join(','),
+    /* 音频要连**名字**一起进指纹：区块文本里写着「音频N = <素材名>」，
+       只算 assetId 的话，给音频改名后区块内容变了、指纹却没变，
+       旧干跑记录会被误判成"未过期"。图片本来就是 id+name，这里对齐。 */
+    cat.audios.map((x, i) => (i + 1) + ':' + x.assetId + ':' + x.name).join(','),
     String(sb.model || ''), String(sb.durationSec), String(sb.ratio || ''), String(sb.resolution || '')
   ].join('|');
   let h = 5381;
@@ -191,6 +238,14 @@ function validate(prompt, images, opts) {
   outOfRange.forEach((r) => issues.push({
     level: 'warn', code: 'REF_OUT_OF_RANGE',
     message: '提示词里引用了 @图片' + r.n + '，但本次实际只会发出 ' + max + ' 张图 —— 该引用越界（多半是绑定被增删后图号漂移了），模型会把它当无效指令。'
+  }));
+  /* 音频同理：@音频N 也是"按 --audio 的上传顺序编号"，越界同样是无效指令。
+     此前只校验了图片，@音频N 写错（或音频被解绑后编号漂移）不会有任何提示。 */
+  const audRefs = refs.filter((r) => r.kind === '音频');
+  const audMax = (o.audios || []).length;
+  audRefs.filter((r) => !(r.n >= 1 && r.n <= audMax)).forEach((r) => issues.push({
+    level: 'warn', code: 'AUDIO_REF_OUT_OF_RANGE',
+    message: '提示词里引用了 @音频' + r.n + '，但本次实际只会发出 ' + audMax + ' 条音频 —— 该引用越界（多半是音频被解绑后编号漂移了），模型会把它当无效指令。'
   }));
   const dup = {};
   imgRefs.forEach((r) => { dup[r.n] = (dup[r.n] || 0) + 1; });
@@ -230,4 +285,4 @@ function validate(prompt, images, opts) {
   return issues;
 }
 
-module.exports = { ROLE_LABEL, instanceFeatures, countsAsImage, imageCatalog, lockBlock, compose, validate, signature };
+module.exports = { ROLE_LABEL, instanceFeatures, countsAsImage, imageCatalog, lockBlock, audioBlock, buildPrompt, compose, validate, signature };

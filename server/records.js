@@ -68,9 +68,13 @@ function engineOf(db, sb, hint) {
 function snapshot(db, sb, extra) {
   const o = extra || {};
   const cat = AL.imageCatalog(sb, db);
-  const lockBlock = cat.images.length ? AL.lockBlock(cat.images, sb) : '';
+  /* 与分发时**同一份**区块组装（图片「素材锁定」+ 音频「音频参考」）：
+     记录里存的就是实际发出去的那段提示词。以前这里写成 `cat.images.length ? … : ''`，
+     等于"没有图片就一个字都不加" —— 只绑音频的分镜，记录里的提示词与实际发出的不一致。 */
+  const blocks = AL.buildPrompt(cat.images, cat.audios, sb);
+  const lockBlock = blocks.block;
   const prompt = String(sb.prompt == null ? '' : sb.prompt);
-  const promptWithLock = lockBlock ? AL.compose(prompt, lockBlock) : prompt;
+  const promptWithLock = blocks.prompt;
   const engine = engineOf(db, sb, o.engine);
   const job = (db.cliJobs && db.cliJobs[sb.id]) || {};
   const startedAt = sb.startedAt || o.startedAt || null;
@@ -370,13 +374,13 @@ function exportRecords(db, q, format) {
     lines.push('- 引擎：' + r.engineLabel + ' · 模型 ' + r.model + (r.modelLabel ? '（' + r.modelLabel + '）' : '') + ' → CLI 型号 ' + (r.cliModel || '—'));
     lines.push('- 参数：' + (fmtParams(r) || '—') + ' · 耗时 ' + fmtElapsed(r.elapsedMs));
     if (r.images && r.images.length) lines.push('- 素材锁定：' + r.images.map((x) => '图片' + x.n + '=' + x.name + '（' + x.roleLabel + '）').join('、'));
-    if (r.audios && r.audios.length) lines.push('- 音频：' + r.audios.map((x) => '音频' + x.n + '=' + x.name).join('、'));
+    if (r.audios && r.audios.length) lines.push('- 音频参考：' + r.audios.map((x) => '音频' + x.n + '=' + x.name).join('、'));
     if (r.submitId) lines.push('- 提交 ID：' + r.submitId);
     if (r.videoUrl) lines.push('- 产物：' + r.videoUrl);
     if (r.errorCode) lines.push('- 错误：' + r.errorCode + ' ' + (r.errorMessage || ''));
     lines.push('', '### 提交命令', '', '```', r.command || '（无）', '```', '');
     lines.push('### 提示词原文', '', '```', r.prompt || '（空）', '```', '');
-    if (r.lockBlock) lines.push('### 素材锁定区块', '', '```', r.lockBlock, '```', '');
+    if (r.lockBlock) lines.push('### 素材锁定 / 音频参考区块', '', '```', r.lockBlock, '```', '');
     lines.push('');
   });
   return { filename: base + '.md', mime: 'text/markdown; charset=utf-8', content: lines.join('\n') };

@@ -332,25 +332,33 @@ function getStoryboard(db, id, cfg, scope) {
   // 命令回显按「实际会被路由到的引擎」生成（与 worker 派发同一套判定）
   const pe = plannedEngineFor(db, s);
 
-  /* 素材锁定：图号表 → 锁定区块 → 注入后的完整提示词（**原文一字未改**）。
-     与创作 CLI 组装共用 asset-lock.js，保证「页面看到的」==「实际执行的」。 */
+  /* 素材锁定 + 音频参考：图号表 → 两块区块 → 注入后的完整提示词（**原文一字未改**）。
+     与创作 CLI 组装、与记录快照共用 asset-lock.js 的同一个 buildPrompt，
+     保证「页面看到的」==「记录里存的」==「实际执行的」。 */
   const cat = AL.imageCatalog(s, db);
-  const lockBlock = AL.lockBlock(cat.images, s);
-  const promptWithLock = AL.compose(s.prompt, lockBlock);
-  const lockIssues = AL.validate(s.prompt, cat.images, { skipped: cat.skipped });
-  // 创作 CLI 的 multimodal2video 会把 ref 图真正发出去，锁定区块也随之注入
+  const blocks = AL.buildPrompt(cat.images, cat.audios, s);
+  const lockBlock = blocks.block;
+  const promptWithLock = blocks.prompt;
+  const lockIssues = AL.validate(s.prompt, cat.images, { skipped: cat.skipped, audios: cat.audios });
+  // 创作 CLI 的 multimodal2video 会把 ref 图与音频真正发出去，区块也随之注入
   const injected = !!lockBlock;
 
   const safePrompt = promptWithLock.replace(/"/g, '\\"');
   const dm = models.dreaminaModelOf(s.model) || s.model;
   const cmd = (cat.images.length || cat.audios.length) ? 'multimodal2video' : 'text2video';
+  /* 这条推演命令把图片/音频的**引用占位**也写出来（`<图片N:名字>` / `<音频N:名字>`），
+     与提示词里的区块编号一一对应，让人一眼看出"哪些素材会跟着发出去"。
+     末尾的注释说明注入了哪些区块 —— 只绑音频时以前会写"本分镜无图片，未追加"，
+     那句话现在会误导（音频区块是会追加的）。 */
+  const blockNote = [blocks.imgBlock ? '素材锁定' : '', blocks.audBlock ? '音频参考' : ''].filter(Boolean);
   const cliCommand = (cfg.dreaminaCliPath || 'dreamina') + ' ' + cmd + ' --prompt "' + safePrompt +
     '" --duration ' + s.durationSec + ' --ratio ' + s.ratio +
     ' --video_resolution ' + String(s.resolution || '').toLowerCase() +
     ' --model_version ' + dm +
     cat.images.map((x) => ' --image <图片' + x.n + ':' + x.name + '>').join('') +
-    '    # 创作 CLI（' + models.capsFor(dm).note + '）；提示词已含素材锁定区块' +
-    (lockBlock ? '' : '（本分镜无图片，未追加）');
+    cat.audios.map((x, i) => ' --audio <音频' + (i + 1) + ':' + x.name + '>').join('') +
+    '    # 创作 CLI（' + models.capsFor(dm).note + '）；' +
+    (blockNote.length ? '提示词已含' + blockNote.join(' + ') + '区块' : '无参考素材，未追加区块');
   /* 干跑记录是否过期：提示词 / 绑定素材 / 生成参数任一变化，旧记录里的命令就不再
      代表实际会执行的命令（例如加素材锁定前落的记录，命令里没有锁定区块）。
      判定靠落盘时的指纹 sig；旧版本没写 sig 的记录一律按「无法确认 → 过期」处理。 */
@@ -367,12 +375,14 @@ function getStoryboard(db, id, cfg, scope) {
     dryRunPlan: s.dryRunPlan || null,
     dryRunStale,                 // true = 旧记录，命令不可信，界面应提示重新干跑
     dryRunSig: sigNow,           // 当前指纹（前端可对比 dryRunPlan.sig）
-    // 素材锁定：图号表 + 将追加的区块 + 注入后完整提示词 + 引用校验（原文始终可从这里拿 s.prompt）
+    // 素材锁定 + 音频参考：两块区块 + 注入后完整提示词 + 引用校验（原文始终可从这里拿 s.prompt）
     assetLock: {
       images: cat.images.map((x) => ({ n: x.n, assetId: x.assetId, name: x.name, role: x.role, roleLabel: x.roleLabel, via: x.via })),
-      audios: cat.audios.map((x, i) => ({ n: i + 1, assetId: x.assetId, name: x.name })),
+      audios: cat.audios.map((x, i) => ({ n: i + 1, assetId: x.assetId, name: x.name, durationSec: x.durationSec })),
       skipped: cat.skipped,
-      block: lockBlock,
+      block: lockBlock,          // 合并后的区块（图片在前、音频在后）
+      imgBlock: blocks.imgBlock, // 分开给，前端可以分节展示
+      audioBlock: blocks.audBlock,
       promptWithLock,
       injected,                 // 本次提交是否真的会注入（画布链路不注入）
       issues: lockIssues

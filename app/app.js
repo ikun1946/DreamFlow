@@ -1302,7 +1302,7 @@
       '</div></div>' +
 
       ((r.images || []).length || (r.audios || []).length
-        ? '<div class="rec-block"><h4>素材锁定（图号 = --image 顺序）</h4><div class="rec-sect"><div class="rec-lock">' + lockRows + '</div>' +
+        ? '<div class="rec-block"><h4>素材引用（编号 = --image / --audio 顺序）</h4><div class="rec-sect"><div class="rec-lock">' + lockRows + '</div>' +
           ((r.skipped || []).length ? '<div class="rec-banner warn">未发出的绑定：' + (r.skipped || []).map((s) => esc(s.name) + '（' + esc(s.reason) + '）').join('、') + '</div>' : '') +
           '</div></div>'
         : '') +
@@ -1323,7 +1323,7 @@
         '<pre class="rec-pre">' + esc(r.prompt || '（空）') + '</pre></div>' +
 
       (r.promptWithLock && r.promptWithLock !== r.prompt
-        ? '<div class="rec-block"><h4>实际发出的提示词（原文 + 素材锁定区块）<span class="grow"></span>' +
+        ? '<div class="rec-block"><h4>实际发出的提示词（原文 + 素材锁定 / 音频参考区块）<span class="grow"></span>' +
           '<button class="btn-mini" data-reccopy="promptlock">复制</button></h4>' +
           '<pre class="rec-pre">' + esc(r.promptWithLock) + '</pre></div>'
         : '') +
@@ -3853,9 +3853,26 @@
         ' <span class="hint-sm">' + esc(im.roleLabel) + '</span> <code>@图片' + im.n + '</code></span>').join('') +
         '　<span class="hint-sm">按此顺序作为 --image 发出；提示词开头已自动追加「素材锁定」区块建立对应</span></dd>');
     }
+    /* 音频参考：与图片同理，但**必须单独一行**。
+       ⚠ 此前这里只渲染了参考图，音频一个字都没有 —— 后端其实已经把 --audio 发出去、
+       也在提示词里注入了音频区块，用户却从卡片上看不到任何痕迹，据此判断
+       "提交时没参考音频"（2026-09-20 用户报的就是这个）。纯音频的分镜尤其明显：
+       卡片只显示"素材引用：无"。 */
+    if (al.audios && al.audios.length) {
+      rows.push('<dt>音频参考</dt><dd>' + al.audios.map((au) =>
+        '<span class="lockrow"><i class="imgnum aud">音' + au.n + '</i>' + esc(au.name) +
+        (Number.isFinite(au.durationSec) ? ' <span class="hint-sm">' + au.durationSec + 's</span>' : '') +
+        ' <code>@音频' + au.n + '</code></span>').join('') +
+        '　<span class="hint-sm">按此顺序作为 --audio 发出；提示词开头已自动追加「音频参考」区块，' +
+        '把每条音频指定为对应角色的声音参考</span></dd>');
+    }
     if (p.adapted && p.adapted.length) rows.push('<dt>参数适配</dt><dd>' + p.adapted.map(esc).join('<br/>') + '</dd>');
     if (p.missing && p.missing.length) rows.push('<dt>未匹配 flag</dt><dd style="color:#B25000">' + p.missing.map(esc).join('、') + '　<span class="hint-sm">模型规格里没有对应参数名，已跳过</span></dd>');
-    if (!(al.images && al.images.length)) rows.push('<dt>素材引用</dt><dd><span class="hint-sm">无（参考图通过 --image 发出，见上方图号表）</span></dd>');
+    /* 一条参考都没有时才说「无」—— 原来的文案是"无（参考图通过 --image 发出…）"，
+       既自相矛盾，又会在只绑了音频时给出错误结论。 */
+    if (!(al.images && al.images.length) && !(al.audios && al.audios.length)) {
+      rows.push('<dt>素材引用</dt><dd><span class="hint-sm">无（未绑定参考图或音频，命令走 text2video，提示词不加区块）</span></dd>');
+    }
 
     const argvHtml = (p.argv || []).length
       ? '<details class="cmd-details"><summary>argv 逐项（' + p.argv.length + ' 个）</summary><div class="codebox">' +
@@ -3863,7 +3880,7 @@
       : '';
 
     const lockHtml = al.block
-      ? '<details class="cmd-details" open><summary>提示词开头追加的「素材锁定」区块　' +
+      ? '<details class="cmd-details" open><summary>提示词开头追加的区块（素材锁定 + 音频参考）　' +
         '<button class="btn-mini" data-copylock="' + esc(s.id) + '" style="margin-left:6px">复制区块</button></summary>' +
         '<div class="codebox">' + esc(al.block) + '</div></details>'
       : '';
@@ -4861,10 +4878,10 @@
     $('#detailMask').hidden = true;
   }
 
-  /* ---------------------------------------------------------- 素材锁定展示
-     回答一个原本无解的问题：「有参考图了，但谁参考哪张图？」
-     图号 = 提交时 --image 的上传顺序；区块 = 提交时自动追加在提示词最前面的对应说明。
-     这里把三件事摆在一起：① 图号表 ② 将追加的区块 ③ 注入后的完整提示词。 */
+  /* ---------------------------------------------------------- 素材引用展示
+     回答一个原本无解的问题：「有参考素材了，但谁参考哪一张 / 哪一条？」
+     编号 = 提交时 --image / --audio 的上传顺序；区块 = 提交时自动追加在提示词最前面的对应说明。
+     这里把三件事摆在一起：① 编号表（图片 + 音频）② 将追加的区块 ③ 注入后的完整提示词。 */
   function assetLockHTML(full) {
     const al = full.assetLock;
     if (!al) return '';
@@ -4874,14 +4891,19 @@
     const issues = al.issues || [];
     if (!imgs.length && !auds.length && !skipped.length) return '';
 
-    let h = '<div class="sec-title">素材锁定（提示词 → 参考图）</div>';
+    let h = '<div class="sec-title">素材引用（提示词 → 参考图 / 音频）</div>';
 
+    /* 说明文字按"实际绑了什么"分情况说 —— 原来只有"有图/无图"两种分支，
+       只绑音频时会显示「尚未绑定任何参考图。」，与事实不符（明明绑了音频）。 */
+    const what = [];
+    if (imgs.length) what.push('<b>' + imgs.length + '</b> 张图（<code>--image</code>，只取外形、忽略参考图的静止姿势）');
+    if (auds.length) what.push('<b>' + auds.length + '</b> 条音频（<code>--audio</code>，作为对应角色的声音参考）');
     h += '<div class="banner ' + (al.injected ? 'ok' : 'warn') + '"><span>' + (al.injected
-      ? '提交时会自动在提示词<b>最前面</b>追加下面的「素材锁定」区块：把每张参考图指定到具体主体/场景，' +
-        '并明确要求<b>只取外形、忽略参考图的静止姿势</b>。原文一字不改。'
+      ? '提交时会自动在提示词<b>最前面</b>追加下面的区块：把每条参考素材指定到具体主体 / 角色。原文一字不改。' +
+        '本次绑定了 ' + what.join(' 与 ') + '。'
       : (imgs.length
-          ? '本分镜绑定了 ' + imgs.length + ' 张图，但按模型归属会走<b>画布</b>链路 —— 画布命令不带 --image，图片与锁定区块都不会发出。要真正用上参考图，请换用「创作 CLI」的型号。'
-          : '尚未绑定任何参考图。')) + '</span></div>';
+          ? '本分镜绑定了 ' + imgs.length + ' 张图，但按模型归属会走<b>画布</b>链路 —— 画布命令不带 --image，图片与区块都不会发出。要真正用上参考素材，请换用「创作 CLI」的型号。'
+          : '尚未绑定任何参考素材。')) + '</span></div>';
 
     if (imgs.length) {
       h += '<div class="lockmap">' + imgs.map((im) =>
@@ -4893,18 +4915,20 @@
     if (auds.length) {
       h += '<div class="lockmap">' + auds.map((au) =>
         '<span class="lockrow"><i class="imgnum aud">音' + au.n + '</i><b>' + esc(au.name) + '</b>' +
-        '<span class="hint-sm">音频 · 不占图片号</span><code>@音频' + au.n + '</code></span>').join('') + '</div>';
+        '<span class="hint-sm">音频 · 不占图片号' +
+        (Number.isFinite(au.durationSec) ? ' · ' + au.durationSec + 's' : ' · 时长未知') + '</span>' +
+        '<code>@音频' + au.n + '</code></span>').join('') + '</div>';
     }
     skipped.forEach((sk) => {
-      h += '<div class="banner err"><span>素材「' + esc(sk.name) + '」未计入图号：' + esc(sk.reason) +
-        '　<span class="hint-sm">它后面的图号不会因它顺延，但请优先修复，避免编号与预期不符。</span></span></div>';
+      h += '<div class="banner err"><span>素材「' + esc(sk.name) + '」未计入编号：' + esc(sk.reason) +
+        '　<span class="hint-sm">它后面的编号不会因它顺延，但请优先修复，避免编号与预期不符。</span></span></div>';
     });
     issues.forEach((it) => {
       h += '<div class="banner ' + (it.level === 'warn' ? 'warn' : '') + '"><span>' + esc(it.message) + '</span></div>';
     });
 
     if (al.block) {
-      h += '<div class="sec-title" style="font-size:12px">将追加的「素材锁定」区块' +
+      h += '<div class="sec-title" style="font-size:12px">将追加的区块（素材锁定 + 音频参考）' +
         '<button class="btn-mini" style="margin-left:8px" data-copy="lockblock">复制区块</button></div>' +
         '<div class="codebox" id="lockBlockBox">' + esc(al.block) + '</div>' +
         '<div class="sec-title" style="font-size:12px">注入后的完整提示词（= 实际发给模型的文本）' +

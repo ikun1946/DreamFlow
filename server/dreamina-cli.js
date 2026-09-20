@@ -500,10 +500,13 @@ function makeDreaminaAdapter(cfg) {
         ' 秒。请解绑几条音频，或把模型改回支持更多音频的型号后重试。');
     }
 
-    /* 素材锁定：只在**确有图片**时追加（无图可锁）。原文一字不改，区块放在最前面。 */
-    const lockBlock = AL.lockBlock(lockImages, sb);
-    const issues = AL.validate(sb.prompt, lockImages, { truncated, skipped });
-    const prompt = AL.compose(sb.prompt, lockBlock);
+    /* 提示词注入：图片「素材锁定」+ 音频「音频参考」两块区块，原文一字不改、放最前面。
+       ⚠ 两块必须**各自独立**：原先只有图片块，且它在没有图片时直接返回空串 ——
+         只绑音频的分镜（seedance2.5 允许纯音频）会把音频发出去却在提示词里只字不提，
+         模型无从知道那个音频是干什么用的。三处调用方统一走 AL.buildPrompt。 */
+    const blocks = AL.buildPrompt(lockImages, cat0.audios, sb);
+    const issues = AL.validate(sb.prompt, lockImages, { truncated, skipped, audios: cat0.audios });
+    const prompt = blocks.prompt;
 
     const withRefs = images.length || audios.length;
     const cmd = withRefs ? 'multimodal2video' : 'text2video';
@@ -517,7 +520,8 @@ function makeDreaminaAdapter(cfg) {
       args, cmd, model, ratio, res, durationSec: dur,
       images: images.length, audios: audios.length, notes,
       promptWithLock: prompt,     // 干跑核对面板要展示「实际发出去的提示词」
-      lockBlock, imageCatalog: lockImages, lockIssues: issues, promptOriginal: sb.prompt
+      lockBlock: blocks.block, audioBlock: blocks.audBlock,
+      imageCatalog: lockImages, lockIssues: issues, promptOriginal: sb.prompt
     };
   }
 
