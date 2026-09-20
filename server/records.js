@@ -138,8 +138,15 @@ function snapshot(db, sb, extra) {
 
     remoteId: o.remoteId || sb.remoteId || null,
     resourceId: o.resourceId || job.selectedResourceId || null,
-    videoUrl: o.videoUrl !== undefined ? o.videoUrl : (sb.videoUrl || null),
-    coverUrl: o.coverUrl !== undefined ? o.coverUrl : (sb.coverUrl || null),
+    /* ⚠ 产物**只认调用方显式传进来的值**，绝不回退到 sb.videoUrl（2026-09-19 修复的缺陷）。
+       原来写的是 `o.videoUrl !== undefined ? o.videoUrl : (sb.videoUrl || null)`，
+       而 mapTaskError / cancel / reconcileOrphans 落记录时都不传 videoUrl ——
+       于是回退到分镜上的 videoUrl，那是**上一次成功**留下的（doSubmit / retry 都不清它）。
+       后果：一次失败或取消的重生成，记录里却挂着上一次的视频，看起来像成功了。
+       现在"记录里有产物"严格等价于"这一次真的产出/下载到了产物"。
+       成功路径由 worker 显式传 videoUrl/coverUrl（见 runViaDreamina），干跑显式传 null。 */
+    videoUrl: o.videoUrl !== undefined ? o.videoUrl : null,
+    coverUrl: o.coverUrl !== undefined ? o.coverUrl : null,
 
     startedAt: startedAt,
     finishedAt: o.finishedAt || sb.finishedAt || nowIso(),
@@ -182,6 +189,9 @@ function filtered(db, q) {
      旧记录在 v1→v2 迁移时已补上归属，所以这里不会漏掉历史数据。 */
   if (o.projectId && o.projectId !== 'all') list = list.filter((r) => r.projectId === o.projectId);
   if (o.workspaceId && o.workspaceId !== 'all') list = list.filter((r) => r.workspaceId === o.workspaceId);
+  /* 按分镜过滤：产物预览要列「这个分镜的历史产物」，数据源就是它历次生成的记录。
+     （记录里每条都带自己那一次的 videoUrl / coverUrl 快照，所以历史是完整且不可变的。） */
+  if (o.storyboardId && o.storyboardId !== 'all') list = list.filter((r) => r.storyboardId === o.storyboardId);
   if (o.action && o.action !== 'all') list = list.filter((r) => r.action === o.action);
   if (o.outcome && o.outcome !== 'all') list = list.filter((r) => r.outcome === o.outcome);
   if (o.engine && o.engine !== 'all') list = list.filter((r) => r.engine === o.engine);
@@ -219,6 +229,13 @@ function lite(r) {
     durationSec: r.params && r.params.durationSec,
     elapsedMs: r.elapsedMs, finishedAt: r.finishedAt,
     videoUrl: r.videoUrl || null,
+    /* coverUrl 也要下发：产物预览的「历史产物」列表用它做每条的小缩略图，
+       切换时还要把它设成 <video> 的 poster（否则换到别的产物后，播放前那一帧还是旧的）。 */
+    coverUrl: r.coverUrl || null,
+    /* submitId 必须下发：同一个分镜生成多次时，它是**唯一能严格区分两次**的标识
+       （产物预览的「历史产物」列表就靠它 + 生成时刻来标明"哪一次是哪一次"）。
+       原来 lite() 没带这个字段，列表里拿不到，只能在详情里看。 */
+    submitId: r.submitId || null,
     errorCode: r.errorCode || null,
     shortError: r.errorMessage ? clip(r.errorMessage, 90) : null
   };

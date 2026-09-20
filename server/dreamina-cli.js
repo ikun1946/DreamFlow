@@ -623,14 +623,49 @@ function makeDreaminaAdapter(cfg) {
     return hit ? hit.submit_id : null;
   }
 
+  /* 在下载目录里挑出**本次**的产物。
+     ⚠ 为什么不能"取第一个匹配"（2026-09-19 实测确认的缺陷）：
+     同一个分镜重新生成时，目录里会同时存在新旧两个 mp4（文件名含各自的 submit_id，不会互相覆盖），
+     而 `fs.readdirSync` 是**按文件名排序、与时间无关**的 —— 文件名又是随机 UUID，
+     所以"取第一个"等于**随机取新旧**。表现是：第二次生成成功后，那条新记录却挂着上一次的视频，
+     两次看起来一模一样（用户问"怎么分辨两次视频"时发现的）。
+     现在按 submit_id 精确匹配（CLI 的命名就是 `<submit_id>_video_1.mp4`）；
+     万一将来 CLI 改了命名，退回"按修改时间取最新"——仍比按文件名随机取可靠。 */
+  function pickArtifact(dir, all, submitId, match) {
+    /* ⚠ 第 4 个参数是**谓词函数**（如 isVideo），不是正则。
+       我第一版按正则写成了 `re.test(f)`，而调用方传的是谓词 —— 结果是每次下载产物都抛
+       `re.test is not a function`（由单测当场抓出，没进到运行环境）。 */
+    const named = submitId ? all.filter((f) => String(f).includes(String(submitId)) && match(f)) : [];
+    if (named.length) return named[0];
+    const cands = all.filter((f) => match(f));
+    if (!cands.length) return null;
+    const mtime = (f) => { try { return fs.statSync(path.join(dir, f)).mtimeMs; } catch (e) { return 0; } };
+    return cands.slice().sort((a, b) => mtime(b) - mtime(a))[0];
+  }
+
+  /* 封面必须与**选中的那条视频**同源，不能各自独立地"取第一个" ——
+     否则重新生成后会出现"新视频配旧封面"（那样更难分辨哪次是哪次）。
+     优先级：与视频同名（去扩展名）→ 文件名含视频 basename → 含 submit_id。 */
+  function pickCover(all, video, submitId) {
+    if (!video) return null;
+    const isImage = (f) => /\.(jpg|jpeg|png)$/i.test(f);
+    const base = String(video).replace(/\.[^.]+$/, '');
+    return all.find((f) => isImage(f) && f.replace(/\.[^.]+$/, '') === base)
+      || all.find((f) => isImage(f) && f.includes(base))
+      || all.find((f) => isImage(f) && submitId && String(f).includes(String(submitId)))
+      || null;
+  }
+
   async function downloadResult(db, sb, submitId) {
     const dir = path.join(OUTPUT_DIR, sb.id);
     fs.mkdirSync(dir, { recursive: true });
     const r = await call(['query_result', '--submit_id', submitId, '--download_dir', dir], 120000);
-    if (r.kind !== 'ok') return { videoUrl: null };
-    const files = fs.readdirSync(dir).filter((f) => /\.(mp4|mov|webm|jpg|jpeg|png)$/i.test(f));
-    const video = files.find((f) => /\.(mp4|mov|webm)$/i.test(f));
-    let cover = files.find((f) => /\.(jpg|jpeg|png)$/i.test(f));
+    if (r.kind !== 'ok') return { videoUrl: null, coverUrl: null, file: null };
+    const all = fs.readdirSync(dir);
+    const isVideo = (f) => /\.(mp4|mov|webm)$/i.test(f);
+
+    const video = pickArtifact(dir, all, submitId, isVideo);
+    let cover = pickCover(all, video, submitId);
     /* CLI 没给封面就自己抽一帧 —— 见 makeCover 的说明 */
     if (!cover && video) {
       const outName = video.replace(/\.[^.]+$/, '') + '_cover.jpg';
@@ -639,13 +674,14 @@ function makeDreaminaAdapter(cfg) {
     }
     return {
       videoUrl: video ? '/files/' + sb.id + '/' + encodeURIComponent(video) : null,
-      coverUrl: cover ? '/files/' + sb.id + '/' + encodeURIComponent(cover) : null
+      coverUrl: cover ? '/files/' + sb.id + '/' + encodeURIComponent(cover) : null,
+      file: video || null            // 供日志留痕：出问题时能看出到底取了哪个文件
     };
   }
 
   /* parseChallenge 一并导出：仅用于单元验证「授权材料解析」是否稳健
      （切换账号会先退出登录态，无法在真机反复试，必须靠样本单测覆盖）。 */
-  return { probe, peek, lastProbe, credit, invalidate, authLoginFlow, switchAccount, pending, parseChallenge, buildSubmitArgs, runVideo, downloadResult, makeCover, recoverSubmitId, state, normResolution };
+  return { probe, peek, lastProbe, credit, invalidate, authLoginFlow, switchAccount, pending, parseChallenge, buildSubmitArgs, runVideo, downloadResult, makeCover, recoverSubmitId, pickArtifact, pickCover, state, normResolution };
 }
 
 module.exports = { makeDreaminaAdapter, DREAMINA_MODELS, normResolution };

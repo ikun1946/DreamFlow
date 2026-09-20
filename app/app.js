@@ -3746,6 +3746,24 @@
       const row = (S.cmdRows || []).find((s) => s.id === cc.dataset.copycmd);
       if (row && row.dryRunPlan) copyText(row.dryRunPlan.command, '已复制分镜 ' + row.seq + ' 的命令');
     }
+    /* 产物预览：切换到历史里的某一次产物。
+       只换 <video> 的 src 与 poster，并把「在新窗口打开」同步过去 ——
+       不重开弹窗（那会丢掉播放进度，也会闪一下）。 */
+    const art = e.target.closest('[data-art]');
+    if (art) {
+      const v = $('#detailBody video');
+      if (v) {
+        v.pause();
+        v.setAttribute('src', mediaUrl(art.dataset.art));
+        if (art.dataset.cover) v.setAttribute('poster', mediaUrl(art.dataset.cover));
+        else v.removeAttribute('poster');
+        v.load();
+      }
+      $$('#detailBody .pv-hitem').forEach((b) => b.classList.toggle('on', b === art));
+      const link = $('#detailBody .pv-openlink');
+      if (link) link.setAttribute('href', mediaUrl(art.dataset.art));
+      return;
+    }
     const cp = e.target.closest('[data-copy]');
     if (cp) {
       const d = S.detailFull || {};
@@ -4248,24 +4266,70 @@
   }
 
   /* ---------------------------------------------------------- 详情 / 预览 */
+  /* 这个分镜历次生成的**产物**（按记录取，新的在前）。
+     数据源是生成记录而不是分镜：分镜上的 videoUrl 是"当前态"，重新生成会覆盖；
+     而每条成功记录都带自己那一次的 videoUrl / coverUrl 快照 + 生成时刻 + submit_id，
+     所以"生成过几次、每次是哪一条"在记录里是完整且不可变的。
+     ⚠ 只取真有产物文件的（跳过 cli: 这种只有远端 id、没下下来的）。 */
+  async function artifactHistory(sbId) {
+    try {
+      const res = await Api.listRecords({ storyboardId: sbId, action: 'generate', pageSize: 50 });
+      return (res.list || []).filter((r) => r.videoUrl && !/^cli:/.test(r.videoUrl));
+    } catch (e) { return []; }
+  }
+
+  /* 历史产物列表。第 N 次按**时间正序**编号（记录是新的在前，所以倒着数），
+     并显示生成时刻与 submit_id 前 8 位 —— 这两个是分辨"哪一次是哪一次"的硬依据。 */
+  function histHTML(hist, curId) {
+    const items = hist.map((r, i) => {
+      const nth = hist.length - i;
+      const cov = r.coverUrl ? mediaUrl(r.coverUrl) : null;
+      /* ⚠ 判断"当前是哪一条"要按**记录 id**，不能按 videoUrl 相等 ——
+         两次生成有可能落到同一个文件（例如第二次的产物选取退回"取最新"时命中了同一个），
+         那时按 URL 比较会让两条同时高亮。 */
+      return '<button class="pv-hitem' + (r.id === curId ? ' on' : '') + '"' +
+        ' data-art="' + esc(r.videoUrl) + '"' +
+        (r.coverUrl ? ' data-cover="' + esc(r.coverUrl) + '"' : '') +
+        ' title="切换到这一次的产物">' +
+        '<span class="pv-hthumb"' + (cov ? ' style="background-image:url(' + esc(cov) + ')"' : '') + '>' +
+          (cov ? '' : I.play) + '</span>' +
+        '<span class="pv-htxt">' +
+          '<b>第 ' + nth + ' 次</b>' +
+          '<span>' + esc(fmtWhen(r.at)) + '</span>' +
+          '<span class="pv-hid">' + esc(String(r.submitId || '—').slice(0, 8)) + '</span>' +
+        '</span>' +
+      '</button>';
+    }).join('');
+    return '<div class="sec-title">历史产物（共 ' + hist.length + ' 次）' +
+        '<span class="hint-sm">　点一次切换播放</span></div>' +
+      '<div class="pv-hist">' + items + '</div>';
+  }
+
   async function openDetail(s, previewOnly) {
     let full = s;
     try { full = await Api.getStoryboard(s.id); } catch (e) { /* 降级用列表数据 */ }
     const yes = '<span style="color:#248A3D">可修改</span>';
     const no = '<span style="color:#7A7A7A">已完成，已锁定时长</span>';
     $('#detailTitle').textContent = previewOnly ? ('产物预览 · 分镜 ' + full.seq) : ('分镜 ' + full.seq + ' · 详情');
+
+    /* 产物预览（2026-09-19）：
+       ① 真播放器 —— 原先只是一块渐变底 + 播放图标 + 把 videoUrl 当文字打出来，根本播不了。
+          后端已支持 HTTP Range，所以进度条能拖。
+       ② **历史产物列表** —— 同一个分镜生成多次时，分镜上只留最新一次，看不出有几次、
+          更分不清哪次是哪次。这里把历次产物都列出来（带第几次 / 时间 / submit_id 前 8 位），
+          点一下切换播放。默认选中与分镜当前 videoUrl 一致的那一条（即最新一次）。 */
+    const hist = previewOnly ? await artifactHistory(full.id) : [];
+    const cur = hist.find((r) => r.videoUrl === full.videoUrl) || hist[0] || null;
+    const curUrl = (cur && cur.videoUrl) || (previewOnly ? full.videoUrl : null);
+    const curCover = (cur && cur.coverUrl) || full.coverUrl || null;
     $('#detailBody').innerHTML =
-      /* 产物预览：真播放器（2026-09-19 修复）。
-         原先这里只是一块渐变底 + 播放图标 + 把 videoUrl 当文字打出来 —— 根本播不了，
-         用户点开「产物预览」看不到任何视频。现在换成 <video controls>，
-         并把地址做成可点链接（同一份地址，想用外部播放器打开也行）。
-         后端已支持 HTTP Range（见 server/index.js 的 serveFile），所以进度条能拖动。 */
-      (previewOnly && full.videoUrl
+      (previewOnly && curUrl
         ? '<video class="pv-video" controls preload="metadata" playsinline' +
-            (full.coverUrl ? ' poster="' + esc(mediaUrl(full.coverUrl)) + '"' : '') +
-            ' src="' + esc(mediaUrl(full.videoUrl)) + '"></video>' +
+            (curCover ? ' poster="' + esc(mediaUrl(curCover)) + '"' : '') +
+            ' src="' + esc(mediaUrl(curUrl)) + '"></video>' +
           '<div class="pv-meta">' + esc(full.ratio) + ' · ' + full.durationSec + 's · ' + esc(full.resolution) +
-            ' · <a href="' + esc(mediaUrl(full.videoUrl)) + '" target="_blank" rel="noopener">在新窗口打开 ↗</a></div>'
+            ' · <a class="pv-openlink" href="' + esc(mediaUrl(curUrl)) + '" target="_blank" rel="noopener">在新窗口打开 ↗</a></div>' +
+          (hist.length > 1 ? histHTML(hist, cur ? cur.id : null) : '')
         : (previewOnly ? '<div class="pv-meta">这条分镜还没有产物（未生成或已失败）</div>' : '')) +
       '<div class="sec-title">提示词</div>' +
       '<div class="copywrap">' + copyBtnHTML('detailprompt', '复制提示词') +

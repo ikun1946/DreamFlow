@@ -488,6 +488,31 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .pv-meta{
   margin:8px 0 2px;font-size:11.5px;color:var(--ink48);
 }
+
+/* ---------------- 产物预览：历史产物列表（同一分镜生成多次时用） ----------------
+   分镜上只留最新一次的 videoUrl，光看一个缩略图分不清哪次是哪次；
+   这里把历次产物平铺出来（第几次 / 时间 / submit_id 前 8 位），点一下切换播放。 */
+.pv-hist{
+  display:grid;gap:8px;margin-top:10px;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+}
+.pv-hitem{
+  display:flex;align-items:center;gap:9px;text-align:left;
+  border:1px solid var(--hairline);border-radius:10px;background:#fff;
+  padding:7px 9px;cursor:pointer;font:inherit;
+  transition:border-color .15s ease,background .15s ease;
+}
+.pv-hitem:hover{border-color:var(--primary)}
+.pv-hitem.on{border-color:var(--primary);background:var(--primary-bg)}
+.pv-hthumb{
+  width:44px;height:30px;border-radius:6px;flex:none;background-color:var(--parchment);
+  background-size:cover;background-position:center;display:grid;place-items:center;color:var(--ink48);
+}
+.pv-hthumb svg{width:14px;height:14px}
+.pv-htxt{display:flex;flex-direction:column;gap:1px;min-width:0}
+.pv-htxt b{font-size:12px;color:var(--ink)}
+.pv-htxt > span{font-size:11px;color:var(--ink48);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pv-hid{font-family:var(--mono);letter-spacing:.02em}
 .pv-meta a{color:var(--primary);text-decoration:none}
 .pv-meta a:hover{text-decoration:underline}
 
