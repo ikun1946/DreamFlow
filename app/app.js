@@ -527,9 +527,10 @@
           : '') +
         '<div class="sec-head"><b>素材库 (' + S.assetCounts.library + ')</b><span class="grow"></span>' +
           (hintFor('lib') ? '<span>' + hintFor('lib') + '</span>' : '') + '</div>' +
-        (S.assets.length
-          ? '<div class="grid">' + S.assets.map(cardHTML).join('') + '</div>'
-          : '<div class="empty-mini">没有匹配的素材</div>') +
+        /* ⚠ 网格**始终渲染**（哪怕这一类为空）：新建瓦片在网格末尾，是空分类下唯一的新建入口。
+           与项目页资产库同一套做法，别改成"只在有素材时才渲染网格"。 */
+        '<div class="grid">' + S.assets.map(cardHTML).join('') + assetAddCardHTML(S.panelTab) + '</div>' +
+        (S.assets.length ? '' : '<div class="empty-mini">没有匹配的素材</div>') +
       '</div>';
 
     function cardHTML(a) {
@@ -2300,6 +2301,13 @@
     // 卡片右上角的删除钮必须先于卡片点击处理，否则会被卡片处理器吞掉
     const assetDel = t.closest('[data-assetdel]');
     if (assetDel) { await onAssetDelete(assetDel.dataset.assetdel); return; }
+    /* 素材面板里的「新建素材」瓦片：类型用 S.panelTab —— 这里它就是**当前面板的标签**，
+       与项目页资产库要用 S.proj.assetTab 不同（两个界面的"当前分类"是两个状态）。
+       ⚠ 本处理器挂在 document 上，会收到**全页面**的点击。项目页资产库也有一个
+       `[data-newasset]` 瓦片（由 #projView 上自己的处理器处理），若不限定容器，
+       点那一个会同时命中这里 → 弹出两个新建对话框。所以这里要求瓦片确实在 #panel 内。 */
+    const newAsset = t.closest('[data-newasset]');
+    if (newAsset && newAsset.closest('#panel')) { await createAssetFlow(S.panelTab); return; }
     const assetEl = t.closest('[data-asset]');
     if (assetEl) { await onAssetClick(assetEl.dataset.asset); return; }
     const tabEl = t.closest('[data-tab]');
