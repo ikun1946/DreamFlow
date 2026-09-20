@@ -4,6 +4,10 @@
    ============================================================ */
 
 :root{
+  /* 原生表单控件 / 滚动条 / 日期选择器跟随**应用主题**（而非操作系统）：
+     浅色显式声明 light，深色块内声明 dark —— 否则 .input-sm / .modal-body textarea 等
+     "无显式背景"的原生控件会跟随 OS 偏好（OS 深色 + 应用浅色时反而变黑）。 */
+  color-scheme:light;
   --surface:#FFFFFF;
   --parchment:#F5F5F7;
   --pearl:#FAFAFC;
@@ -36,6 +40,9 @@
   --primary-700:#004C99;    /* 主色阶 active：B 阶段新增（A 仅定义） */
   --primary-tint:#D6E6F7;   /* 主色淡底（比 --primary-bg 更实一档）：.dur .val input */
   --focus-gap:#fff;         /* 焦点环的底色隙（深色应 = --surface） */
+  --video-edge:transparent; /* 产物播放器(.pv-video)的边界线：浅色下透明（本就贴在浅底上有天然对比），
+                               深色下由 B1 的 [data-theme="dark"] 覆盖为一条可见的 hairline ——
+                               否则 #0B0D12 的视频底与深色 surface 几乎无边界（对比度仅 1.09:1）。 */
 
   /* 表格三档结构色 */
   --zebra:#FCFCFD;          /* 偶数行斑马底 */
@@ -101,6 +108,100 @@
   --table-w:1364px;
 }
 
+/* ============================================================
+   v0.21.0（B 阶段）：深色主题 · [data-theme="dark"]
+   ------------------------------------------------------------
+   唯一事实来源 = <html> 上的 data-theme 属性（解析后的 light/dark；
+   用户的 auto/light/dark 选择另存 data-theme-mode，见 app.js 的 applyTheme 与 index.html 头部的防闪脚本）。
+   深色取值**全部**写在本令牌块内 ⇒ 规则体里不再出现任何 hex/rgba。
+   取值来源：docs/深色模式设计方案.md v1.1 的 §2.1 + §2.1.1（差集 27 项），对比度均为实算。
+   ============================================================ */
+[data-theme="dark"]{
+  color-scheme:dark;      /* 让原生表单控件（textarea/input/select/日期选择器）随深色渲染 */
+  /* —— 基础语义（§2.1） —— */
+  --surface:#1C1C1E;      /* 深色页底（非纯黑，避免 OLED 光晕） */
+  --parchment:#2C2C2E;
+  --pearl:#242426;
+  --ink:#F5F5F7;          /* 正文墨色反转 */
+  --ink80:#C7C7CC;
+  --ink48:#A6A6AB;
+  --primary:#0A6FD8;      /* 实心/边框/环/图形用 */
+  --primary-ink:#5AA9FF;  /* 蓝作文字用（浅色下与 --primary 同值，分家只发生在深色） */
+  --primary-600:#0A5FBF;  /* hover 色阶 */
+  --primary-700:#0956AC;  /* active 色阶 */
+  --primary-bg:#10243A;
+  --hairline:#3A3A3C;
+  --divider:#2C2C2E;
+  --chipgray:#48484A;
+  --ok:#30D158;   --ok-bg:#0E2A18;
+  --err:#FF453A;  --err-bg:#3A1512;
+  --warn:#FFB340; --warn-bg:#3A2B0A;
+  --track:#3A3A3C;
+  --focus-gap:#1C1C1E;    /* = --surface：焦点环靠底色隙与控件分隔，不发光 */
+  /* —— 表格三档 / 遮罩 / scrim / veil（§2.1） —— */
+  --zebra:#202022;
+  --row-hover:#26262A;
+  --row-sel:#10243A;
+  --fill-2:#454547;
+  --mask:rgba(0,0,0,.6);
+  --mask-soft:rgba(0,0,0,.55);
+  --scrim-label:rgba(0,0,0,.55);
+  --scrim-1:rgba(0,0,0,.6);
+  --scrim-2:rgba(0,0,0,.68);
+  --scrim-3:rgba(0,0,0,.8);
+  --code-chip:rgba(255,255,255,.1);      /* 行内 code 底：深色用白 veil，不是黑 */
+  --hint-veil:rgba(28,28,30,.85);        /* 深色下改暗 veil（角标字是浅色 --ink48） */
+  --veil:rgba(255,255,255,.16);
+  --veil-border:rgba(255,255,255,.30);
+  --marquee-bg:rgba(90,169,255,.16);
+  /* —— 状态点 / 微色描边 / 底色族 / 骨架 / 滚动条（§2.1.1 ②–⑥） —— */
+  /* --warn-dot / --ok-dot 深色下"不变"（对深色底实算反而更达标，>5:1），故不覆盖 */
+  --err-line:#7C3733;
+  --err-dash:#FF453A;      /* 失败缩略图虚线：改用 --err 深色值（语义一致、达标 4.76:1） */
+  --warn-line:#7A5A20;
+  --warn-line-2:#6E5520;
+  --warn-ink:#FFB340;      /* = --warn 深色值 */
+  --dry-bg:#122033; --dry-ink:#8AB4F8;
+  --aud-bg:#2A1D3D; --aud-ink:#C39BFF;
+  --sk-1:#232326; --sk-2:#2C2C30;
+  --sb-thumb:#48484A; --sb-thumb-h:#5A5A5E;
+  --primary-tint:#123152;  /* 比 --primary-bg 更亮一档（对应浅色"更实"） */
+  /* —— 结构阴影（§2.1 + §2.1.1 ①）：深色下抬升改由 1px --hairline 边框承担，阴影只留极弱纵深 —— */
+  --shadow-1:0 1px 3px rgba(0,0,0,.5);
+  --shadow-2:0 8px 24px rgba(0,0,0,.6);
+  --shadow-menu:0 8px 24px rgba(0,0,0,.6);
+  --shadow-card:0 2px 10px rgba(0,0,0,.5);
+  --shadow-panel:-12px 0 32px rgba(0,0,0,.6);
+  --shadow-detail:-12px 0 32px rgba(0,0,0,.6);
+  --shadow-rail:6px 0 8px -6px rgba(0,0,0,.5);
+  /* --shadow-badge 深色下"不变"（作用在缩略图图像像素上），故不覆盖 */
+  /* —— B 阶段新增令牌（§7.5）：产物播放器边界 —— */
+  --video-edge:var(--hairline);
+}
+
+/* —— 深色"额外规则"（非令牌；只在深色块内新增，浅色侧零改动，§7.2） —— */
+/* 浮层抬升：浅色靠阴影，深色阴影失效 ⇒ 补 1px 边框（.menu 源码本就有边框，只需 .modal） */
+[data-theme="dark"] .modal{border:1px solid var(--hairline)}
+/* 缩略图/产物图贴在深底上会"糊在一起"⇒ 内描边定界（inset 不占布局） */
+[data-theme="dark"] .thumb,
+[data-theme="dark"] .result-thumb,
+[data-theme="dark"] .acard .pic{box-shadow:inset 0 0 0 1px var(--hairline)}
+/* sticky 序号列的右边界（配合 --shadow-rail） */
+[data-theme="dark"] .row > .cell.rail{border-right:1px solid var(--hairline)}
+/* 素材着色 / 解析类型徽标：前景+底色成对绑定 ⇒ dark-only 规则（不拆 22 个低复用令牌，§1.2 规则 3、§1.4.4）。
+   ⚠ 这些规则含字面量，但归属选择器仍落在既有豁免白名单上（.hl-* / .b-*）。 */
+[data-theme="dark"] .hl-character{color:#4C9AFF;background:#0A2A47}
+[data-theme="dark"] .hl-scene{color:#34C759;background:#0C2A18}
+[data-theme="dark"] .hl-prop{color:#FF9F0A;background:#33210A}
+[data-theme="dark"] .hl-audio{color:#BF86F5;background:#281A38}
+[data-theme="dark"] .hl-firstFrame{color:#4DD0E1;background:#0A2A2E}
+[data-theme="dark"] .hl-storyboard{color:#8E9BFF;background:#181C3A}
+[data-theme="dark"] .b-char{background:#0A2A47;color:#4C9AFF}
+[data-theme="dark"] .b-scene{background:#0C2A18;color:#34C759}
+[data-theme="dark"] .b-prop{background:#33210A;color:#FF9F0A}
+[data-theme="dark"] .b-skip{background:#3A3A3C;color:#A6A6AB}
+[data-theme="dark"] .b-conf{background:#3A2B0A;color:#FFB340}
+
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{
@@ -137,6 +238,31 @@ button{transition:background .15s,border-color .15s,opacity .15s,box-shadow .15s
   place-items:center;   /* 兜底：确保是居中布局 */
   line-height:1;
 }
+
+/* ============================ 图标着色（v0.21.0） ============================
+   内联 SVG 已全部改为 currentColor 描边/填充（见 app.js 的 I.* 常量），颜色改由**容器**提供。
+   这里按容器把「该图标应有的颜色」显式声明到令牌上 ——
+   · 浅色下取值与旧字面量**逐像素一致**（唯一例外：旧 #7A7A7A 对齐到既有令牌 --ink48 = #67676B，
+     顺带修掉一处既存不一致：0.19.0 已把 --ink48 从 #7A7A7A 提到 #67676B，图标却还是旧值）；
+   · 深色下随令牌自动翻转，无需在这里写任何深色规则。
+   选择 "容器 svg"（而非直接给容器上色）是为了避免连带改到容器里的**文字**颜色。 */
+.slot-add svg{color:var(--ink48)}                        /* 「＋」槽位图标（旧 #7A7A7A） */
+.acard.add .pic svg{color:var(--ink48)}                  /* 资产库「新建」瓦片图标（旧 #7A7A7A） */
+.icon-act svg{color:var(--ink48)}                        /* 行内操作图标：上/下移、删除、查看、取消（旧 #7A7A7A） */
+.icon-act[data-act="retry"] svg{color:var(--err)}        /* 「重试」图标（旧 #D70015，语义红） */
+.icon-btn svg{color:var(--ink48)}                        /* 弹层/抽屉关闭「×」（旧 #7A7A7A） */
+#projBack svg,#recBack svg{color:var(--ink80)}           /* 返回箭头（旧 #333，比「×」更重一档） */
+.zoom-btn svg{color:var(--ink48)}                        /* 提示词放大钮（旧 #7A7A7A） */
+.panel-search svg,.rec-search svg{color:var(--ink48)}    /* 搜索图标（旧 #7A7A7A） */
+.dur button svg{color:var(--ink80)}                      /* 时长步进器「＋/－」（旧 #333） */
+.result-thumb.plain svg{color:var(--chipgray)}           /* 未开始：时钟图标（旧 #D2D2D7） */
+.result-thumb.failed svg{color:var(--err)}               /* 失败：警告图标（旧 #D70015） */
+.acard .pic .tick svg{color:var(--primary-ink)}          /* 素材卡选中勾（旧 #0066CC；压在白色圆底上） */
+.statecard svg{color:var(--warn-ink)}                    /* 状态卡：警示三角（旧 #B26A00） */
+.statecard.ok svg{color:var(--ok)}                       /* 状态卡·成功：对勾（旧 #248A3D） */
+.empty svg{color:var(--chipgray)}                        /* 空态大图标（旧 #D2D2D7） */
+.errorbox svg{color:var(--warn-ink)}                     /* 加载失败：警示三角（旧 #B26A00） */
+
 input,textarea,select{font:inherit;color:inherit}
 h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .grow{flex:1}
@@ -210,9 +336,12 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .btn-primary{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
   font-size:13px;padding:10px 20px;border-radius:999px;
-  background:var(--primary);color:#fff;white-space:nowrap;transition:opacity .15s;
+  background:var(--primary);color:#fff;white-space:nowrap;transition:background .15s;
 }
-.btn-primary:hover{opacity:.9}
+/* B 阶段（§2.2）：hover/active 由 `opacity` 压暗改为**色阶**（--primary-600/700）——
+   opacity 在深色下会让实心蓝"趋向背景"、且连带压淡上方白字；色阶则两主题各自达标。 */
+.btn-primary:hover{background:var(--primary-600)}
+.btn-primary:active{background:var(--primary-700)}
 .btn-primary:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
 /* 窄屏素材入口：宽屏面板常驻可见，此按钮无意义；≤1180px 随面板一起启用 */
 #btnPanel{display:none}
@@ -566,7 +695,10 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* ============================ 产物预览：真播放器 ============================ */
 .pv-video{
   display:block;width:100%;max-height:min(52vh,420px);
-  border-radius:12px;background:#0B0D12;outline:none;
+  border-radius:12px;background:#0B0D12;
+  /* 用 outline（不占布局）承担深色下的边界：浅色下 --video-edge=transparent ⇒ 不可见、逐像素不变；
+     深色下换成可见 hairline。outline 不影响盒模型，故不会改动浅色的尺寸/排版。 */
+  outline:1px solid var(--video-edge);
 }
 .pv-video:focus-visible{box-shadow:var(--focus)}
 .pv-meta{

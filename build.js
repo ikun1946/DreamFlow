@@ -74,8 +74,11 @@ function main() {
   if (countOut(out, /\$\$/g) !== countIn(api + app, /\$\$/g)) {
     errors.push('`$$` 数量不一致 —— 替换吞噬了字面量，产物已损坏');
   }
-  if (countOut(out, /<script>/g) !== 2) {
-    errors.push('<script> 块应为 2 个（api + app），实际 ' + countOut(out, /<script>/g) + ' 个');
+  // 裸 <script> 的期望数 = index.html 里**已有的内联脚本**数 + 内联进来的 api/app 两个。
+  // （v0.21.0 起 index.html 的 <head> 多了一段「主题防闪」内联脚本，故不能再写死为 2。）
+  const inlineScripts = countIn(html, /<script>/g);
+  if (countOut(out, /<script>/g) !== inlineScripts + 2) {
+    errors.push('<script> 块应为 ' + (inlineScripts + 2) + ' 个（内联 ' + inlineScripts + ' + api + app），实际 ' + countOut(out, /<script>/g) + ' 个');
   }
   if (countOut(out, /<style>/g) !== 1) {
     errors.push('<style> 块应为 1 个，实际 ' + countOut(out, /<style>/g) + ' 个');
@@ -101,7 +104,7 @@ function main() {
               ' + api.js ' + kb(api.length) +
               ' + app.js ' + kb(app.length));
   console.log('  产物 ' + path.relative(ROOT, outPath).replace(/\\/g, '/') + '   ' + kb(out.length));
-  console.log('  校验 $$ 保留 / script 块 2 / style 块 1 / 无外部引用 → 全部通过');
+  console.log('  校验 $$ 保留 / script 块 ' + (inlineScripts + 2) + ' / style 块 1 / 无外部引用 → 全部通过');
 }
 
 main();

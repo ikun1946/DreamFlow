@@ -41,30 +41,38 @@
   };
   const errText = (e) => (e && e.message) || ERR_TEXT[e && e.code] || '操作失败，请稍后重试';
 
-  /* ---------------------------------------------------------- 图标 */
+  /* ---------------------------------------------------------- 图标
+     ⚠ v0.21.0（B 阶段）：内联 SVG 一律改用 `currentColor` 描边/填充，颜色交由**承载它的
+        容器元素**（按钮/单元格/卡片）通过 CSS 的 `color` 提供 —— 这样深色模式下图标会
+        随容器的语义令牌一起翻转。容器颜色见 styles.css 里各容器选择器旁的注释。
+     三类**豁免**（保持写死的颜色，因为其所在上下文两主题都不变）：
+       ① `I.tick` / `I.x` / `I.expand`：白描边，只落在**深色底/主色底/半透明 scrim** 上
+          （勾选框、素材卡删除钮、全屏钮），白在深底上两主题都正确；
+       ② `I.play`：黑色半透明圆底盘 + 白播放三角，压在缩略图/封面上；
+       ③ `I.copy` / `I.img` / `I.notePh`：本就是 currentColor（由按钮/占位容器着色）。 */
   const I = {
-    minus: '<svg width="14" height="14" viewBox="0 0 24 24"><path d="M5.5 12h13" stroke="#333" stroke-width="2.4" stroke-linecap="round"/></svg>',
-    plus:  '<svg width="14" height="14" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13" stroke="#333" stroke-width="2.4" stroke-linecap="round"/></svg>',
-    add:   '<svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13" stroke="#7A7A7A" stroke-width="1.9" stroke-linecap="round"/></svg>',
+    minus: '<svg width="14" height="14" viewBox="0 0 24 24"><path d="M5.5 12h13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+    plus:  '<svg width="14" height="14" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+    add:   '<svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
     tick:  '<svg width="11" height="11" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4L18.5 7.5" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    tickSm:'<svg width="9" height="9" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4L18.5 7.5" fill="none" stroke="#0066CC" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    tickSm:'<svg width="9" height="9" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4L18.5 7.5" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     x:     '<svg width="9" height="9" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#fff" stroke-width="3.4" stroke-linecap="round"/></svg>',
     // 深色 ×：用于白底容器（弹层标题栏、详情栏）。I.x 是白描边，只适合深色底，别混用
-    xDark: '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#7A7A7A" stroke-width="2" stroke-linecap="round"/></svg>',
-    up:    '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M6 14.5l6-6 6 6" stroke="#7A7A7A" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    down:  '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" stroke="#7A7A7A" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    trash: '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M4 6.5h16M9.5 6.5V4h5v2.5M18 6.5l-1 14H7l-1-14" stroke="#7A7A7A" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    retry: '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.7-6" stroke="#D70015" stroke-width="1.9" fill="none" stroke-linecap="round"/><path d="M20.5 3.5v5h-5" stroke="#D70015" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    stop:  '<svg width="18" height="18" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="#7A7A7A"/></svg>',
+    xDark: '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    up:    '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M6 14.5l6-6 6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    down:  '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    trash: '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M4 6.5h16M9.5 6.5V4h5v2.5M18 6.5l-1 14H7l-1-14" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    retry: '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.7-6" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round"/><path d="M20.5 3.5v5h-5" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    stop:  '<svg width="18" height="18" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></svg>',
     play:  '<svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="rgba(0,0,0,.34)"/><path d="M9.5 7.5l7 4.5-7 4.5z" fill="#fff"/></svg>',
-    clock: '<svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke="#D2D2D7" stroke-width="1.8" fill="none"/><path d="M12 7.5v5l3.2 1.9" stroke="#D2D2D7" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>',
-    alert: '<svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke="#D70015" stroke-width="1.8" fill="none"/><path d="M12 7.5v5.5M12 16.2h.01" stroke="#D70015" stroke-width="1.8" stroke-linecap="round"/></svg>',
-    search:'<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" stroke="#7A7A7A" stroke-width="2.2" fill="none"/><path d="M16.2 16.2L21 21" stroke="#7A7A7A" stroke-width="2.2" stroke-linecap="round"/></svg>',
-    warn:  '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M10.3 4.2L2.6 17.5A2 2 0 004.3 20.5h15.4a2 2 0 001.7-3L13.7 4.2a2 2 0 00-3.4 0z" stroke="#B26A00" stroke-width="1.8" fill="none" stroke-linejoin="round"/><path d="M12 9.5v4M12 16.5h.01" stroke="#B26A00" stroke-width="1.8" stroke-linecap="round"/></svg>',
-    check: '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="#248A3D" stroke-width="1.8" fill="none"/><path d="M8 12.4l2.8 2.8L16 9.6" stroke="#248A3D" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    clock: '<svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M12 7.5v5l3.2 1.9" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>',
+    alert: '<svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M12 7.5v5.5M12 16.2h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    search:'<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2.2" fill="none"/><path d="M16.2 16.2L21 21" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
+    warn:  '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M10.3 4.2L2.6 17.5A2 2 0 004.3 20.5h15.4a2 2 0 001.7-3L13.7 4.2a2 2 0 00-3.4 0z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/><path d="M12 9.5v4M12 16.5h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    check: '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M8 12.4l2.8 2.8L16 9.6" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     expand:'<svg width="14" height="14" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     // 放大图标（深色描边，用于白底表格）：I.expand 是白描边，只适合深色底，别混用
-    expandDark: '<svg width="12" height="12" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="#7A7A7A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    expandDark: '<svg width="12" height="12" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     // 复制图标：描边用 currentColor，由按钮的 color 控制（浅色块 / 深色代码块上都能用）
     copy:  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><rect x="8.6" y="8.6" width="11.8" height="11.8" rx="2.4" stroke="currentColor" stroke-width="2"/><path d="M15.4 5.7A2.4 2.4 0 0013.3 4H6.4A2.4 2.4 0 004 6.4v6.9a2.4 2.4 0 001.7 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     // 图片占位图标：描边用 currentColor，由 CSS 控制颜色与透明度（半透明占位样式）
@@ -103,16 +111,16 @@
 
   const COLUMNS = [
     { key: 'rail',   w: 44 },
-    { key: 'prompt', w: 340, label: '分镜 / 提示词', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke="#7A7A7A" stroke-width="2" stroke-linecap="round"/></svg>' },
-    { key: 'character', w: 160, label: '角色', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6" stroke="#7A7A7A" stroke-width="1.9" fill="none"/><path d="M5 20c1.2-3.6 3.8-5.4 7-5.4s5.8 1.8 7 5.4" stroke="#7A7A7A" stroke-width="1.9" fill="none" stroke-linecap="round"/></svg>' },
-    { key: 'scene', w: 100, label: '场景', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5" stroke="#7A7A7A" stroke-width="1.9" fill="none"/><circle cx="8.5" cy="10" r="1.6" stroke="#7A7A7A" stroke-width="1.7" fill="none"/></svg>' },
-    { key: 'prop', w: 100, label: '道具', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M12 3.5l8 4.5v8l-8 4.5-8-4.5V8z" stroke="#7A7A7A" stroke-width="1.9" fill="none" stroke-linejoin="round"/><path d="M4 8l8 4.5L20 8M12 12.5v8" stroke="#7A7A7A" stroke-width="1.9" fill="none"/></svg>' },
-    { key: 'firstFrame', w: 86, label: '首帧图', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M5 3.5v17" stroke="#7A7A7A" stroke-width="1.9" stroke-linecap="round"/><path d="M5 5.5h13l-2.6 3.8L18 13H5" stroke="#7A7A7A" stroke-width="1.9" fill="none" stroke-linejoin="round"/></svg>' },
-    { key: 'storyboard', w: 84, label: '分镜图', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" stroke="#7A7A7A" stroke-width="1.9" fill="none"/><rect x="13" y="13" width="8" height="8" rx="2" stroke="#7A7A7A" stroke-width="1.9" fill="none"/></svg>' },
-    { key: 'audio', w: 84, label: '音频', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M9.5 4v10.1a2.9 2.9 0 1 1-1.5-2.55V6.2h7.4v5.4a2.9 2.9 0 1 1-1.5-2.55V4z" fill="#7A7A7A"/></svg>' },
-    { key: 'result', w: 190, label: '结果与进度', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="2.5" y="5" width="13.5" height="14" rx="2.5" stroke="#7A7A7A" stroke-width="1.9" fill="none"/><path d="M16.5 10.2l5-2.7v9l-5-2.7z" stroke="#7A7A7A" stroke-width="1.9" fill="none" stroke-linejoin="round"/></svg>' },
-    { key: 'status', w: 94, label: '状态', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke="#7A7A7A" stroke-width="1.9" fill="none"/><path d="M8.5 12.2l2.6 2.6 4.6-5" stroke="#7A7A7A" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
-    { key: 'acts', w: 82, label: '操作', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8" stroke="#7A7A7A" stroke-width="1.9" stroke-linecap="round"/><circle cx="16" cy="8" r="2" stroke="#7A7A7A" stroke-width="1.9" fill="none"/><circle cx="10" cy="16" r="2" stroke="#7A7A7A" stroke-width="1.9" fill="none"/></svg>' }
+    { key: 'prompt', w: 340, label: '分镜 / 提示词', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>' },
+    { key: 'character', w: 160, label: '角色', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6" stroke="currentColor" stroke-width="1.9" fill="none"/><path d="M5 20c1.2-3.6 3.8-5.4 7-5.4s5.8 1.8 7 5.4" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round"/></svg>' },
+    { key: 'scene', w: 100, label: '场景', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5" stroke="currentColor" stroke-width="1.9" fill="none"/><circle cx="8.5" cy="10" r="1.6" stroke="currentColor" stroke-width="1.7" fill="none"/></svg>' },
+    { key: 'prop', w: 100, label: '道具', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M12 3.5l8 4.5v8l-8 4.5-8-4.5V8z" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linejoin="round"/><path d="M4 8l8 4.5L20 8M12 12.5v8" stroke="currentColor" stroke-width="1.9" fill="none"/></svg>' },
+    { key: 'firstFrame', w: 86, label: '首帧图', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M5 3.5v17" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M5 5.5h13l-2.6 3.8L18 13H5" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linejoin="round"/></svg>' },
+    { key: 'storyboard', w: 84, label: '分镜图', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.9" fill="none"/><rect x="13" y="13" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.9" fill="none"/></svg>' },
+    { key: 'audio', w: 84, label: '音频', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M9.5 4v10.1a2.9 2.9 0 1 1-1.5-2.55V6.2h7.4v5.4a2.9 2.9 0 1 1-1.5-2.55V4z" fill="currentColor"/></svg>' },
+    { key: 'result', w: 190, label: '结果与进度', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="2.5" y="5" width="13.5" height="14" rx="2.5" stroke="currentColor" stroke-width="1.9" fill="none"/><path d="M16.5 10.2l5-2.7v9l-5-2.7z" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linejoin="round"/></svg>' },
+    { key: 'status', w: 94, label: '状态', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.9" fill="none"/><path d="M8.5 12.2l2.6 2.6 4.6-5" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
+    { key: 'acts', w: 82, label: '操作', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="16" cy="8" r="2" stroke="currentColor" stroke-width="1.9" fill="none"/><circle cx="10" cy="16" r="2" stroke="currentColor" stroke-width="1.9" fill="none"/></svg>' }
   ];
 
   /* ---------------------------------------------------------- 状态 */
@@ -419,7 +427,7 @@
     }
     if (!S.list.length) {
       host.innerHTML = '<div class="empty">' +
-        '<svg width="44" height="44" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="3" stroke="#D2D2D7" stroke-width="1.3" fill="none"/><path d="M2.5 8.5h19" stroke="#D2D2D7" stroke-width="1.3"/></svg>' +
+        '<svg width="44" height="44" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="3" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M2.5 8.5h19" stroke="currentColor" stroke-width="1.3"/></svg>' +
         '<b>' + (S.keyword || S.filter !== 'all' ? '没有符合条件的分镜' : '还没有分镜') + '</b>' +
         '<span>' + (S.keyword || S.filter !== 'all' ? '试试清空搜索或切换筛选' : '把多段提示词粘进来，一次创建整批分镜') + '</span>' +
         (S.keyword || S.filter !== 'all' ? '' : '<button class="btn-primary" data-act="openImport" title="批量导入提示词">批量导入</button>') +
@@ -441,6 +449,59 @@
   function applyDensity(on) {
     const el = $('#app');
     if (el) el.classList.toggle('compact', !!on);
+  }
+
+  /* ---------------------------------------------------------- 主题（深色模式） */
+  /* 三态外观：auto（跟随系统，默认）/ light / dark。
+     **两个属性分工明确**（这是本设计的关键）：
+       · <html data-theme-mode> = 用户的**选择**（auto|light|dark）—— 分段控件的选中态读它；
+       · <html data-theme>      = 解析后的**实际主题**（light|dark）—— CSS 只认它。
+     为什么不用 <html data-theme> 一个属性？因为 "auto" 解析后落到 light 或 dark，无法再区分
+     "用户选了浅色" 与 "用户选跟随系统、系统恰是浅色"，分段控件就没法正确回显。
+     落点必须在 <html> 而非 #app：.mask/.drawer/.recview/.pageview/.toasts 都是 #app 的兄弟/外部
+     节点（见 index.html），放在 #app 上它们取不到令牌（与既有结构约束一致）。
+     ⚠ 主题**绝不写入 S.settings**（它是"本页外观偏好"，与生成参数无关）——避免触发 settingsDirty
+        或被服务端旧值覆盖；与 applyDensity 的既有语义保持一致。 */
+  const THEME_KEY = 'jmc.theme';
+  const THEME_VALUES = ['auto', 'light', 'dark'];
+  function systemDark() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }
+  /* 读"用户的选择"，唯一事实来源是 <html data-theme-mode>；非法/缺省回落 auto。 */
+  function themeChoice() {
+    const t = document.documentElement.dataset.themeMode;
+    return THEME_VALUES.indexOf(t) >= 0 ? t : 'auto';
+  }
+  /* 读持久化镜像（只用于启动初始化与容错；运行期真相仍是 data-theme-mode）。 */
+  function storedTheme() {
+    try {
+      const v = localStorage.getItem(THEME_KEY);
+      return THEME_VALUES.indexOf(v) >= 0 ? v : 'auto';
+    } catch (e) { return 'auto'; }
+  }
+  /* 应用某个选择：写 data-theme-mode + 解析出 data-theme。 */
+  function applyTheme(v) {
+    const val = THEME_VALUES.indexOf(v) >= 0 ? v : 'auto';
+    const root = document.documentElement;
+    root.dataset.themeMode = val;
+    root.dataset.theme = (val === 'dark' || (val === 'auto' && systemDark())) ? 'dark' : 'light';
+  }
+  /* 切换主题（来自设置抽屉的分段控件）：应用 + 持久化（写失败静默，隐私模式下 localStorage 会抛）。 */
+  function setTheme(v) {
+    applyTheme(v);
+    try { localStorage.setItem(THEME_KEY, themeChoice()); } catch (e) { /* 隐私模式忽略 */ }
+  }
+  /* 启动初始化：读持久化 → 应用；并监听系统偏好（**仅 auto 时**联动，显式选择不被系统覆盖）。 */
+  function initTheme() {
+    applyTheme(storedTheme());
+    if (window.matchMedia) {
+      try {
+        const mq = window.matchMedia('(prefers-color-scheme: dark)');
+        const onChange = () => { if (themeChoice() === 'auto') applyTheme('auto'); };
+        if (mq.addEventListener) mq.addEventListener('change', onChange);
+        else if (mq.addListener) mq.addListener(onChange);
+      } catch (e) { /* 旧浏览器忽略 */ }
+    }
   }
 
   /* 顶栏主操作按钮的标签同步：「提交所选」要带上已选数量。
@@ -4710,6 +4771,16 @@
           '<p class="hint-sm">开启后行高 132px、素材格 32×40、产物格 56×36，一屏能多看几条分镜；关闭即标准视图。' +
             '与原来顶栏那个「紧凑视图」按钮是同一套逻辑（切换 <code>#app</code> 上的 <code>.compact</code> 类），' +
             '只是入口挪到了这里。此项为即时生效的显示偏好，不写入服务端配置，刷新后回到标准视图。</p>' +
+          /* v0.21.0：外观（深色模式）。三态用 .seg 分段控件；选中态读 <html data-theme-mode>
+             （用户的选择），而不是解析后的 <html data-theme> —— 否则"跟随系统"回显不出选中。 */
+          '<div class="srow"><span class="k">外观</span>' +
+            '<span class="seg" id="themeSeg">' +
+              '<button data-toggle="theme" data-theme-val="auto"' + (themeChoice() === 'auto' ? ' class="on"' : '') + '>跟随系统</button>' +
+              '<button data-toggle="theme" data-theme-val="light"' + (themeChoice() === 'light' ? ' class="on"' : '') + '>浅色</button>' +
+              '<button data-toggle="theme" data-theme-val="dark"' + (themeChoice() === 'dark' ? ' class="on"' : '') + '>深色</button>' +
+            '</span></div>' +
+          '<p class="hint-sm">「跟随系统」随操作系统的浅色/深色偏好自动切换；「浅色 / 深色」是你的显式选择，优先于系统。' +
+            '此项为即时生效的显示偏好，保存在本机（<code>localStorage</code> 的 <code>jmc.theme</code>），不写入服务端配置。</p>' +
         '</div>' +
       '</section>' +
       /* —— 卡片 5 · 生成引擎与账号（全局的「检测」升到卡片头，两个 CLI 各自成组） —— */
@@ -5105,12 +5176,14 @@
       /* 开关：按 data-toggle 的值分派。
          · autoRetry 改的是生成行为（写 S.settings.queue）
          · compact   改的是显示偏好（写 #app 的类，与旧顶栏按钮同源）
-         两者互不影响，各自只动自己的那一份状态。 */
+         · theme     改的是外观偏好（写 <html> 的 data-theme，持久化到 localStorage；**不碰 S.settings**）
+         三者互不影响，各自只动自己的那一份状态。 */
       const tg = e.target.closest('[data-toggle]');
       if (tg) {
         const k = tg.dataset.toggle;
         if (k === 'autoRetry') S.settings.queue.autoRetry = !S.settings.queue.autoRetry;
         else if (k === 'compact') applyDensity(!isCompact());
+        else if (k === 'theme') setTheme(tg.dataset.themeVal);   // .seg 三态：读 data-theme-val
         renderSettings(); return;
       }
     });
@@ -5187,6 +5260,7 @@
 
   /* ---------------------------------------------------------- 启动 */
   async function boot() {
+    initTheme();   // 主题先于一切：解析持久化偏好 → 写 <html data-theme>，避免首屏闪色
     bindStatic();
     renderColhead();
     render();
