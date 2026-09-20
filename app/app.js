@@ -1584,8 +1584,13 @@
     closeDetail();      // 含 <video> 的暂停与释放，不能只 hidden
   }
 
-  /* 切换显示层。只负责显隐与面包屑，不管数据加载（那是 enter* 的职责） */
-  function setView(name) {
+  /* 页面层级：用于判断转场方向。首页 → 项目 → 分镜表是向前，反向是返回。 */
+  const VIEW_DEPTH = { home: 0, project: 1, workspace: 2 };
+  let viewMounted = false;
+  let activeViewTransition = null;
+
+  /* 实际切换显示层。只负责显隐与面包屑，不管数据加载（那是 enter* 的职责）。 */
+  function applyView(name) {
     S.view = name;
     const home = $('#homeView'), proj = $('#projView'), app = $('#app');
     if (home) { home.hidden = name !== 'home'; home.setAttribute('aria-hidden', name === 'home' ? 'false' : 'true'); }
@@ -1596,6 +1601,31 @@
     /* 轮询只在工作区视图里跑（指令 §39）：离开工作区就停，回来时 ensurePolling 会重新拉起。
        代际令牌在 stopPolling 里 +1，所以在飞的旧响应也会被丢弃。 */
     if (name === 'workspace') ensurePolling(); else stopPolling();
+  }
+
+  /* 三层页面转场：优先用 View Transitions API 同时完成旧页退出和新页进入。
+     首次启动不做动画，避免按 URL 恢复到分镜表时从空首页“飞进去”。
+     不支持 API 或开启“减少动态效果”时直接切换，功能不受影响。 */
+  function setView(name) {
+    const previous = S.view;
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const canAnimate = viewMounted && previous !== name && !reduced && typeof document.startViewTransition === 'function';
+    viewMounted = true;
+    if (!canAnimate) { applyView(name); return; }
+
+    if (activeViewTransition && activeViewTransition.skipTransition) activeViewTransition.skipTransition();
+    const root = document.documentElement;
+    const direction = (VIEW_DEPTH[name] || 0) > (VIEW_DEPTH[previous] || 0) ? 'nav-forward' : 'nav-back';
+    root.classList.remove('nav-forward', 'nav-back');
+    root.classList.add(direction);
+
+    const transition = document.startViewTransition(() => applyView(name));
+    activeViewTransition = transition;
+    transition.finished.catch(() => {}).finally(() => {
+      if (activeViewTransition !== transition) return;
+      activeViewTransition = null;
+      root.classList.remove('nav-forward', 'nav-back');
+    });
   }
 
   /* URL 状态（指令 §35 的最低成本方案）：?project=…&workspace=…
@@ -2013,6 +2043,17 @@
     return '新项目';
   }
 
+  /* 新建分镜表的默认名：规则与新建项目一致，但只在当前项目内避免重名。 */
+  function defaultWorkspaceName() {
+    const used = new Set((S.proj.workspaces || []).map((w) => w.name));
+    if (!used.has('新分镜表')) return '新分镜表';
+    for (let i = 2; i < 1000; i++) {
+      const n = '新分镜表 ' + i;
+      if (!used.has(n)) return n;
+    }
+    return '新分镜表';
+  }
+
   async function onNewProject() {
     const name = await uiPrompt('创建项目',
       '给项目起个名字。项目之间数据完全隔离，同一项目下的多张分镜表共享素材库。', defaultProjectName());
@@ -2075,7 +2116,7 @@
 
   async function onNewWorkspace() {
     if (!S.cur.projectId) return;
-    const name = await uiPrompt('新建分镜表', '分镜表是分镜的容器。同一项目下的分镜表共享素材库，但分镜互相独立。', '');
+    const name = await uiPrompt('新建分镜表', '分镜表是分镜的容器。同一项目下的分镜表共享素材库，但分镜互相独立。', defaultWorkspaceName());
     if (name === null) return;
     const nm = String(name).trim();
     if (!nm) { toast('分镜表名称不能为空', 'err'); return; }

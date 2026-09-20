@@ -343,6 +343,8 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .btn-primary:hover{background:var(--primary-600)}
 .btn-primary:active{background:var(--primary-700)}
 .btn-primary:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
+/* 两个分镜主操作的宽屏尺寸。不写行内样式，窄屏媒体查询才能正常收紧。 */
+.topbar #btnImport,.topbar #btnSubmitSel{padding:8px 16px}
 /* 窄屏素材入口：宽屏面板常驻可见，此按钮无意义；≤1180px 随面板一起启用 */
 #btnPanel{display:none}
 
@@ -1237,20 +1239,35 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .pageview{
   position:fixed;inset:0;z-index:65;
   display:flex;flex-direction:column;
+  width:100%;max-width:100vw;min-width:0;overflow:hidden;
   background:var(--surface);
 }
 .pageview[hidden]{display:none}
+
+/* ============================ 三层页面转场 ============================
+   首页 → 项目 → 分镜表：新页从右侧轻推入，旧页向左退出；返回时反向。
+   位移刻意只有 24px，让用户感知层级变化，不让内容在大屏上长距离飞行。 */
+::view-transition-group(root){animation-duration:.24s;animation-timing-function:cubic-bezier(.2,.75,.25,1)}
+html.nav-forward::view-transition-old(root){animation:nav-out-left .24s cubic-bezier(.2,.75,.25,1) both}
+html.nav-forward::view-transition-new(root){animation:nav-in-right .24s cubic-bezier(.2,.75,.25,1) both}
+html.nav-back::view-transition-old(root){animation:nav-out-right .24s cubic-bezier(.2,.75,.25,1) both}
+html.nav-back::view-transition-new(root){animation:nav-in-left .24s cubic-bezier(.2,.75,.25,1) both}
+@keyframes nav-out-left{to{opacity:.35;transform:translateX(-24px)}}
+@keyframes nav-in-right{from{opacity:.35;transform:translateX(24px)}}
+@keyframes nav-out-right{to{opacity:.35;transform:translateX(24px)}}
+@keyframes nav-in-left{from{opacity:.35;transform:translateX(-24px)}}
+
 /* 控制台（工作区视图）在首页/项目主页显示期间必须整体藏起来：
-   用 visibility 而不是 display，是因为顶栏与状态栏都是"静态节点、只改文本"的更新方式，
+   用 visibility 而不是 display，是因为顶栏与状态栏都是“静态节点、只改文本”的更新方式，
    留它们在布局里可以避免切回来时重新计算尺寸造成的跳动。
    ⚠ 用 !important 是因为 .app 自身有 display:grid —— 只加 hidden 属性不生效。 */
 .app.hidden-view{visibility:hidden}
 /* 只有头部与主体两层（项目主页多一条 tab 条，用 grid-template-rows 的第三行空着即可） */
 .pv-head{
   display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:none;
-  padding:12px 20px;border-bottom:1px solid var(--hairline);
+  min-width:0;padding:12px 20px;border-bottom:1px solid var(--hairline);
 }
-.pv-head h2{font-size:18px}
+.pv-head h2{font-size:18px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pv-head .grow{flex:1 1 24px}
 .pv-tabs{
   display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:none;
@@ -1536,6 +1553,13 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   .rec-bar .rec-date{flex:1 1 120px;width:auto;min-width:0}
   .rec-pager{min-height:44px;padding:6px 14px}
   .rec-detail{padding:14px 14px 24px}
+
+  /* 首页 / 项目页：信息行与操作行明确分开。
+     原先只靠 flex-wrap 自由折行，长项目名或窗口变窄时会把右侧按钮撑到视口外。 */
+  .pv-head{padding:10px 14px;gap:8px}
+  .pv-head .grow{flex:0 0 100%;height:0}
+  #homeView .pv-head h2{font-size:16px;flex:1 1 150px}
+  #projTitle{flex:1 1 100px}
 }
 
 /* ---------------------------- 设置抽屉 · 响应式 ----------------------------
@@ -1571,16 +1595,16 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
    顶栏按钮散成三行、弹窗左右留白挤占正文、状态栏分隔线成噪音。这里统一收口。 */
 @media (max-width:860px){
   /* 顶栏：两行内收纳。第一行 = 品牌 + 运行状态 + 主操作；参数胶囊与次要动作自然换行 */
-  .topbar{gap:8px;padding:6px 12px}
+  .topbar{gap:8px;padding:6px 12px;min-width:0;max-width:100vw}
   /* 窄屏隐藏品牌名与竖分隔线；面包屑只保留「项目 › 页面」两级文字
      （分隔符是纯装饰，藏掉省宽度；两级名称各自省略号截断）。
      ⚠ 原规则写的是 .proj —— 该类已随面包屑改造删除，这里必须同步，
      否则窄屏会多出一条".proj 不存在"的无效规则，而面包屑挤爆顶栏。 */
   .brand-name,.crumb-sep,.topbar .vdiv{display:none}
-  .crumb-link,.crumb-cur{font-size:11.5px;max-width:96px}
+  .crumb-link,.crumb-cur{font-size:11.5px;max-width:96px;min-width:0;overflow:hidden;text-overflow:ellipsis}
   .chip{font-size:10.5px;padding:3px 7px}
   .btn-outline,.btn-primary{font-size:11.5px;padding:6px 11px}
-  .btn-primary#btnImport{padding:6px 12px}
+  .topbar #btnImport,.topbar #btnSubmitSel{padding:6px 11px}
   .runstate{font-size:11px;padding:4px 9px}
   .paramtext,.top-progress{font-size:11px}
   /* 状态栏：分隔线在换行布局里是噪音，去掉；间距收紧 */
@@ -1599,20 +1623,41 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   .topbar{gap:7px;padding:6px 10px}
   /* 极窄屏顺序：参数（模型·画幅）→ 整体进度 → 运行状态 → 各按钮。
      参数与进度各自独占一行，按钮行才不会被挤散。 */
-  .paramgrp{order:5;flex:1 1 100%}
-  .top-progress{order:6;flex:1 1 100%;justify-content:space-between}
-  .runstate{order:7;flex:1 1 auto;justify-content:center}
-  /* 按钮按 DOM 顺序排（生成记录 → 批量导入 → 提交所选 → 素材 → 设置）。
-     ⚠ 这里**不能**给主操作加 flex:1 1 auto：一旦它们会伸展，极窄屏上「批量导入」
-     会独自占满一整行、把「提交所选」挤到下一行，两个按钮就不再相邻了（400px 实测踩到）。
-     保持自然宽度后由整行一起换行：实测 ≥380px 两者仍在同一行、提交所选紧贴其右侧；
-     360px 及以下「运行状态」胶囊占满本行剩余宽度，提交所选会换到下一行（阅读顺序仍正确）。 */
+  .paramgrp{order:5;flex:0 0 100%;min-width:0}
+  .top-progress{order:6;flex:0 0 100%;justify-content:space-between}
+  .runstate{order:7;flex:0 0 100%;justify-content:center}
+  /* 主操作固定为 3 + 2 两行，避免自然宽度只多出几像素时把最右按钮直接裁掉。 */
   #btnHistory{order:8}
   #btnImport{order:9}
   #btnSubmitSel{order:10}
   #btnPanel{order:11}
   #btnSettings{order:12}
+  #btnHistory,#btnImport,#btnSubmitSel{
+    display:inline-flex;align-items:center;justify-content:center;
+    flex:1 1 calc(33.333% - 5px);min-width:0;
+  }
+  #btnPanel,#btnSettings{flex:1 1 calc(50% - 4px);min-width:0;justify-content:center}
   .btn-outline,.btn-primary{font-size:11px;padding:6px 10px}
+  .topbar #btnImport,.topbar #btnSubmitSel{padding:6px 10px}
+
+  /* 两个上层页的操作区也用双列，所有按钮都在视口内完整显示。 */
+  #homeRefresh,#homeNew,
+  #projView .pv-head > .btn-outline,#projView .pv-head > .btn-primary{
+    flex:1 1 calc(50% - 4px);justify-content:center;min-width:0;
+  }
+  /* 项目概要单独占一行，长项目名不再把它推到屏幕右侧。 */
+  #projSummary{flex:0 0 100%;padding-left:28px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #projView .pv-head .grow{display:none}
+
+  /* 分镜表卡片：名称在上，统计与操作自然换到下一行。 */
+  .ws-row{flex-wrap:wrap;gap:8px;padding:10px 12px}
+  .ws-row .nm{flex:1 1 120px}
+  .ws-row .grow{display:none}
+  .ws-row .meta{flex:1 1 110px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .pv-scroll{padding:16px 14px 28px}
+  .pj-grid{grid-template-columns:minmax(0,1fr)}
+  .pv-tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+  .pv-tabs::-webkit-scrollbar{display:none}
 }
 
 /* ============================ 动效降级（WCAG 2.3.3） ============================
@@ -1621,4 +1666,5 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
    抽屉/面板/详情是靠 transform 位移来显隐的，禁掉 transform 会让它们关不掉。 */
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{ animation-duration:.001ms!important; transition-duration:.001ms!important; }
+  ::view-transition-group(root),::view-transition-old(root),::view-transition-new(root){animation-duration:.001ms!important}
 }
