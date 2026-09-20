@@ -2145,11 +2145,13 @@
 
   function render() { renderTopbar(); renderTable(); renderPanel(); renderStatusbar(); }
 
-  /* 素材面板窄屏抽屉化（模块层助手）：
-     ≤1180px 时面板 fixed 在屏外（见 styles.css 主界面响应式段），须手动唤起/关闭。
-     宽屏面板常驻，matchMedia 不命中 → 两个函数都是空操作，行为与改造前完全一致。 */
+  /* 素材面板覆盖层化（模块层助手）：
+     ≤1440px 时面板 fixed 在屏外（见 styles.css 主界面响应式段），须手动唤起/关闭。
+     宽屏（>1440）面板常驻，matchMedia 不命中 → 两个函数都是空操作，行为与改造前完全一致。
+     ⚠ 这里的 1440 必须与 styles.css 的 @media (max-width:1440px) 严格一致，
+       否则会出现「面板已被 CSS 固定到屏外、点按钮却唤不起来」的静默失效。 */
   function openPanelIfOverlay() {
-    if (!window.matchMedia('(max-width:1180px)').matches) return;
+    if (!window.matchMedia('(max-width:1440px)').matches) return;
     $('#panel').classList.add('open');
     $('#panelMask').hidden = false;
   }
@@ -5022,8 +5024,8 @@
        settingsBody 的 data-toggle 分派）。这里不再有 #btnDensity 的监听。 */
     $('#btnHistory').addEventListener('click', openRecords);
 
-    /* 素材面板窄屏抽屉化：≤1180px 时面板固定在屏外（CSS），顶栏「素材」唤起、遮罩/Esc 关闭。
-       宽屏面板常驻且按钮被 CSS 隐藏，这些函数在宽屏调用无副作用（matchMedia 不命中直接返回）。
+    /* 素材面板覆盖层化：≤1440px 时面板固定在屏外（CSS），顶栏「素材」唤起、遮罩/Esc 关闭。
+       宽屏（>1440）面板常驻且按钮被 CSS 隐藏，这些函数在宽屏调用无副作用（matchMedia 不命中直接返回）。
        两个助手定义在模块层（bindStatic 之外）：表格点击委托里点「＋」也要唤起面板。 */
     $('#btnPanel').addEventListener('click', openPanelIfOverlay);
     $('#panelMask').addEventListener('click', closePanelIfOverlay);

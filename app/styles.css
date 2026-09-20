@@ -9,7 +9,10 @@
   --pearl:#FAFAFC;
   --ink:#1D1D1F;
   --ink80:#333333;
-  --ink48:#7A7A7A;
+  /* 次级灰：原 #7A7A7A 在白底仅 4.29:1、在 --parchment(#F5F5F7) 3.94:1、在 --track(#F0F0F0) 3.77:1，低于 WCAG AA 4.5:1。
+     现值 #67676B 在三种底色分别为 5.63 / 5.17 / 4.94，全部达标（sRGB 相对亮度公式实算）。
+     如需更强对比可用 #5E5E63（6.45 / 5.92 / 5.66），但那会更接近正文灰度、削弱「次级」层级。 */
+  --ink48:#67676B;
   --primary:#0066CC;
   --primary-bg:#E6F0FA;
   --hairline:#E0E0E0;
@@ -26,6 +29,10 @@
   --shadow-2:0 8px 24px rgba(16,20,28,.12);
   --focus:0 0 0 2px #fff,0 0 0 4px var(--primary);   /* 键盘焦点环：白隙 + 主色 */
 
+  /* 禁用态统一不透明度：所有 :disabled 控件从这里取值，改一处全局生效。
+     （注意区分「锁定 locked」——锁定不是禁用，需另用更低的值派生，见 .dur.locked button） */
+  --disabled-opacity:.4;
+
   --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
   --mono:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
 
@@ -33,6 +40,10 @@
   --thumb-h:52px; --thumb-w:40px;
   --vid-w:76px;   --vid-h:48px;
   --panel-w:336px;
+  /* 分镜表列宽：.colhead（表头）与 .row（数据行）的**唯一列定义处**，改列只改这一处。
+     合计 = 44+340+160+100+100+86+84+84+190+94+82 = 1364px，**必须与 --table-w 同步改**。
+     ≤1364px 断点内会覆写本令牌做轻度压缩（见文件末尾响应式段）。 */
+  --sb-grid:44px 340px 160px 100px 100px 86px 84px 84px 190px 94px 82px;
   --table-w:1364px;
 }
 
@@ -102,16 +113,10 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   font-size:11px;color:var(--ink48);background:var(--parchment);
   padding:4px 8px;border-radius:6px;white-space:nowrap;
 }
-/* 参数胶囊：2026-09-20 顶栏的「模型」「画幅」已合并为纯文本 .paramtext，
-   全项目暂时没有元素再用 .pill —— 规则保留（组件可复用），但当前是未使用状态。 */
-.pill{
-  display:inline-flex;align-items:center;gap:6px;
-  font-size:12px;padding:6px 10px 6px 12px;border-radius:999px;
-  background:var(--parchment);white-space:nowrap;transition:background .15s;
-}
-.pill:hover{background:#ECECEF}
-.paramgrp{display:inline-flex;align-items:center;gap:8px}   /* 顶栏参数组：模型 / 画幅 */
-/* 模型 · 画幅：纯文本展示（2026-09-20 由两个 .pill 胶囊合并而来）。
+/* 顶栏参数组：模型 / 画幅。2026-09-20 两个可点胶囊合并为纯文本后，组内只剩一个 .paramtext；
+   保留它是因为它仍是这组「模型 · 画幅」文字的 flex 容器（窄屏还靠它整组换行，见响应式规则）。 */
+.paramgrp{display:inline-flex;align-items:center;gap:8px}
+/* 模型 · 画幅：纯文本展示（2026-09-20 由两个胶囊合并而来）。
    原先那两颗各带一个下拉箭头，但点击只弹一句提示、并没有真正的下拉列表 —— 属于假的下拉外观。
    现在只是读数，用次级墨色 + 等宽数字，与 .proj / .chip 同一视觉层级。 */
 .paramtext{
@@ -141,7 +146,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   white-space:nowrap;transition:background .15s;
 }
 .btn-outline:hover{background:var(--primary-bg)}
-.btn-outline:disabled{opacity:.4;cursor:not-allowed}
+.btn-outline:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
 .btn-dark{
   display:inline-flex;align-items:center;gap:6px;
   font-size:12px;padding:8px 13px;border-radius:8px;
@@ -154,14 +159,14 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   background:var(--primary);color:#fff;white-space:nowrap;transition:opacity .15s;
 }
 .btn-primary:hover{opacity:.9}
-.btn-primary:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
 /* 窄屏素材入口：宽屏面板常驻可见，此按钮无意义；≤1180px 随面板一起启用 */
 #btnPanel{display:none}
 
 /* ============================ 列头（sticky：横向随表体滚动，纵向钉在顶部） ============================ */
 .colhead{
   display:grid;
-  grid-template-columns:44px 340px 160px 100px 100px 86px 84px 84px 190px 94px 82px;
+  grid-template-columns:var(--sb-grid);   /* 列宽见 :root --sb-grid（表头与数据行的唯一来源） */
   align-items:center;
   height:40px;
   background:var(--pearl);
@@ -187,7 +192,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* ---------- 行 ---------- */
 .row{
   display:grid;
-  grid-template-columns:44px 340px 160px 100px 100px 86px 84px 84px 190px 94px 82px;
+  grid-template-columns:var(--sb-grid);   /* 列宽见 :root --sb-grid（与 .colhead 同源，改一处即可） */
   height:var(--row-h);
   align-items:center;
   background:#fff;
@@ -265,7 +270,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .dur button{width:14px;height:14px;display:grid;place-items:center;border-radius:3px}
 .dur button:hover{background:#E4E4E8}
-.dur button:disabled{opacity:.3;cursor:not-allowed;background:none}
+.dur button:disabled{opacity:var(--disabled-opacity);cursor:not-allowed;background:none}
 .dur .val{
   min-width:34px;height:20px;padding:0 6px;border-radius:4px;
   background:#fff;display:grid;place-items:center;
@@ -278,7 +283,10 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   font-family:var(--mono);font-size:12px;font-weight:600;text-align:center;
 }
 .dur.locked .val{color:var(--ink48);cursor:not-allowed}
-.dur.locked button{opacity:.25;cursor:not-allowed;background:none}
+/* locked 是「锁定」而非「:disabled 禁用」：锁定后时长不可编辑，观感需比真正的禁用更弱；
+   若直接统一到 var(--disabled-opacity)，锁定的步进器会看起来像可用状态（可感知回归），
+   故由令牌派生一个更低的值（.4 - .15 = .25）以保留「不可编辑」的观感。 */
+.dur.locked button{opacity:calc(var(--disabled-opacity) - .15);cursor:not-allowed;background:none}
 
 /* 素材格 */
 .slots{display:flex;align-items:center;gap:8px;min-width:0}
@@ -382,7 +390,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .cell.acts{gap:6px;padding:0 10px}
 .icon-act{width:18px;height:18px;display:grid;place-items:center;border-radius:4px;flex:none}
 .icon-act:hover{background:var(--parchment)}
-.icon-act:disabled{opacity:.28;cursor:not-allowed;background:none}
+.icon-act:disabled{opacity:var(--disabled-opacity);cursor:not-allowed;background:none}
 
 /* ============================ 素材面板 ============================ */
 /* 2026-09-20 版面重排：面板内各区块统一「上间距 10px」的垂直节奏，横向一律 14px。
@@ -583,7 +591,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .batchbar .hint-sm{color:var(--ink48);white-space:nowrap}
 .btn-danger{border-color:#F0C4C8;color:#D70015;background:#fff}
 .btn-danger:hover{border-color:#D70015}
-.btn-danger:disabled{opacity:.45}
+.btn-danger:disabled{opacity:var(--disabled-opacity)}
 /* 「自动匹配」原本和三个素材操作挤在同一行：它没有 flex:1，
    在 336px 面板里会被 nowrap 顶出容器、右侧被裁掉。改成它自己占满一行——
    它本来就是作用于「全部素材 × 全部分镜」的智能操作，与左侧三个文件操作不同层。 */
@@ -818,7 +826,13 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 
 /* 抽屉 */
 .drawer{
-  position:fixed;top:0;right:0;bottom:0;width:480px;max-width:100vw;z-index:70;
+  /* z-index 70 → 68（2026-09-20 分层收敛）：既低于全屏记录页 .recview(70)（根治两个 70 的平级竞争），
+     又高于页面级视图 .pageview(65) 与弹层遮罩 .mask(60)；仍低于 .rec-detail(75)/.panel(80)，
+     「详情/面板 > 抽屉」的既有语义不变。
+     ⚠ 已实测确认抽屉与记录页**无法共存**（记录页 position:fixed;inset:0;z-index:70 覆盖整屏含顶栏，
+       agent-browser 实测点击 #btnSettings 被 .recview 内容挡住、无法触发），故降到 68 不会被记录页盖住点不到。
+       就地模式（.drawer.inline）是 position:static;z-index:auto，本值对它无影响。 */
+  position:fixed;top:0;right:0;bottom:0;width:480px;max-width:100vw;z-index:68;
   background:#fff;border-left:1px solid var(--hairline);
   display:flex;flex-direction:column;
   transform:translateX(100%);transition:transform .26s cubic-bezier(.4,0,.2,1);
@@ -1165,7 +1179,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-fgroup button{font-size:11.5px;padding:5px 10px;border-radius:6px;color:var(--ink48);white-space:nowrap}
 .rec-fgroup button.on{background:#fff;color:var(--ink);font-weight:600}
 .rec-fgroup button i{font-style:normal;font-family:var(--mono);font-size:10.5px;opacity:.72;margin-left:4px}
-.rec-fgroup button:disabled{opacity:.42;cursor:not-allowed}
+.rec-fgroup button:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
 .rec-search{
   display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;min-width:170px;flex:1 1 170px;max-width:320px;
   background:#fff;border:1px solid var(--hairline);border-radius:8px;
@@ -1256,10 +1270,21 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-banner.info{background:var(--primary-bg);color:var(--primary)}
 .rec-dclose{display:none}
 
-@media (max-width:1180px){
+/* 素材面板覆盖层化（2026-09-20 由 1180 上调到 1440）：
+   用户视口 1440×900，而 11 列合计 1364px —— 面板常驻占 336px 时表格只剩 1104px，每天吃
+   260px 横向滚动。面板移出文档流后表格吃满 1440，1364px 放得下、还剩 76px，一列不少、列宽不动。
+   ⚠ 这里**只搬素材面板相关规则**；记录详情抽屉 / 序号列 sticky 仍留在下面的 1180 块，不要连带改动。
+   ⚠ JS 断点必须同步：app.js 的 openPanelIfOverlay 也判 1440（不同步会「面板在屏外却唤不起」的静默失效）。 */
+@media (max-width:1440px){
+  /* 头号坑：面板改 fixed 后不占网格格位，但 .main 第二列 336px 仍被声明 → 表格右侧凭空空一块。
+     故必须把 .main 收成单列，否则留下 336px 空白槽位。 */
   .main{grid-template-columns:1fr}
-  /* 素材面板：从「直接藏掉」改为右侧抽屉 —— 顶栏「素材」按钮唤起，遮罩点击关闭。
-     原先 1180px 以下用户完全摸不到素材，绑定/提交全部不可用。 */
+  /* 顶栏单排（回归修复）：1440 处「素材」按钮由隐藏转显示，顶栏控件总宽 1405px > 可用 1404px
+     （只差 1px！），flex-wrap 便把最右的「设置」单独挤到第二排（顶栏 52→90px）。
+     收紧 gap 12→8 回收 72px → 单排，且在 1440 留 ~71px 余量（8px 也是 ≤860 已在用的值）。
+     ⚠ 绝不能用「把素材按钮藏掉」来换单排 —— 面板在 ≤1440 已是覆盖层，藏掉按钮=面板再也打不开。 */
+  .topbar{gap:8px}
+  /* 素材面板：右侧抽屉 —— 顶栏「素材」按钮唤起，遮罩点击关闭。 */
   .panel{
     position:fixed;top:0;right:0;bottom:0;width:min(360px,94vw);z-index:80;
     background:#fff;border-left:1px solid var(--hairline);box-shadow:-12px 0 32px rgba(0,0,0,.14);
@@ -1269,8 +1294,26 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   #btnPanel{display:inline-flex}
   /* 抽屉里的面板更窄（min(360px,94vw)）：tab 收紧内边距，6 个分类仍能一行放得下（放不下则横滑） */
   .panel-top .seg button{font-size:11px;padding:5px 8px}
-  /* 批量选择操作条窄屏改置底悬浮：否则被抽屉面板（z-index:80）盖住点不到 */
+  /* 批量选择操作条改置底悬浮：此时面板已是覆盖层，否则会被抽屉面板（z-index:80）盖住点不到 */
   .batchbar.on{position:fixed;left:0;right:0;bottom:0;z-index:85}
+  /* 面板遮罩 #panelMask 由 .mask 基础规则 + [hidden] 切换即可，无需额外规则；
+     其显隐由 app.js 的 openPanelIfOverlay / closePanelIfOverlay 控制（同样判 1440）。 */
+}
+
+/* 列宽轻度压缩（≤1364）：面板覆盖化后 1440 已零横滚，但 1280 视口仍差 84px。
+   只把提示词列换成可伸缩的 minmax(240px,1fr)，其余固定列各减几像素。
+   算术：压缩后固定列合计 950px（40+150+92+92+80+78+78+176+86+78）
+         + 提示词列下限 240px = 1190px ≤ 1280 → **1280 零横滚**（1280 时提示词列实得 330px）。
+         1024 视口仍会横滚（固定下限合计 1190 > 1024，差 166px）—— 该档由下面 1180 块的序号列 sticky 兜底。
+   --table-w 同步改为 100%：min-width 随容器，列放得下即不横滚。 */
+@media (max-width:1364px){
+  :root{
+    --table-w:100%;
+    --sb-grid:40px minmax(240px,1fr) 150px 92px 92px 80px 78px 78px 176px 86px 78px;
+  }
+}
+
+@media (max-width:1180px){
   /* 横向滚动时「序号 + 勾选」钉在左侧：滚到素材列也能看清是哪一行、能直接勾选 */
   .row > .cell.rail{position:sticky;left:0;background:inherit;z-index:2;box-shadow:6px 0 8px -6px rgba(0,0,0,.12)}
   .colhead > :first-child{position:sticky;left:0;z-index:6}
@@ -1348,7 +1391,6 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   .brand-name,.crumb-sep,.topbar .vdiv{display:none}
   .crumb-link,.crumb-cur{font-size:11.5px;max-width:96px}
   .chip{font-size:10.5px;padding:3px 7px}
-  .pill{font-size:11px;padding:5px 8px 5px 10px}
   .btn-outline,.btn-primary{font-size:11.5px;padding:6px 11px}
   .btn-primary#btnImport{padding:6px 12px}
   .runstate{font-size:11px;padding:4px 9px}
@@ -1383,4 +1425,12 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   #btnPanel{order:11}
   #btnSettings{order:12}
   .btn-outline,.btn-primary{font-size:11px;padding:6px 10px}
+}
+
+/* ============================ 动效降级（WCAG 2.3.3） ============================
+   前庭功能障碍用户：把动画/过渡时长压到近乎即时。
+   刻意只禁用 duration、不碰 transform 显隐逻辑本身 ——
+   抽屉/面板/详情是靠 transform 位移来显隐的，禁掉 transform 会让它们关不掉。 */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{ animation-duration:.001ms!important; transition-duration:.001ms!important; }
 }
