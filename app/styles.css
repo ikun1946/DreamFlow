@@ -23,11 +23,65 @@
   --warn:#8A5A00;    --warn-bg:#FFF6E5;
   --track:#F0F0F0;
 
+  /* ============================================================
+     v0.20.0（A 阶段）：把散落的颜色字面量收敛为语义令牌
+     ------------------------------------------------------------
+     浅色初值 = 原字面量的**精确值** ⇒ 浅色观感逐像素不变；
+     B 阶段只在 [data-theme="dark"] 里覆盖这些令牌即可整体翻转。
+     ⚠ 不做「近似合并」：值不相等（哪怕只差一点）就各留各的令牌，
+        以免悄悄改掉浅色观感。
+     ============================================================ */
+  --primary-ink:#0066CC;    /* 蓝色**作为文字**时用（浅色下与 --primary 同值） */
+  --primary-600:#0058B0;    /* 主色阶 hover：B 阶段接替实心蓝上的 opacity:.9（A 仅定义） */
+  --primary-700:#004C99;    /* 主色阶 active：B 阶段新增（A 仅定义） */
+  --primary-tint:#D6E6F7;   /* 主色淡底（比 --primary-bg 更实一档）：.dur .val input */
+  --focus-gap:#fff;         /* 焦点环的底色隙（深色应 = --surface） */
+
+  /* 表格三档结构色 */
+  --zebra:#FCFCFD;          /* 偶数行斑马底 */
+  --row-hover:#F7F8FA;      /* 行 hover 底 */
+  --row-sel:#F7FAFD;        /* 选中行底 */
+  --fill-2:#E4E4E8;         /* 中性实底（比 --track 深一档）：.dur/.stepper hover、.minibar 轨 */
+
+  /* 遮罩 / 半透明 scrim / 磨砂 veil */
+  --mask:rgba(20,22,28,.28);         /* 弹层遮罩 */
+  --mask-soft:rgba(20,22,28,.24);    /* 面板遮罩（更淡；原为 index.html #panelMask 内联 style） */
+  --scrim-label:rgba(0,0,0,.34);     /* 缩略图名条底 */
+  --scrim-1:rgba(0,0,0,.5);          /* 媒体控件底 */
+  --scrim-2:rgba(0,0,0,.58);         /* 资产删除钮底 */
+  --scrim-3:rgba(0,0,0,.72);         /* 控件 hover 底 */
+  --code-chip:rgba(0,0,0,.06);       /* 行内 code 底 */
+  --hint-veil:rgba(255,255,255,.85); /* 提示词区角标底 */
+  --veil:rgba(255,255,255,.6);       /* 磨砂复制钮底 */
+  --veil-border:rgba(255,255,255,.72); /* 磨砂复制钮描边 */
+  --marquee-bg:rgba(0,102,204,.10);  /* 框选矩形填充 */
+
+  /* 状态点 / 微色描边（浅色各自保留，B 阶段分别覆盖） */
+  --warn-dot:#FF9F0A;       /* .runstate.off 圆点 */
+  --ok-dot:#34C759;         /* .bar > i.ok 完成条 */
+  --err-line:#F0C4C8;       /* 危险态描边：.btn-danger / .parse-item.bad */
+  --err-dash:#F79E99;       /* 失败缩略图虚线描边 */
+  --warn-line:#E7C88A;      /* 满额槽位描边 */
+  --warn-line-2:#F0DDB0;    /* 警示解析项描边 */
+  --warn-ink:#B26A00;       /* 满额槽位图标描边 */
+  --dry-bg:#EDF3FF; --dry-ink:#2B5FD9;      /* .rec-badge.dry */
+  --aud-bg:#F2EDFB; --aud-ink:#6A45B8;      /* .rec-lock .n.aud */
+  --sk-1:#F0F0F2; --sk-2:#F7F7F9;           /* 骨架屏渐变（浅色） */
+  --sb-thumb:#D8D8DD; --sb-thumb-h:#C2C2C9; /* 滚动条滑块 */
+
+  /* 结构阴影：逐处令牌化、保留各自精确值（不折入 --shadow-1/2） */
+  --shadow-badge:0 1px 3px rgba(0,0,0,.28);     /* .thumb > .imgnum */
+  --shadow-menu:0 8px 24px rgba(0,0,0,.12);     /* .menu（色相 ≠ --shadow-2） */
+  --shadow-card:0 2px 10px rgba(0,0,0,.06);     /* .pj-card:hover（≠ --shadow-1） */
+  --shadow-panel:-12px 0 32px rgba(0,0,0,.14);  /* .panel 抽屉 */
+  --shadow-detail:-12px 0 32px rgba(0,0,0,.12); /* .rec-detail 抽屉 */
+  --shadow-rail:6px 0 8px -6px rgba(0,0,0,.12); /* .row > .cell.rail（sticky 列） */
+
   /* 圆角 / 阴影 / 焦点令牌：控件统一从这里取值，改一处全局生效 */
   --r-s:6px; --r-m:8px; --r-l:12px;
   --shadow-1:0 1px 3px rgba(16,20,28,.08);
   --shadow-2:0 8px 24px rgba(16,20,28,.12);
-  --focus:0 0 0 2px #fff,0 0 0 4px var(--primary);   /* 键盘焦点环：白隙 + 主色 */
+  --focus:0 0 0 2px var(--focus-gap),0 0 0 4px var(--primary);   /* 键盘焦点环：底色隙 + 主色环 */
 
   /* 禁用态统一不透明度：所有 :disabled 控件从这里取值，改一处全局生效。
      （注意区分「锁定 locked」——锁定不是禁用，需另用更低的值派生，见 .dur.locked button） */
@@ -134,15 +188,15 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .runstate{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink80);white-space:nowrap;padding:5px 11px;border-radius:999px;background:var(--parchment)}
 .runstate .dot{width:6px;height:6px;border-radius:999px;background:var(--primary);flex:none}
 .runstate.off{background:var(--warn-bg);color:var(--warn)}
-.runstate.off .dot{background:#FF9F0A}
+.runstate.off .dot{background:var(--warn-dot)}
 .runstate.err{background:var(--err-bg);color:var(--err)}
 .runstate.err .dot{background:var(--err)}
-.link{font-size:12px;color:var(--primary);white-space:nowrap}
+.link{font-size:12px;color:var(--primary-ink);white-space:nowrap}
 .link:hover{text-decoration:underline}
 .btn-outline{
   display:inline-flex;align-items:center;gap:6px;
   font-size:12px;padding:7px 14px;border-radius:999px;
-  background:#fff;border:1px solid var(--primary);color:var(--primary);
+  background:var(--surface);border:1px solid var(--primary);color:var(--primary-ink);
   white-space:nowrap;transition:background .15s;
 }
 .btn-outline:hover{background:var(--primary-bg)}
@@ -150,7 +204,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .btn-dark{
   display:inline-flex;align-items:center;gap:6px;
   font-size:12px;padding:8px 13px;border-radius:8px;
-  background:var(--ink);color:#fff;white-space:nowrap;transition:opacity .15s;
+  background:var(--ink);color:var(--surface);white-space:nowrap;transition:opacity .15s;
 }
 .btn-dark:hover{opacity:.88}
 .btn-primary{
@@ -195,12 +249,12 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   grid-template-columns:var(--sb-grid);   /* 列宽见 :root --sb-grid（与 .colhead 同源，改一处即可） */
   height:var(--row-h);
   align-items:center;
-  background:#fff;
+  background:var(--surface);
   border-bottom:1px solid var(--divider);
 }
-.row:nth-child(even):not(.sel){background:#FCFCFD}
-.row:hover:not(.sel){background:#F7F8FA}
-.row.sel{background:#F7FAFD}
+.row:nth-child(even):not(.sel){background:var(--zebra)}
+.row:hover:not(.sel){background:var(--row-hover)}
+.row.sel{background:var(--row-sel)}
 .cell{height:100%;display:flex;align-items:center;overflow:hidden;padding:0 10px;min-width:0}
 .cell.rail{flex-direction:column;justify-content:center;gap:8px;padding:0}
 .cell.prompt{flex-direction:column;align-items:stretch;justify-content:center;gap:5px;padding:0 14px 0 10px}
@@ -210,7 +264,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rail-num{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ink48)}
 .cbx{
   width:16px;height:16px;border-radius:4px;flex:none;
-  border:1px solid var(--chipgray);background:#fff;
+  border:1px solid var(--chipgray);background:var(--surface);
   display:grid;place-items:center;padding:0;   /* 按钮元素：必须清掉 UA 默认 padding，否则对勾被挤偏 */
   transition:background .12s,border-color .12s;
 }
@@ -269,17 +323,17 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   background:var(--parchment);border-radius:6px;flex:none;
 }
 .dur button{width:14px;height:14px;display:grid;place-items:center;border-radius:3px}
-.dur button:hover{background:#E4E4E8}
+.dur button:hover{background:var(--fill-2)}
 .dur button:disabled{opacity:var(--disabled-opacity);cursor:not-allowed;background:none}
 .dur .val{
   min-width:34px;height:20px;padding:0 6px;border-radius:4px;
-  background:#fff;display:grid;place-items:center;
+  background:var(--surface);display:grid;place-items:center;
   font-family:var(--mono);font-size:12px;font-weight:600;
   border:1px solid transparent;cursor:text;user-select:none;
 }
 .dur.focus .val{border-color:var(--primary)}
 .dur .val input{
-  width:26px;border:0;outline:0;background:#D6E6F7;border-radius:2px;
+  width:26px;border:0;outline:0;background:var(--primary-tint);border-radius:2px;
   font-family:var(--mono);font-size:12px;font-weight:600;text-align:center;
 }
 .dur.locked .val{color:var(--ink48);cursor:not-allowed}
@@ -302,11 +356,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .thumb span{
   position:absolute;left:0;right:0;bottom:0;
   font-size:9px;line-height:14px;text-align:center;color:#fff;
-  background:rgba(0,0,0,.34);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background:var(--scrim-label);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .thumb .rm{
   position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:999px;
-  background:rgba(0,0,0,.5);display:none;place-items:center;
+  background:var(--scrim-1);display:none;place-items:center;
 }
 .thumb:hover .rm{display:grid}
 /* 已上传的素材格是「预览 / 替换」的入口（点击打开预览弹窗）——
@@ -337,7 +391,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .imgnum.aud{background:#7A5AF8}                       /* 音频：走 --audio，不占图片号 */
 .imgnum.bad{background:var(--err)}                    /* 未计入图号（文件丢失 / 素材已删） */
 /* 缩略图上的徽标贴左上角（右上角被「移除 ×」占着） */
-.thumb > .imgnum{position:absolute;top:2px;left:2px;z-index:2;box-shadow:0 1px 3px rgba(0,0,0,.28)}
+.thumb > .imgnum{position:absolute;top:2px;left:2px;z-index:2;box-shadow:var(--shadow-badge)}
 
 /* 图号 ↔ 素材名 的对照行 */
 .lockmap{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
@@ -349,7 +403,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .lockrow>b{font-weight:600}
 .lockrow code{
-  font-family:var(--mono);font-size:11px;color:var(--primary);
+  font-family:var(--mono);font-size:11px;color:var(--primary-ink);
   background:var(--primary-bg);border-radius:5px;padding:1px 5px;
 }
 
@@ -362,11 +416,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* 有封面时按 cover 铺满（缩略图是固定 76×48 的小框，contain 会留黑边） */
 .result-thumb.has-cover{background-size:cover;background-position:center;background-repeat:no-repeat}
 .result-thumb.plain{background-image:none;border:1px dashed var(--chipgray);background:var(--pearl);cursor:default}
-.result-thumb.failed{background-image:none;border:1px dashed #F79E99;background:var(--err-bg)}
+.result-thumb.failed{background-image:none;border:1px dashed var(--err-dash);background:var(--err-bg)}
 .progline{display:flex;align-items:center;gap:8px;width:100%}
 .bar{flex:1;height:5px;border-radius:999px;background:var(--track);overflow:hidden}
 .bar > i{display:block;height:100%;border-radius:999px;background:var(--primary);width:0;transition:width .35s linear}
-.bar > i.ok{background:#34C759}
+.bar > i.ok{background:var(--ok-dot)}
 .bar > i.err{background:var(--err)}
 .pct{font-family:var(--mono);font-size:11px;color:var(--ink80);flex:none;width:38px;text-align:right}
 
@@ -376,9 +430,9 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   padding:5px 10px;border-radius:999px;white-space:nowrap;
 }
 .badge .bdot{width:5px;height:5px;border-radius:999px;background:currentColor;flex:none}
-.badge.draft{background:#fff;color:var(--ink48);border:1px dashed var(--chipgray)}
+.badge.draft{background:var(--surface);color:var(--ink48);border:1px dashed var(--chipgray)}
 .badge.queued{background:var(--track);color:var(--ink48)}
-.badge.generating{background:var(--primary-bg);color:var(--primary)}
+.badge.generating{background:var(--primary-bg);color:var(--primary-ink)}
 .badge.succeeded{background:var(--ok-bg);color:var(--ok)}
 .badge.failed{background:var(--err-bg);color:var(--err)}
 .badge.canceled{background:var(--track);color:var(--ink48)}
@@ -406,7 +460,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .panel-top .seg button{flex:1 0 auto;padding:5px 10px}
 .seg{display:inline-flex;padding:3px;gap:2px;background:var(--parchment);border-radius:8px}
 .seg button{font-size:11.5px;padding:5px 11px;border-radius:6px;color:var(--ink48);white-space:nowrap}
-.seg button.on{background:#fff;color:var(--ink);font-weight:600}
+.seg button.on{background:var(--surface);color:var(--ink);font-weight:600}
 .panel-search{display:flex;align-items:center;gap:7px;height:32px;margin:0 14px 8px;padding:0 10px;background:var(--parchment);border-radius:8px;flex:none}
 .panel-search input{flex:1;border:0;outline:0;background:none;font-size:11.5px;min-width:0}
 .panel-search input::placeholder{color:var(--ink48)}
@@ -437,7 +491,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
    让"点这里能新建"这件事一眼看得出来 —— 资产库里它是空分类下唯一的新建入口。 */
 .acard.add{cursor:pointer}
 .acard.add:hover .pic{border-color:var(--primary);background:var(--primary-bg)}
-.acard.add:hover .nm{color:var(--primary)}
+.acard.add:hover .nm{color:var(--primary-ink)}
 /* 无图素材（提示词导入的那批）的缩略图：半透明的「图片样式」空槽位，替代原来的随机渐变。
    虚线框 + 淡图标说明"这里该有一张图、点开可补"，而不是给一个没有含义的色块。
    与素材详情弹窗的 .asset-preview.pickable 是同一套视觉语言。 */
@@ -453,17 +507,17 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .acard:hover .pic.no-pic .ph-ico{opacity:.45}
 .acard .pic .rm{
   position:absolute;top:3px;right:3px;width:16px;height:16px;border-radius:999px;
-  background:rgba(0,0,0,.58);display:none;place-items:center;
+  background:var(--scrim-2);display:none;place-items:center;
 }
 .acard:hover .pic .rm{display:grid}
 .acard.sel .pic{outline:2.5px solid var(--primary);outline-offset:1px}
-.acard.sel .nm{color:var(--primary);font-weight:600}
+.acard.sel .nm{color:var(--primary-ink);font-weight:600}
 /* ============================ 参考图配额：满额态 ============================ */
 /* 槽位「＋」满额：不置灰成"无反应的禁用"，而是换成琥珀色并保留可点 ——
    点下去会明确说明"当前模型上限 N 张、已用满"，比一个点不动的按钮有用。 */
-.slot-add.full{border-color:#E7C88A;background:var(--warn-bg);cursor:not-allowed}
-.slot-add.full:hover{border-color:#E7C88A;background:var(--warn-bg)}
-.slot-add.full svg path{stroke:#B26A00}
+.slot-add.full{border-color:var(--warn-line);background:var(--warn-bg);cursor:not-allowed}
+.slot-add.full:hover{border-color:var(--warn-line);background:var(--warn-bg)}
+.slot-add.full svg path{stroke:var(--warn-ink)}
 /* 弹窗头部的「已添加 X / 上限 Y」 */
 .ap-quota{
   font-size:11px;color:var(--ink48);flex:none;
@@ -528,7 +582,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .pv-hitem{
   display:flex;align-items:center;gap:9px;text-align:left;
-  border:1px solid var(--hairline);border-radius:10px;background:#fff;
+  border:1px solid var(--hairline);border-radius:10px;background:var(--surface);
   padding:7px 9px;cursor:pointer;font:inherit;
   transition:border-color .15s ease,background .15s ease;
 }
@@ -543,7 +597,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .pv-htxt b{font-size:12px;color:var(--ink)}
 .pv-htxt > span{font-size:11px;color:var(--ink48);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pv-hid{font-family:var(--mono);letter-spacing:.02em}
-.pv-meta a{color:var(--primary);text-decoration:none}
+.pv-meta a{color:var(--primary-ink);text-decoration:none}
 .pv-meta a:hover{text-decoration:underline}
 
 /* ============================ 快速多选：框选 / 区间选择 ============================ */
@@ -551,7 +605,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .marquee{
   position:fixed;z-index:120;pointer-events:none;
   border:1px solid var(--primary);border-radius:3px;
-  background:rgba(0,102,204,.10);
+  background:var(--marquee-bg);
 }
 .marquee .mq-n{
   position:absolute;right:-2px;bottom:-20px;
@@ -589,8 +643,8 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .batchbar.on .bb-inner{transform:translateY(0)}
 .batchbar .bb-title{font-size:12.5px;color:var(--ink80);white-space:nowrap}
 .batchbar .hint-sm{color:var(--ink48);white-space:nowrap}
-.btn-danger{border-color:#F0C4C8;color:#D70015;background:#fff}
-.btn-danger:hover{border-color:#D70015}
+.btn-danger{border-color:var(--err-line);color:var(--err);background:var(--surface)}
+.btn-danger:hover{border-color:var(--err)}
 .btn-danger:disabled{opacity:var(--disabled-opacity)}
 /* 「自动匹配」原本和三个素材操作挤在同一行：它没有 flex:1，
    在 336px 面板里会被 nowrap 顶出容器、右侧被裁掉。改成它自己占满一行——
@@ -647,7 +701,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .asset-prompt:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-bg)}
 .asset-prompt.tall{min-height:150px}
-.asset-promptwrap .hint-sm{position:absolute;right:8px;bottom:6px;background:rgba(255,255,255,.85);padding:1px 6px;border-radius:6px;pointer-events:none}
+.asset-promptwrap .hint-sm{position:absolute;right:8px;bottom:6px;background:var(--hint-veil);padding:1px 6px;border-radius:6px;pointer-events:none}
 .asset-preview .empty-ph{
   display:grid;place-items:center;text-align:center;gap:4px;
   font-size:12.5px;color:var(--ink48);line-height:1.9;
@@ -656,17 +710,17 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* 半透明图片图标：占位本身就是"这里该有一张图"的暗示，透明度只在这里控制 */
 .asset-preview .empty-ph svg{display:block;opacity:.26;color:var(--ink);transition:opacity .15s ease}
 .asset-preview.pickable:hover .empty-ph svg{opacity:.45}
-.asset-preview.pickable:hover .empty-ph{color:var(--primary)}
+.asset-preview.pickable:hover .empty-ph{color:var(--primary-ink)}
 /* ============================ 素材详情：全屏预览（悬停淡入按钮 + 全屏查看器） ============================ */
 /* 按钮默认隐形（opacity:0 + 不可点），悬停预览区时淡入浮现，移出淡出 */
 .asset-preview .fs-btn{
   position:absolute;top:10px;right:10px;width:30px;height:30px;border-radius:999px;
-  background:rgba(0,0,0,.5);display:grid;place-items:center;cursor:pointer;
+  background:var(--scrim-1);display:grid;place-items:center;cursor:pointer;
   opacity:0;pointer-events:none;
   transition:opacity .25s ease, background .15s ease;
 }
 .asset-preview:hover .fs-btn{opacity:1;pointer-events:auto}
-.asset-preview .fs-btn:hover{background:rgba(0,0,0,.72)}
+.asset-preview .fs-btn:hover{background:var(--scrim-3)}
 /* 上面的 display:grid 会盖掉 UA 对 hidden 属性的 display:none（作者样式优先级更高），
    故必须显式声明，否则"无图时藏起全屏钮"根本不生效。 */
 .asset-preview .fs-btn[hidden]{display:none}
@@ -730,7 +784,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   border:1px solid var(--divider);border-radius:8px;background:var(--pearl);
 }
 .parse-item .nm{flex:1;min-width:0;font-size:11.5px;color:var(--ink);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.parse-item.bad{border-color:#F0C4C8;background:var(--err-bg)}
+.parse-item.bad{border-color:var(--err-line);background:var(--err-bg)}
 .type-badge{
   flex:none;font-size:10px;line-height:1;padding:4px 7px;border-radius:6px;font-weight:600;letter-spacing:1px;
 }
@@ -739,7 +793,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .b-prop{background:#FFF1E0;color:#9A5B13}
 .b-skip{background:#F0F0F0;color:var(--ink48)}
 .b-conf{background:#FFF6E5;color:#8A5A00}
-.parse-item.warn{border-color:#F0DDB0;background:var(--warn-bg)}
+.parse-item.warn{border-color:var(--warn-line-2);background:var(--warn-bg)}
 /* 冲突处理：三个互斥选项纵排 */
 .imp-choice{display:flex;flex-direction:column;gap:6px;margin:12px 0 4px;padding:10px 12px;background:var(--pearl);border:1px solid var(--divider);border-radius:10px}
 .imp-choice .checkline{font-size:12px;color:var(--ink)}
@@ -754,26 +808,28 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .statusbar b{font-family:var(--mono);color:var(--ink80);font-weight:600}
 /* 进度条：2026-09-20 随「整体进度」一起从状态栏移到顶栏，故宽度由 88px 收到 56px
    （顶栏要与运行状态、按钮同排竞争空间）。当前全项目只有顶栏这一处用到 .minibar。 */
-.minibar{width:56px;height:5px;border-radius:999px;background:#E4E4E8;overflow:hidden;flex:none}
+.minibar{width:56px;height:5px;border-radius:999px;background:var(--fill-2);overflow:hidden;flex:none}
 .sb-div{width:1px;height:12px;background:var(--hairline);flex:none}   /* 状态栏分组分隔 */
 .minibar > i{display:block;height:100%;width:0;background:var(--primary);transition:width .4s}
 .btn-mini{
   font-size:11px;padding:3px 10px;border-radius:999px;white-space:nowrap;
-  background:#fff;border:1px solid var(--primary);color:var(--primary);
+  background:var(--surface);border:1px solid var(--primary);color:var(--primary-ink);
 }
 .btn-mini:hover{background:var(--primary-bg)}
 /* 状态栏里的批量操作按钮改 ghost：它们是工具动作，不该和面板里的主 CTA 抢视觉权重 */
 .statusbar .btn-mini{background:transparent;border-color:var(--chipgray);color:var(--ink80)}
-.statusbar .btn-mini:hover{background:#fff;border-color:var(--primary);color:var(--primary)}
+.statusbar .btn-mini:hover{background:var(--surface);border-color:var(--primary);color:var(--primary-ink)}
 
 /* ============================ 弹窗 / 抽屉 ============================ */
-.mask{position:fixed;inset:0;background:rgba(20,22,28,.28);display:grid;place-items:center;z-index:60;animation:mfade .16s ease}
+.mask{position:fixed;inset:0;background:var(--mask);display:grid;place-items:center;z-index:60;animation:mfade .16s ease}
 .mask[hidden]{display:none}
+/* 面板遮罩：值原为 index.html #panelMask 的内联 style（同值搬入 CSS，深色才改得动） */
+.mask#panelMask{background:var(--mask-soft)}
 @keyframes mfade{from{opacity:0}}
 .drawer-mask{place-items:stretch;justify-items:end}
 .modal{
   width:820px;max-width:calc(100vw - 40px);max-height:88vh;
-  background:#fff;border-radius:18px;overflow:hidden;
+  background:var(--surface);border-radius:18px;overflow:hidden;
   display:flex;flex-direction:column;
   box-shadow:var(--shadow-2);
   animation:mpop .2s cubic-bezier(.2,.9,.3,1.08);
@@ -833,7 +889,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
        agent-browser 实测点击 #btnSettings 被 .recview 内容挡住、无法触发），故降到 68 不会被记录页盖住点不到。
        就地模式（.drawer.inline）是 position:static;z-index:auto，本值对它无影响。 */
   position:fixed;top:0;right:0;bottom:0;width:480px;max-width:100vw;z-index:68;
-  background:#fff;border-left:1px solid var(--hairline);
+  background:var(--surface);border-left:1px solid var(--hairline);
   display:flex;flex-direction:column;
   transform:translateX(100%);transition:transform .26s cubic-bezier(.4,0,.2,1);
 }
@@ -849,7 +905,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* ---------------------------- 设置抽屉 · 分组卡片 ----------------------------
    原先是 9 段平铺，层级只靠字号和 .hr / 临时 margin-top 硬撑，"状态"与它的"操作按钮"还隔着几十行。
    改为「卡片 → 子块 → 行」三级：标题与说明归 .scard-hd，控件归 .scard-bd，同属一个 CLI 的状态与操作收进一个 .sblock。 */
-.scard{border:1px solid var(--hairline);border-radius:12px;background:#fff}
+.scard{border:1px solid var(--hairline);border-radius:12px;background:var(--surface)}
 .scard-hd{
   display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;
   padding:12px 16px;background:var(--pearl);border-bottom:1px solid var(--divider);
@@ -868,19 +924,19 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .scard code,.sblock code{font-family:var(--mono);font-size:11px;background:var(--parchment);border-radius:4px;padding:1px 4px}
 .srow{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:44px;padding:2px 0}
 .srow .k{font-size:13px;color:var(--ink80)}
-.srow .v{font-size:13px;color:var(--primary);cursor:pointer}
+.srow .v{font-size:13px;color:var(--primary-ink);cursor:pointer}
 .switch{width:44px;height:26px;border-radius:999px;background:var(--track);position:relative;transition:background .18s;flex:none}
 .switch.on{background:var(--primary)}
 .switch i{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:999px;background:#fff;transition:transform .18s}
 .switch.on i{transform:translateX(18px)}
 .stepper{display:inline-flex;align-items:center;gap:8px}
 .stepper button{width:22px;height:22px;border-radius:6px;background:var(--parchment);display:grid;place-items:center}
-.stepper button:hover{background:#E4E4E8}
+.stepper button:hover{background:var(--fill-2)}
 .stepper b{font-family:var(--mono);font-size:13px;min-width:16px;text-align:center}
 .statecard{display:flex;align-items:center;gap:10px;padding:14px 16px;border-radius:11px;background:var(--warn-bg);font-size:13px;color:var(--warn)}
 /* 卡片里的次行说明：继承卡片色，弱化但保持可读（"谁的账号/积分"靠它讲清） */
 .statecard .hint-sm{color:inherit;opacity:.82}
-.statecard code{font-family:var(--mono);font-size:11px;background:rgba(0,0,0,.06);border-radius:4px;padding:1px 4px}
+.statecard code{font-family:var(--mono);font-size:11px;background:var(--code-chip);border-radius:4px;padding:1px 4px}
 .statecard.ok{background:var(--ok-bg);color:var(--ok)}
 .cli-actions{display:flex;flex-wrap:wrap;gap:8px}
 .example{padding:14px 16px;border-radius:11px;background:var(--parchment);display:flex;flex-direction:column;gap:6px}
@@ -907,8 +963,8 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   font-family:var(--font);font-size:11px;line-height:1;
   /* 半透明磨砂底：压在正文上能透出下面的字，靠 backdrop blur 拉开层次，不至于糊成一片。
      底色透明了就不再叠阴影 —— 半透明 + 阴影会显脏。 */
-  border:1px solid rgba(255,255,255,.72);
-  background:rgba(255,255,255,.6);
+  border:1px solid var(--veil-border);
+  background:var(--veil);
   color:var(--ink80);
   -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
   opacity:0;pointer-events:none;
@@ -937,7 +993,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .cmd-card-head{display:flex;align-items:baseline;gap:10px;font-size:13px}
 .cmd-card-head .hint-sm{color:var(--ink48);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:520px}
 .cmd-details>summary{cursor:pointer;font-size:12.5px;color:var(--ink48);margin-bottom:8px;user-select:none}
-.cmd-details>summary:hover{color:var(--primary)}
+.cmd-details>summary:hover{color:var(--primary-ink)}
 .drybadge{
   background:var(--warn-bg);color:var(--warn);border-radius:7px;padding:2px 9px;
   font-size:11.5px;font-weight:600;
@@ -964,7 +1020,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* ============================ 三态 ============================ */
 .skeleton{padding:24px}
 .sk-row{display:flex;gap:16px;align-items:center;height:72px;border-bottom:1px solid var(--divider)}
-.sk{background:linear-gradient(90deg,#F0F0F2 25%,#F7F7F9 37%,#F0F0F2 63%);background-size:400% 100%;border-radius:6px;animation:sk 1.3s ease-in-out infinite}
+.sk{background:linear-gradient(90deg,var(--sk-1) 25%,var(--sk-2) 37%,var(--sk-1) 63%);background-size:400% 100%;border-radius:6px;animation:sk 1.3s ease-in-out infinite}
 @keyframes sk{0%{background-position:100% 0}100%{background-position:0 0}}
 .empty,.errorbox{
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
@@ -976,15 +1032,15 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* ============================ 下拉菜单 ============================ */
 .menu{
   position:fixed;z-index:90;min-width:150px;padding:6px;
-  background:#fff;border:1px solid var(--hairline);border-radius:10px;
-  box-shadow:0 8px 24px rgba(0,0,0,.12);
+  background:var(--surface);border:1px solid var(--hairline);border-radius:10px;
+  box-shadow:var(--shadow-menu);
 }
 .menu button{
   display:flex;align-items:center;gap:8px;width:100%;height:30px;padding:0 10px;
   border-radius:6px;font-size:12.5px;color:var(--ink80);font-family:var(--mono);
 }
 .menu button:hover{background:var(--parchment)}
-.menu button.on{background:var(--parchment);color:var(--primary);font-weight:600}
+.menu button.on{background:var(--parchment);color:var(--primary-ink);font-weight:600}
 .menu button .tick{margin-left:auto;display:grid;place-items:center}
 
 /* ============================ Toast ============================ */
@@ -1000,8 +1056,8 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 
 /* ============================ 滚动条 ============================ */
 ::-webkit-scrollbar{width:10px;height:10px}
-::-webkit-scrollbar-thumb{background:#D8D8DD;border-radius:10px;border:3px solid #fff;background-clip:content-box}
-::-webkit-scrollbar-thumb:hover{background:#C2C2C9;background-clip:content-box;border:3px solid #fff}
+::-webkit-scrollbar-thumb{background:var(--sb-thumb);border-radius:10px;border:3px solid var(--surface);background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--sb-thumb-h);background-clip:content-box;border:3px solid var(--surface)}
 ::-webkit-scrollbar-track{background:transparent}
 
 /* ============================ 生成记录（全屏视图） ============================
@@ -1026,7 +1082,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-head h2{font-size:18px}
 .rec-head .grow{flex:1 1 24px}
 .rec-head .input-sm,.rec-bar .input-sm{
-  font-family:var(--font);font-weight:400;font-size:12px;padding:5px 8px;height:30px;background:#fff;
+  font-family:var(--font);font-weight:400;font-size:12px;padding:5px 8px;height:30px;background:var(--surface);
 }
 
 /* ============================================================
@@ -1071,11 +1127,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* 页签：与素材面板的分类 tab（.seg button）同一套视觉，但作用域限定在 .pv-tabs 内，
    不去改 .seg 的全局规则（那个类导入弹窗也在用）。 */
 .pv-tab{
-  border:1px solid var(--hairline);background:#fff;border-radius:999px;
+  border:1px solid var(--hairline);background:var(--surface);border-radius:999px;
   padding:5px 13px;font-size:12.5px;color:var(--ink80);cursor:pointer;white-space:nowrap;
   transition:background .15s ease,border-color .15s ease,color .15s ease;
 }
-.pv-tab:hover{border-color:var(--primary);color:var(--primary)}
+.pv-tab:hover{border-color:var(--primary);color:var(--primary-ink)}
 .pv-tab.on{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:600}
 .pv-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 /* 由 innerHTML 直接渲染的那部分（页面列表 / 资产库）：自己滚动、自己留白 */
@@ -1108,7 +1164,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 
 /* ---------------- 顶栏面包屑 ---------------- */
 .crumb-link{
-  background:none;border:0;padding:2px 4px;font:inherit;font-size:13px;color:var(--primary);
+  background:none;border:0;padding:2px 4px;font:inherit;font-size:13px;color:var(--primary-ink);
   cursor:pointer;border-radius:6px;white-space:nowrap;
 }
 .crumb-link:hover{background:var(--primary-bg)}
@@ -1126,11 +1182,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   grid-template-columns:repeat(auto-fill,minmax(240px,1fr));
 }
 .pj-card{
-  border:1px solid var(--hairline);border-radius:12px;background:#fff;
+  border:1px solid var(--hairline);border-radius:12px;background:var(--surface);
   padding:16px 16px 14px;cursor:pointer;display:flex;flex-direction:column;gap:8px;
   transition:border-color .15s ease, box-shadow .15s ease;
 }
-.pj-card:hover{border-color:var(--primary);box-shadow:0 2px 10px rgba(0,0,0,.06)}
+.pj-card:hover{border-color:var(--primary);box-shadow:var(--shadow-card)}
 .pj-card .nm{font-size:15px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pj-card .ds{font-size:12px;color:var(--ink48);line-height:1.6;min-height:19px;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -1144,14 +1200,14 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .ws-list{display:flex;flex-direction:column;gap:8px}
 .ws-row{
   display:flex;align-items:center;gap:12px;
-  border:1px solid var(--hairline);border-radius:10px;background:#fff;padding:12px 14px;
+  border:1px solid var(--hairline);border-radius:10px;background:var(--surface);padding:12px 14px;
   cursor:pointer;transition:border-color .15s ease;
 }
 .ws-row:hover{border-color:var(--primary)}
 .ws-row .nm{font-size:14px;font-weight:600;color:var(--ink);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ws-row .meta{font-size:11.5px;color:var(--ink48);white-space:nowrap}
 .ws-row .grow{flex:1 1 auto}
-.ws-row .def{font-size:10.5px;color:var(--primary);background:var(--primary-bg);border-radius:999px;padding:2px 8px;white-space:nowrap}
+.ws-row .def{font-size:10.5px;color:var(--primary-ink);background:var(--primary-bg);border-radius:999px;padding:2px 8px;white-space:nowrap}
 
 /* ---------------- 项目主页：资产库 ---------------- */
 .pv-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
@@ -1177,12 +1233,12 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-filters{display:inline-flex;gap:8px;flex-wrap:wrap;min-width:0;max-width:100%}
 .rec-fgroup{display:inline-flex;padding:3px;gap:2px;background:var(--parchment);border-radius:8px}
 .rec-fgroup button{font-size:11.5px;padding:5px 10px;border-radius:6px;color:var(--ink48);white-space:nowrap}
-.rec-fgroup button.on{background:#fff;color:var(--ink);font-weight:600}
+.rec-fgroup button.on{background:var(--surface);color:var(--ink);font-weight:600}
 .rec-fgroup button i{font-style:normal;font-family:var(--mono);font-size:10.5px;opacity:.72;margin-left:4px}
 .rec-fgroup button:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
 .rec-search{
   display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;min-width:170px;flex:1 1 170px;max-width:320px;
-  background:#fff;border:1px solid var(--hairline);border-radius:8px;
+  background:var(--surface);border:1px solid var(--hairline);border-radius:8px;
 }
 .rec-search input{flex:1;border:0;outline:0;background:none;font-size:12px;min-width:0}
 /* date 控件默认按内容撑到 ~130px 还带日历图标：显式收窄，避免把筛选条挤成两行 */
@@ -1203,7 +1259,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-row{
   display:grid;grid-template-columns:var(--rec-grid);gap:0 10px;align-items:center;
   min-height:56px;padding:9px 16px;border-bottom:1px solid var(--divider);
-  cursor:pointer;background:#fff;
+  cursor:pointer;background:var(--surface);
 }
 .rec-row:hover{background:var(--pearl)}
 .rec-row.sel{background:var(--primary-bg)}
@@ -1216,7 +1272,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-sum .s1{font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rec-sum .s2{font-size:10.5px;color:var(--err);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rec-sum .s2.mute{color:var(--ink48)}
-.rec-dl{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;background:var(--parchment);font-size:13px;color:var(--primary)}
+.rec-dl{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;background:var(--parchment);font-size:13px;color:var(--primary-ink)}
 .rec-dl:hover{background:var(--primary-bg)}
 .rec-dl.off{color:var(--chipgray);cursor:default;background:none}
 
@@ -1228,7 +1284,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-badge.err{background:var(--err-bg);color:var(--err)}
 .rec-badge.warn{background:var(--warn-bg);color:var(--warn)}
 .rec-badge.mute{background:var(--parchment);color:var(--ink48)}
-.rec-badge.dry{background:#EDF3FF;color:#2B5FD9}
+.rec-badge.dry{background:var(--dry-bg);color:var(--dry-ink)}
 .rec-badge.eng{background:var(--parchment);color:var(--ink80);font-weight:500}
 
 .rec-pager{
@@ -1238,7 +1294,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 
 /* ---------------- 详情栏 ---------------- */
-.rec-detail{overflow-y:auto;min-height:0;background:#fff;padding:18px 20px 30px;display:flex;flex-direction:column;gap:14px}
+.rec-detail{overflow-y:auto;min-height:0;background:var(--surface);padding:18px 20px 30px;display:flex;flex-direction:column;gap:14px}
 .rec-detail .empty-mini{margin:auto 0}
 .rec-dhead{display:flex;align-items:flex-start;gap:10px}
 .rec-dhead .rec-dtitle{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1}
@@ -1257,8 +1313,8 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-pre.cmd{font-family:var(--mono);font-size:11.5px;line-height:19px;max-height:180px}
 .rec-lock{display:flex;flex-direction:column;gap:6px;font-size:12px}
 .rec-lock .r{display:flex;gap:8px;align-items:baseline;line-height:1.6}
-.rec-lock .n{font-family:var(--mono);font-size:11px;background:var(--primary-bg);color:var(--primary);border-radius:5px;padding:1px 6px;flex:none}
-.rec-lock .n.aud{background:#F2EDFB;color:#6A45B8}
+.rec-lock .n{font-family:var(--mono);font-size:11px;background:var(--primary-bg);color:var(--primary-ink);border-radius:5px;padding:1px 6px;flex:none}
+.rec-lock .n.aud{background:var(--aud-bg);color:var(--aud-ink)}
 .rec-chips{display:flex;flex-wrap:wrap;gap:6px}
 .rec-chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;background:var(--parchment);border-radius:6px;padding:3px 8px;color:var(--ink80);font-family:var(--mono)}
 .rec-acts{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
@@ -1267,7 +1323,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .rec-banner.err{background:var(--err-bg);color:var(--err)}
 .rec-banner.warn{background:var(--warn-bg);color:var(--warn)}
 .rec-banner.ok{background:var(--ok-bg);color:var(--ok)}
-.rec-banner.info{background:var(--primary-bg);color:var(--primary)}
+.rec-banner.info{background:var(--primary-bg);color:var(--primary-ink)}
 .rec-dclose{display:none}
 
 /* 素材面板覆盖层化（2026-09-20 由 1180 上调到 1440）：
@@ -1287,7 +1343,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   /* 素材面板：右侧抽屉 —— 顶栏「素材」按钮唤起，遮罩点击关闭。 */
   .panel{
     position:fixed;top:0;right:0;bottom:0;width:min(360px,94vw);z-index:80;
-    background:#fff;border-left:1px solid var(--hairline);box-shadow:-12px 0 32px rgba(0,0,0,.14);
+    background:var(--surface);border-left:1px solid var(--hairline);box-shadow:var(--shadow-panel);
     transform:translateX(102%);transition:transform .24s cubic-bezier(.4,0,.2,1);
   }
   .panel.open{transform:none}
@@ -1315,14 +1371,14 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 
 @media (max-width:1180px){
   /* 横向滚动时「序号 + 勾选」钉在左侧：滚到素材列也能看清是哪一行、能直接勾选 */
-  .row > .cell.rail{position:sticky;left:0;background:inherit;z-index:2;box-shadow:6px 0 8px -6px rgba(0,0,0,.12)}
+  .row > .cell.rail{position:sticky;left:0;background:inherit;z-index:2;box-shadow:var(--shadow-rail)}
   .colhead > :first-child{position:sticky;left:0;z-index:6}
   /* 窄屏：详情改为右侧抽屉（点行滑出），列表吃满整宽 —— 小屏下双栏会把列表挤到读不了 */
   .rec-body{grid-template-columns:minmax(0,1fr)}
   .rec-col{border-right:0}
   .rec-detail{
     position:fixed;top:0;bottom:0;right:0;width:min(460px,94vw);z-index:75;
-    border-left:1px solid var(--hairline);box-shadow:-12px 0 32px rgba(0,0,0,.12);
+    border-left:1px solid var(--hairline);box-shadow:var(--shadow-detail);
     transform:translateX(102%);transition:transform .24s cubic-bezier(.4,0,.2,1);
   }
   .rec-detail.on{transform:none}
