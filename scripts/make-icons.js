@@ -91,7 +91,66 @@ function inTriangle(px, py, a, b, c) {
   return !(neg && pos);
 }
 
-/* 画一张 size×size 的 RGBA 图：圆角渐变底 + 白色播放三角 + 底部三条分镜刻度 */
+/* ---------------- 合成原语 ----------------
+   新图标有 6 层（底色 → 两张后置卡片 → 前卡片投影 → 前卡片 → 挖空三角），
+   再像原来那样"逐层直接写像素"会互相覆盖、alpha 也算不清，所以先有合成。 */
+function over(big, i, r, g, b, a) {
+  const sa = clamp(a, 0, 1);
+  if (sa <= 0) return;
+  const da = big[i + 3] / 255;
+  const oa = sa + da * (1 - sa);
+  if (oa <= 0) { big[i + 3] = 0; return; }
+  big[i] = Math.round((r * sa + big[i] * da * (1 - sa)) / oa);
+  big[i + 1] = Math.round((g * sa + big[i + 1] * da * (1 - sa)) / oa);
+  big[i + 2] = Math.round((b * sa + big[i + 2] * da * (1 - sa)) / oa);
+  big[i + 3] = Math.round(oa * 255);
+}
+
+/* 圆角矩形填充。只遍历包围盒 —— 512×512 下每层全画布扫距离场会多算几十万次。 */
+function fillRoundRect(big, n, cx, cy, hw, hh, r, col) {
+  const cr = col[0], cg = col[1], cb = col[2], ca = col[3];
+  const x0 = Math.max(0, Math.floor(cx - hw - 2)), x1 = Math.min(n, Math.ceil(cx + hw + 2));
+  const y0 = Math.max(0, Math.floor(cy - hh - 2)), y1 = Math.min(n, Math.ceil(cy + hh + 2));
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const sd = roundRectSD(x + 0.5, y + 0.5, cx, cy, hw, hh, r);
+      const cov = clamp(0.5 - sd, 0, 1);
+      if (cov > 0) over(big, (y * n + x) * 4, cr, cg, cb, ca * cov);
+    }
+  }
+}
+
+/* 底色渐变：蓝 → 靛 → 紫**三段** + 左上柔光。
+   原来是两段线性渐变，整块颜色太平，就是"单调"的来源：两色在中间直接插值会发灰，
+   补一个中间色标（靛）能让过渡保持饱和；柔光给一点体积感，不再是纯平色块。 */
+const G1 = [47, 107, 255];     // #2F6BFF
+const G2 = [86, 92, 255];      // #565CFF
+const G3 = [124, 77, 255];     // #7C4DFF
+
+function bgColor(u, v) {
+  const t = clamp(u * 0.62 + v * 0.38, 0, 1);
+  let r, g, b;
+  if (t < 0.5) {
+    const k = t / 0.5;
+    r = mix(G1[0], G2[0], k); g = mix(G1[1], G2[1], k); b = mix(G1[2], G2[2], k);
+  } else {
+    const k = (t - 0.5) / 0.5;
+    r = mix(G2[0], G3[0], k); g = mix(G2[1], G3[1], k); b = mix(G2[2], G3[2], k);
+  }
+  /* 左上柔光：中心 (0.28, 0.20)，平方衰减，最亮处提亮 30% */
+  const dx = u - 0.28, dy = v - 0.20;
+  const d = Math.sqrt(dx * dx + dy * dy);
+  const glow = Math.pow(clamp(1 - d / 0.78, 0, 1), 2) * 0.30;
+  return [mix(r, 255, glow), mix(g, 255, glow), mix(b, 255, glow)];
+}
+
+/* 画一张 size×size 的 RGBA 图。
+   设计（2026-09-20 重做）：**三张层叠的分镜卡片 + 前卡片上挖空的播放三角**。
+     · 层叠 = "一叠待处理的分镜"，这是"批量"最直白的视觉隐喻（原来的三条刻度太弱）
+     · 后面两张半透明、越远越淡：做出纵深，同时让底色渐变透出来，不再是白块压平色
+     · 三角是**挖空**（填底色）而不是叠白三角 —— 白三角压在白卡片上等于看不见
+   小尺寸可读性优先：16×16 下能看清的只有"白色圆角块 + 两个错位影子 + 一个三角"，
+   所以刻意不加细节，层次全靠错位和透明度做。 */
 function render(size) {
   const n = size * SS;
   const big = Buffer.alloc(n * n * 4);
@@ -99,9 +158,7 @@ function render(size) {
   const hw = (n - pad * 2) / 2;
   const r = n * 0.225;
 
-  const C1 = [47, 107, 255];     // #2F6BFF
-  const C2 = [124, 77, 255];     // #7C4DFF
-
+  /* ① 底色：圆角方形 + 三段渐变 + 左上柔光 */
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
       const i = (y * n + x) * 4;
@@ -109,46 +166,68 @@ function render(size) {
       const sd = roundRectSD(px, py, n / 2, n / 2, hw, hw, r);
       const cov = clamp(0.5 - sd, 0, 1);
       if (cov <= 0) { big[i + 3] = 0; continue; }
-      const t = clamp((px / n) * 0.65 + (py / n) * 0.35, 0, 1);
-      big[i] = Math.round(mix(C1[0], C2[0], t));
-      big[i + 1] = Math.round(mix(C1[1], C2[1], t));
-      big[i + 2] = Math.round(mix(C1[2], C2[2], t));
+      const c = bgColor(px / n, py / n);
+      big[i] = Math.round(c[0]);
+      big[i + 1] = Math.round(c[1]);
+      big[i + 2] = Math.round(c[2]);
       big[i + 3] = Math.round(cov * 255);
     }
   }
 
-  /* 播放三角：偏左上一点，给右下角留出刻度条 */
-  const tri = [
-    [n * 0.365, n * 0.285],
-    [n * 0.365, n * 0.665],
-    [n * 0.665, n * 0.475]
-  ];
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      const i = (y * n + x) * 4;
-      if (!big[i + 3]) continue;
-      if (!inTriangle(x + 0.5, y + 0.5, tri[0], tri[1], tri[2])) continue;
-      big[i] = 255; big[i + 1] = 255; big[i + 2] = 255; big[i + 3] = 255;
+  /* ② 三张层叠卡片：从后往前画，每张往右上错开一格。
+        整体中心刻意压到 (0.53, 0.50) 附近 —— 卡片是往右上堆的，
+        如果前卡片正好摆正中，视觉重心会明显偏右上。 */
+  /* 尺寸是照着 16×16 调出来的（见 §"小尺寸优先"）：卡片不能太瘦，
+     错位不能太小，后两层不能太淡 —— 这三样任何一样不到位，16×16 下
+     "层叠"就退化成"一个白块"，批量感直接丢掉。 */
+  const cw = n * 0.21;            // 卡片半宽
+  const ch = n * 0.24;            // 卡片半高（比宽略高，保持"分镜卡"的竖版感）
+  const cr2 = n * 0.075;          // 卡片圆角
+  const OFF = n * 0.082;          // 层与层的错位量（层叠感全靠它）
+  const fx = n * 0.445;           // 前卡片中心
+  const fy = n * 0.565;
+
+  /* 后两张半透明、越远越淡：做出纵深，也让底色渐变透出来。
+     透明度是从 0.20/0.38 提上来的 —— 原来那组在 16×16 下几乎看不见，
+     等于白画了两层。 */
+  fillRoundRect(big, n, fx + OFF * 2, fy - OFF * 2, cw, ch, cr2, [255, 255, 255, 0.30]);
+  fillRoundRect(big, n, fx + OFF, fy - OFF, cw, ch, cr2, [255, 255, 255, 0.52]);
+
+  /* ③ 前卡片的投影：往右下偏一点、边缘柔化，把卡片从底色上"抬"起来。
+        用距离场衰减当模糊就够 —— 为这点阴影引入卷积不划算。
+        卡片内部不画（反正会被盖住），省掉一半像素。 */
+  const SH = n * 0.020;
+  const sx = fx + n * 0.010, sy = fy + n * 0.018;
+  const shx0 = Math.max(0, Math.floor(sx - cw - SH * 3)), shx1 = Math.min(n, Math.ceil(sx + cw + SH * 3));
+  const shy0 = Math.max(0, Math.floor(sy - ch - SH * 3)), shy1 = Math.min(n, Math.ceil(sy + ch + SH * 3));
+  for (let y = shy0; y < shy1; y++) {
+    for (let x = shx0; x < shx1; x++) {
+      const sd = roundRectSD(x + 0.5, y + 0.5, sx, sy, cw, ch, cr2);
+      if (sd <= 0) continue;
+      const k = clamp(1 - sd / (SH * 3), 0, 1);
+      if (k > 0) over(big, (y * n + x) * 4, 12, 14, 48, 0.30 * k * k);
     }
   }
 
-  /* 三条分镜刻度：右下角，暗示"分镜表" */
-  const bars = [
-    [0.705, 0.60, 0.085],
-    [0.705, 0.685, 0.085],
-    [0.705, 0.77, 0.085]
+  /* ④ 前卡片：实心白 */
+  fillRoundRect(big, n, fx, fy, cw, ch, cr2, [255, 255, 255, 1]);
+
+  /* ⑤ 播放三角：**挖空**（填底色渐变）而不是再叠一层白。
+        三角整体右移一点点做视觉居中 —— 等宽等高的三角形按几何居中会显偏左。 */
+  const tri = [
+    [fx - n * 0.078, fy - n * 0.125],
+    [fx - n * 0.078, fy + n * 0.125],
+    [fx + n * 0.117, fy]
   ];
-  for (const [bx, by, bw] of bars) {
-    const cx = n * (bx + bw / 2), cy = n * by;
-    const hwid = n * bw / 2, hh2 = n * 0.022;
-    const rad = hh2;
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        const i = (y * n + x) * 4;
-        if (!big[i + 3]) continue;
-        if (roundRectSD(x + 0.5, y + 0.5, cx, cy, hwid, hh2, rad) > 0) continue;
-        big[i] = 255; big[i + 1] = 255; big[i + 2] = 255; big[i + 3] = 255;
-      }
+  const tx0 = Math.max(0, Math.floor(Math.min(tri[0][0], tri[1][0], tri[2][0]) - 2));
+  const tx1 = Math.min(n, Math.ceil(Math.max(tri[0][0], tri[1][0], tri[2][0]) + 2));
+  const ty0 = Math.max(0, Math.floor(Math.min(tri[0][1], tri[1][1], tri[2][1]) - 2));
+  const ty1 = Math.min(n, Math.ceil(Math.max(tri[0][1], tri[1][1], tri[2][1]) + 2));
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (!inTriangle(x + 0.5, y + 0.5, tri[0], tri[1], tri[2])) continue;
+      const c = bgColor((x + 0.5) / n, (y + 0.5) / n);
+      over(big, (y * n + x) * 4, c[0], c[1], c[2], 1);
     }
   }
 
