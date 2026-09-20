@@ -212,7 +212,8 @@ function decorate(db, s) {
     audioLimit: models.limitsFor(s.model).audio,
     audioSecTotal: audioBudget.sec,
     audioSecMax: loadConfig().audioTotalSecMax,
-    audioSecUnknown: audioBudget.unknown,    assets: (() => {
+    audioSecUnknown: audioBudget.unknown,
+    assets: (() => {
       /* 给每个绑定素材标上「图片N / 音频N」——图号与创作 CLI 的 --image 顺序同源，
          前端据此在槽位旁显示图号，作者才能知道自己该写 @图片N。 */
       const imgNo = {}, audNo = {}, why = {};
@@ -224,6 +225,8 @@ function decorate(db, s) {
         return {
           assetId: a.id, role: r.role, name: a.name,
           thumbUrl: a.thumbUrl, url: a.url, type: a.type, grad: grad(a.gradSeedKey),
+          /* 音频时长一并带出：素材预览弹窗要显示「时长 N 秒」。null = 未知（不是 0）。 */
+          durationSec: a.durationSec == null ? null : a.durationSec,
           imageIndex: imgNo[a.id] || null,      // 图片N（音频不占号）
           audioIndex: audNo[a.id] || null,
           notCounted: why[a.id] || null         // 未计入图号的原因（文件丢失/素材已删…）

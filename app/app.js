@@ -62,14 +62,18 @@
     search:'<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" stroke="#7A7A7A" stroke-width="2.2" fill="none"/><path d="M16.2 16.2L21 21" stroke="#7A7A7A" stroke-width="2.2" stroke-linecap="round"/></svg>',
     warn:  '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M10.3 4.2L2.6 17.5A2 2 0 004.3 20.5h15.4a2 2 0 001.7-3L13.7 4.2a2 2 0 00-3.4 0z" stroke="#B26A00" stroke-width="1.8" fill="none" stroke-linejoin="round"/><path d="M12 9.5v4M12 16.5h.01" stroke="#B26A00" stroke-width="1.8" stroke-linecap="round"/></svg>',
     check: '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="#248A3D" stroke-width="1.8" fill="none"/><path d="M8 12.4l2.8 2.8L16 9.6" stroke="#248A3D" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    note:  '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M9.5 4v10.1a2.9 2.9 0 1 1-1.5-2.55V6.2h7.4v5.4a2.9 2.9 0 1 1-1.5-2.55V4z" fill="#fff"/></svg>',
     expand:'<svg width="14" height="14" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     // 放大图标（深色描边，用于白底表格）：I.expand 是白描边，只适合深色底，别混用
     expandDark: '<svg width="12" height="12" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="#7A7A7A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     // 复制图标：描边用 currentColor，由按钮的 color 控制（浅色块 / 深色代码块上都能用）
     copy:  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><rect x="8.6" y="8.6" width="11.8" height="11.8" rx="2.4" stroke="currentColor" stroke-width="2"/><path d="M15.4 5.7A2.4 2.4 0 0013.3 4H6.4A2.4 2.4 0 004 6.4v6.9a2.4 2.4 0 001.7 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     // 图片占位图标：描边用 currentColor，由 CSS 控制颜色与透明度（半透明占位样式）
-    img:   '<svg width="42" height="42" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.6" width="18" height="14.8" rx="3" stroke="currentColor" stroke-width="1.5"/><circle cx="8.7" cy="9.7" r="1.6" stroke="currentColor" stroke-width="1.5"/><path d="M3.7 16.4l4.5-4.1 3.3 2.9 3-2.5 5.8 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    img:   '<svg width="42" height="42" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.6" width="18" height="14.8" rx="3" stroke="currentColor" stroke-width="1.5"/><circle cx="8.7" cy="9.7" r="1.6" stroke="currentColor" stroke-width="1.5"/><path d="M3.7 16.4l4.5-4.1 3.3 2.9 3-2.5 5.8 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    /* 音符（占位用）：与 I.img 同为 currentColor 描边风格，好让音频与"无图图片素材"
+       共用同一套半透明空槽位视觉（卡片 / 详情弹窗 / 素材预览 / 选择弹窗四处都用它）。
+       ⚠ 必须用 currentColor 而不是写死 fill —— 它要落在浅色底上，由 CSS 的
+       `.ph-ico{color:var(--ink);opacity:.26}` 控制深浅。 */
+    notePh: '<svg width="42" height="42" viewBox="0 0 24 24" fill="none"><circle cx="6.6" cy="17.6" r="2.6" stroke="currentColor" stroke-width="1.5"/><circle cx="16.4" cy="15.6" r="2.6" stroke="currentColor" stroke-width="1.5"/><path d="M9.2 17.6V6.4l9.8-2.2v11.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
   };
 
   const STATUS_TEXT = { draft: '未提交', queued: '排队中', generating: '生成中', succeeded: '已完成', failed: '失败', canceled: '已取消' };
@@ -459,20 +463,19 @@
      改成显式传选项（selected / used），不再读环境的 S.assetSelMode。 */
   function assetCardHTML(a, o) {
     const opt = o || {};
-    const hasPic = a.url && !/^(mock|cli):/.test(a.url) && a.type !== 'audio';
-    const mediaBg = hasPic
-      ? 'background-image:url(' + a.url + ');background-size:cover;background-position:center;'
+    const isAudio = a.type === 'audio';
+    /* 音频**没有可显示的封面**（音频文件抽不出有意义的缩略图），所以它和"无图图片素材"
+       走同一条路：半透明空槽位（浅底 + 虚线框 + 淡图标），只是图标换成音符。
+       原来音频铺按 id 派生的随机渐变 + 深色音符蒙层 —— 那是另一套视觉，看起来像"有封面"，
+       实际上那个色块没有任何含义（用户要求改成与图片资产默认封面一致）。 */
+    const hasPic = !!(a.url && !/^(mock|cli):/.test(a.url) && !isAudio);
+    const phGlyph = hasPic ? '' : '<span class="ph-ico">' + (isAudio ? I.notePh : I.img) + '</span>';
+    const picStyle = hasPic
+      ? ' style="--g:' + a.grad + ';background-image:url(' + a.url + ');background-size:cover;background-position:center;"'
       : '';
-    const glyph = a.type === 'audio' ? '<span class="note">' + I.note + '</span>' : '';
-    /* 无图素材（提示词导入的那批）不再用按 id 派生的随机渐变占位 —— 那只是个没有含义的
-       色块，看不出"这里该有一张图"。改铺半透明的图片样式空槽位（浅底 + 虚线框 + 淡图标），
-       和素材详情弹窗的图片区同一套视觉语言。音频有自己的音符图标，不走这条。 */
-    const noPic = !hasPic && a.type !== 'audio';
-    const phGlyph = noPic ? '<span class="ph-ico">' + I.img + '</span>' : '';
-    const picStyle = noPic ? '' : ' style="--g:' + a.grad + (mediaBg ? ';' + mediaBg : '') + '"';
     return '<div class="acard' + (opt.used ? ' used' : '') + (opt.selected ? ' sel' : '') +
       '" data-asset="' + a.id + '" title="' + esc(a.name) + '">' +
-      '<span class="pic' + (noPic ? ' no-pic' : '') + '"' + picStyle + '>' + glyph + phGlyph +
+      '<span class="pic' + (hasPic ? '' : ' no-pic') + '"' + picStyle + '>' + phGlyph +
       '<span class="tick">' + I.tickSm + '</span>' +
       '<button class="rm" data-assetdel="' + a.id + '" title="删除素材">' + I.x + '</button></span>' +
       '<span class="nm">' + esc(a.name) + '</span>' +
@@ -2297,21 +2300,22 @@
     /* 关闭下拉 */
     if (!t.closest('.menu') && !t.closest('[data-val]')) closeMenu();
 
-    /* ---- 素材面板 ---- */
-    // 卡片右上角的删除钮必须先于卡片点击处理，否则会被卡片处理器吞掉
-    const assetDel = t.closest('[data-assetdel]');
-    if (assetDel) { await onAssetDelete(assetDel.dataset.assetdel); return; }
-    /* 素材面板里的「新建素材」瓦片：类型用 S.panelTab —— 这里它就是**当前面板的标签**，
-       与项目页资产库要用 S.proj.assetTab 不同（两个界面的"当前分类"是两个状态）。
-       ⚠ 本处理器挂在 document 上，会收到**全页面**的点击。项目页资产库也有一个
-       `[data-newasset]` 瓦片（由 #projView 上自己的处理器处理），若不限定容器，
-       点那一个会同时命中这里 → 弹出两个新建对话框。所以这里要求瓦片确实在 #panel 内。 */
-    const newAsset = t.closest('[data-newasset]');
-    if (newAsset && newAsset.closest('#panel')) { await createAssetFlow(S.panelTab); return; }
-    const assetEl = t.closest('[data-asset]');
-    if (assetEl) { await onAssetClick(assetEl.dataset.asset); return; }
-    const tabEl = t.closest('[data-tab]');
-    if (tabEl) { S.panelTab = tabEl.dataset.tab; S.panelKeyword = ''; await loadAssets(); return; }
+    /* ---- 素材面板 ----
+       ⚠ 本处理器挂在 **document** 上，会收到**全页面**的点击。项目页资产库会渲染**同样**的
+       data-asset / data-assetdel / data-newasset（由 #projView 自己的处理器处理）——
+       不限定容器的话两处都会执行：点一张卡片会弹出**两个**素材详情弹窗、点一次新建会弹出
+       两个新建对话框（2026-09-20 实测踩到）。所以这几个分支都要求目标确实在 #panel 内。
+       分镜面板里的事件顺序：删除钮必须先于卡片处理，否则会被卡片处理器吞掉。 */
+    if (t.closest('#panel')) {
+      const assetDel = t.closest('[data-assetdel]');
+      if (assetDel) { await onAssetDelete(assetDel.dataset.assetdel); return; }
+      const newAsset = t.closest('[data-newasset]');
+      if (newAsset) { await createAssetFlow(S.panelTab); return; }
+      const assetEl = t.closest('[data-asset]');
+      if (assetEl) { await onAssetClick(assetEl.dataset.asset); return; }
+      const tabEl = t.closest('[data-tab]');
+      if (tabEl) { S.panelTab = tabEl.dataset.tab; S.panelKeyword = ''; await loadAssets(); return; }
+    }
 
     /* ---- 表格行 ---- */
     const rowEl = t.closest('.row');
@@ -2583,11 +2587,11 @@
       const secMax = Number((opts() || {}).audioSecMax) || 15;
 
       /* 预览区：图片可点选文件（与详情弹窗同一套 .asset-preview.pickable）；
-         音频用 .asset-preview.audio 的音符 + 渐变，**另配一个明确的选择文件按钮** ——
+         音频用与图片资产默认封面同一套的半透明空槽位 + **本地播放器** ——
          详情弹窗的音频区不可点击，没有现成的选文件入口，新建必须有。 */
       const previewHTML = isAudio
-        ? '<div class="asset-preview audio na-audiobox">' +
-            '<span class="note">' + I.note + '</span>' +
+        ? '<div class="asset-preview audio" id="naAudioBox">' +
+            '<span class="empty-ph">' + I.notePh + '<span>选择音频文件后可在这里试听</span></span>' +
           '</div>' +
           '<div class="row-inline"><span class="label-sm">音频文件</span>' +
             '<button class="btn-outline btn-sm" id="naPick">选择音频文件</button>' +
@@ -2614,7 +2618,7 @@
             previewHTML +
             '<div class="row-inline"><span class="label-sm">名称</span>' +
               '<input class="input-sm" id="naName" style="flex:1;min-width:0" maxlength="60" ' +
-                'placeholder="' + (isAudio ? '例如：林晚音色' : '例如：林晚') + '" /></div>' +
+                'placeholder="' + (isAudio ? '留空则用文件名；例如：林晚音色' : '留空则用文件名；例如：林晚') + '" /></div>' +
             '<div class="row-inline"><span class="label-sm">类型</span><span class="hint-sm">' + esc(label) + '</span></div>' +
             (isAudio
               ? '<div class="hint-sm">建议按「<strong>角色名 + 音色</strong>」命名（如「林晚音色」）——' +
@@ -2646,17 +2650,33 @@
       };
 
       const fileInput = mask.querySelector('#naFile');
+      /* 没填名称时的默认名：**用所选文件的文件名**（去扩展名），与后端 createAsset 的
+         默认命名一致。名称栏此刻是空的才自动填 —— 已经填了就不覆盖用户的输入。
+         名称栏是空的且还没选文件时，栏位里给一个灰提示（placeholder）说明这条规则。 */
+      function applyDefaultName(f) {
+        if (!nameEl || !f) return;
+        if (String(nameEl.value || '').trim()) return;
+        const base = stripAssetExt(String(f.name || '')).trim();
+        if (base) nameEl.value = base.slice(0, 60);
+      }
       async function acceptFile(f) {
         if (!f) return;
         picked = f;
+        applyDefaultName(f);
         if (isAudio) {
-          const nameEl = mask.querySelector('#naFileName');
-          if (nameEl) nameEl.textContent = f.name + '（读取时长…）';
+          const nameEl2 = mask.querySelector('#naFileName');
+          if (nameEl2) nameEl2.textContent = f.name + '（读取时长…）';
+          /* 本地试听：不等保存，选中就能听（与图片"选中即预览"同一个体验）。
+             ⚠ 用 blob URL，关闭弹窗时必须回收（done 里统一 revoke）。 */
+          if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+          previewBlobUrl = URL.createObjectURL(f);
+          const box = mask.querySelector('#naAudioBox');
+          if (box) box.innerHTML = '<audio controls preload="metadata" src="' + previewBlobUrl + '"></audio>';
           /* 前端读时长是**主来源**（不依赖任何外部程序）；读不到就留 null，
              服务端会用 ffprobe 兜底。两者都失败 → 时长未知 → 不允许绑定（后端守卫）。 */
           pickedSec = await readAudioDuration(f);
-          if (nameEl) {
-            nameEl.textContent = f.name + (pickedSec != null ? '（' + pickedSec.toFixed(2) + ' 秒）' : '（读不到时长，创建后由服务端再试）');
+          if (nameEl2) {
+            nameEl2.textContent = f.name + (pickedSec != null ? '（' + pickedSec.toFixed(2) + ' 秒）' : '（读不到时长，创建后由服务端再试）');
           }
           return;
         }
@@ -2686,8 +2706,15 @@
       if (nameEl) nameEl.focus();
 
       const submit = () => {
-        const name = String((nameEl && nameEl.value) || '').trim();
-        if (!name) { hint('请先填素材名称', 'err'); if (nameEl) nameEl.focus(); return; }
+        let name = String((nameEl && nameEl.value) || '').trim();
+        /* 名称留空不直接拦：**有文件就用文件名兜底**（与后端默认命名一致）。
+           两个都没有才报错 —— 那时确实没有任何可用的名字。 */
+        if (!name && picked) name = stripAssetExt(String(picked.name || '')).trim();
+        if (!name) {
+          hint(picked ? '这个文件名取不出名称，请手动填一个' : '请填素材名称，或先选一个文件（会用文件名作为默认名称）', 'err');
+          if (nameEl) nameEl.focus();
+          return;
+        }
         if (name.length > 60) { hint('素材名称不能超过 60 个字符', 'err'); return; }
         done({
           name: name,
@@ -2779,13 +2806,25 @@
     }
   }
 
+  /* 音频素材的预览内容：**有文件就给真实播放器**（`<audio controls>`），没有就给半透明占位。
+     两个弹窗（素材详情 / 素材预览）共用同一份，避免两处各写各的、行为漂移。
+     ⚠ 必须走 mediaUrl()：素材地址是 `/media/assets/...` 这种同源相对路径，
+       发布版单文件（file://）下要拼上后端源才播得出来。 */
+  function audioPreviewHTML(a) {
+    if (a && a.url) {
+      return '<audio controls preload="metadata" src="' + esc(mediaUrl(a.url)) + '"></audio>' +
+        (Number.isFinite(a.durationSec) ? '<span class="hint-sm audio-dur">时长 ' + a.durationSec + ' 秒</span>' : '');
+    }
+    return '<span class="empty-ph">' + I.notePh + '<span>这个音频还没有文件</span></span>';
+  }
+
   function openAssetSettings(asset) {
     return new Promise((resolve) => {
       const accept = asset.type === 'audio' ? 'audio/*' : 'image/*';
       // 图片用真实 <img> + object-fit:contain 完整展示（原用 background-size:cover 会裁掉四周）
       const hasPic = !!asset.url && asset.type !== 'audio';
       const previewHTML = (asset.type === 'audio')
-        ? '<span class="note">' + I.note + '</span>'
+        ? audioPreviewHTML(asset)
         : (asset.url ? '<img id="asPreviewImg" src="' + esc(asset.url) + '" alt="' + esc(asset.name) + '" />' : '');
       const kindLabel = ASSET_TAB_LABEL[asset.type] || asset.type;
       // 提示词编辑区：音频无提示词概念，不展示
@@ -2809,9 +2848,9 @@
           '<div class="modal-head"><h2>素材详情</h2><span class="grow"></span>' +
             '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
           '<div class="modal-body">' +
-            /* 无图时不铺渐变：改由 CSS 给一个半透明的「图片样式」占位（见 .asset-preview.pickable） */
-            '<div class="asset-preview' + (isAudio ? ' audio' : ' pickable' + (hasPic ? ' has-pic' : '')) + '"' +
-              (isAudio ? ' style="--g:' + asset.grad + ';background-image:var(--g)"' : '') + '>' +
+            /* 无图时不铺渐变：改由 CSS 给一个半透明的「图片样式」占位（见 .asset-preview.pickable）；
+               音频同理 —— 它本来就没有可显示的封面，用同一套半透明空槽位 + 播放器。 */
+            '<div class="asset-preview' + (isAudio ? ' audio' : ' pickable' + (hasPic ? ' has-pic' : '')) + '">' +
               previewHTML +
               fsBtn +
               (!hasPic && !isAudio ? '<span class="empty-ph">' + I.img + '<span>点击上传图片</span></span>' : '') +
@@ -2913,7 +2952,7 @@
 
   /* 打开素材详情并落库（改名 / 改提示词 / 换文件） */
   async function editAsset(assetId) {
-    const a = S.assets.find((x) => x.id === assetId);
+    const a = findAssetAnywhere(assetId);
     if (!a) return;
     const r = await openAssetSettings(a);
     if (!r) return;
@@ -2929,8 +2968,8 @@
         await Api.updateAsset(a.id, { prompt: r.prompt });
       }
       toast('素材已更新', 'ok');
-      await loadAssets();
-      await loadList({ skeleton: false });   // 同步表格槽位上的名称/缩略图
+      /* 两个资产视图都要刷新：表格槽位上的名称/缩略图，以及项目资产库里的卡片 */
+      await afterAssetMutated();
     } catch (e) { fail(e); }
   }
 
@@ -2967,11 +3006,11 @@
             '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
           '<div class="modal-body">' +
             /* 有图就原图直出（object-fit:contain，不裁不缩略）；点击整块进全屏看细节。
-               无图（提示词导入的那批）沿用「半透明图片占位」，与卡片视觉同一套语言。 */
-            '<div class="asset-preview' + (isAudio ? ' audio' : (hasPic ? ' has-pic zoomable' : '')) + '"' +
-              (isAudio ? ' style="--g:' + a.grad + ';background-image:var(--g)"' : '') + '>' +
+               无图（提示词导入的那批）沿用「半透明图片占位」，与卡片视觉同一套语言。
+               音频同属"没有可显示封面"这一类：半透明空槽位 + 真实播放器。 */
+            '<div class="asset-preview' + (isAudio ? ' audio' : (hasPic ? ' has-pic zoomable' : '')) + '">' +
               (isAudio
-                ? '<span class="note">' + I.note + '</span>'
+                ? audioPreviewHTML(a)
                 : (hasPic
                     ? '<img src="' + esc(a.url) + '" alt="' + esc(a.name) + '" />' +
                       '<button class="fs-btn" title="全屏预览（查看细节）">' + I.expand + '</button>'
@@ -3292,16 +3331,36 @@
   }
 
   /* 删除单个素材（卡片右上角钮）；批量模式下同步清理勾选态 */
+  /* 素材查找：资产可能在**两个列表**里 —— 分镜面板的 S.assets（当前分类）与
+     项目资产库的 S.proj.assets。只查前者的话，从**项目资产库**点卡片 / 点删除会
+     **静默无反应**：进入项目页时 resetScopeState 会把 S.assets 清空
+     （2026-09-20 实测确认，卡片一直是"点不动的"）。两处都必须查。 */
+  function findAssetAnywhere(assetId) {
+    return S.assets.find((x) => x.id === assetId) ||
+      (S.proj.assets || []).find((x) => x.id === assetId) || null;
+  }
+
+  /* 素材被改动 / 删除后的统一刷新：**两个资产视图是两套数据**，只刷一套另一套会显示过期内容。
+     ⚠ loadList 只在确实处于某个分镜表里时才调 —— 项目页上没有分镜表，
+       调用它会把列表接口打成 40000 并让 render() 去渲染一个不该出现的表格视图。 */
+  async function afterAssetMutated() {
+    await loadAssets();                       // 分镜面板（内部会 renderPanel）
+    if (S.proj.tab === 'assets' && S.proj.projectId) {
+      await loadProjAssets();
+      renderProjAssets();
+    }
+    if (S.cur && S.cur.workspaceId) await loadList({ skeleton: false });
+  }
+
   async function onAssetDelete(assetId) {
-    const a = S.assets.find((x) => x.id === assetId);
+    const a = findAssetAnywhere(assetId);
     if (!a) return;
     if (!(await uiConfirm('删除素材', '确定删除素材「' + a.name + '」？将同时解除所有分镜的绑定。'))) return;
     try {
       await Api.deleteAsset(a.id);
       toast('素材已删除', 'ok');
       if (S.assetSel.has(a.id)) S.assetSel.delete(a.id);
-      await loadAssets();
-      await loadList({ skeleton: false });
+      await afterAssetMutated();
     } catch (e) { fail(e); }
   }
 
@@ -3428,13 +3487,26 @@
         return k ? list.filter((a) => String(a.name || '').toLowerCase().includes(k)) : list;
       };
 
-      /* 缩略图：有图用图，无图沿用面板那套「半透明图片占位」（与卡片视觉一致） */
+      /* 缩略图：有图用图；无图与音频都沿用面板那套「半透明图片占位」（与卡片视觉一致）。
+         音频放音符占位而不是随机渐变 —— 渐变看着像"有封面"，实际没有任何含义。 */
       function thumbStyle(a) {
-        const hasPic = a.url && !/^(mock|cli):/.test(a.url) && a.type !== 'audio';
+        const isAudio = a.type === 'audio';
+        const hasPic = !!(a.url && !/^(mock|cli):/.test(a.url) && !isAudio);
         return hasPic
           ? 'background-image:url(' + a.url + ');background-size:cover;background-position:center;'
-          : '--g:' + a.grad + ';background-image:var(--g)';
+          : '';
       }
+      const thumbCls = (a) => {
+        const isAudio = a.type === 'audio';
+        const hasPic = !!(a.url && !/^(mock|cli):/.test(a.url) && !isAudio);
+        return 'ap-thumb' + (hasPic ? '' : ' no-pic');
+      };
+      const thumbGlyph = (a) => {
+        const isAudio = a.type === 'audio';
+        const hasPic = !!(a.url && !/^(mock|cli):/.test(a.url) && !isAudio);
+        if (hasPic) return '';
+        return '<span class="ph-ico">' + (isAudio ? I.notePh : I.img) + '</span>';
+      };
 
       /* 配额状态：头部「已添加 X / 上限 Y」+ 满额时的说明条。满额后行不可选、确定不可点。
          音频走另一套口径（数量 + 总时长），提示语也换成对应的说法 ——
@@ -3512,7 +3584,7 @@
             : '';
           return '<div class="ap-row' + (isSel ? ' sel' : '') + (isBound ? ' bound' : '') + '" data-ap="' + a.id + '"' +
             ' title="' + esc(a.name) + (isBound ? '（已在此分镜中）' : '') + '">' +
-            '<span class="ap-thumb" style="' + thumbStyle(a) + '"></span>' +
+            '<span class="' + thumbCls(a) + '" style="' + thumbStyle(a) + '">' + thumbGlyph(a) + '</span>' +
             '<span class="ap-name">' + esc(a.name) + '</span>' +
             dur +
             '<span class="ap-type">' + esc(ASSET_TAB_LABEL[a.type] || a.type) + '</span>' +

@@ -430,7 +430,6 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .acard.add{cursor:pointer}
 .acard.add:hover .pic{border-color:var(--primary);background:var(--primary-bg)}
 .acard.add:hover .nm{color:var(--primary)}
-.acard .pic .note{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.22)}
 /* 无图素材（提示词导入的那批）的缩略图：半透明的「图片样式」空槽位，替代原来的随机渐变。
    虚线框 + 淡图标说明"这里该有一张图、点开可补"，而不是给一个没有含义的色块。
    与素材详情弹窗的 .asset-preview.pickable 是同一套视觉语言。 */
@@ -480,7 +479,13 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .ap-thumb{
   width:40px;height:40px;border-radius:8px;flex:none;
   background:var(--parchment) center/cover no-repeat;
+  display:grid;place-items:center;
 }
+/* 无图 / 音频的缩略图：与卡片、与详情弹窗共用同一套半透明空槽位视觉（虚线框 + 淡图标）。
+   音频放音符而不是随机渐变 —— 渐变看着像"有封面"，实际没有含义。 */
+.ap-thumb.no-pic{background:var(--pearl);border:1px dashed var(--hairline)}
+.ap-thumb .ph-ico{display:grid;place-items:center;color:var(--ink);opacity:.3}
+.ap-thumb .ph-ico svg{width:18px;height:18px}
 .ap-name{flex:1;min-width:0;font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ap-type{font-size:11px;color:var(--ink48);flex:none}
 /* 音频行的时长：总时长有上限，不显示时长就没法判断该选哪几条。
@@ -599,9 +604,17 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   display:grid;place-items:center;
   flex:none;   /* 关键：不被 .modal-body 的 flex 列压缩，否则图片会被纵向裁掉 */
 }
-.asset-preview.audio{height:140px}   /* 音频占位：无图，给固定高度 */
+/* 音频预览区：与"无图图片素材"共用同一套**半透明空槽位**视觉（浅底 + 虚线框）。
+   音频本来就没有可显示的封面（音频文件抽不出有意义的缩略图），铺随机渐变会让人以为
+   "它有封面"，而那个色块没有任何含义。里面放真实播放器。
+   高度改为 auto + min-height：播放器有自己的高度，写死 140px 会上下留白。 */
+.asset-preview.audio{
+  height:auto;min-height:104px;padding:18px 20px;gap:8px;
+  background:var(--pearl);border:1px dashed var(--hairline);
+}
+.asset-preview.audio audio{display:block;width:100%;max-width:420px}
+.asset-preview.audio .audio-dur{color:var(--ink48)}
 .asset-preview img{display:block;max-width:100%;max-height:min(38vh,300px);object-fit:contain;border-radius:8px}
-.asset-preview .note{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.22)}
 /* 图片区即上传入口（.pickable）：无图时给半透明的「图片样式」空槽位视觉 —— 虚线框 + 淡图标，
    整块可点。有图后（.has-pic）虚线框让位，恢复常规底色，避免和图片边框打架。 */
 .asset-preview.pickable{
