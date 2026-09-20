@@ -1,0 +1,72 @@
+# ============================================================
+# electron-builder.yml —— Windows 安装包配置
+#
+# 设计取舍（对着"数据安全"和"能装能用"两条来定）：
+#   · perMachine: false → 装到 %LOCALAPPDATA%\Programs，**不弹 UAC**。
+#     代价是不能给"所有用户"安装，但换来双击即装、不需要管理员。
+#   · 数据目录**不在**安装目录里（见 desktop/runtime-paths.js），
+#     所以升级/卸载/重装都不会碰用户的项目和视频。
+#   · deleteAppDataOnUninstall: false → 卸载只删程序，绝不删用户数据。
+# ============================================================
+appId: com.ikun1946.jimengconsole
+productName: 即梦批量生成控制台
+copyright: Copyright © 2026 ikun1946
+
+directories:
+  output: release
+  buildResources: build
+
+# 只打包运行时真正需要的东西。把仓库里的文档、脚本、旧数据排除掉，
+# 既减小体积，也避免把开发机上的东西（比如 server/data 里的库）误发给别人。
+files:
+  - package.json
+  - app/**/*
+  - server/**/*
+  - desktop/**/*
+  - '!server/data/**'
+  - '!server/**/*.md'
+  - '!**/*.map'
+  - '!**/.DS_Store'
+
+# 图标要作为**真实文件**存在于 resources 下：托盘/窗口图标走 nativeImage，
+# 从 asar 里读在个别环境下不稳（desktop/main.js 的 assetPath 会优先找这里）。
+extraResources:
+  - from: build/icon.png
+    to: build/icon.png
+
+asar: true
+# 需要以真实文件形式被外部程序读取的，必须解包（当前没有，留规则以便将来加 bin/）
+asarUnpack:
+  - '**/*.node'
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  # asInvoker：不请求管理员权限。要写机器级目录的软件才需要 elevated，
+  # 而本应用所有可写数据都在用户目录下。
+  requestedExecutionLevel: asInvoker
+  # 可执行文件名（开始菜单/任务管理器里显示的名字）
+  executableName: JimengConsole
+
+nsis:
+  # 非一键安装：让用户能看到装到哪、能改路径
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 即梦批量生成控制台
+  # ⚠ 关键：卸载**不删**用户数据。数据库、素材、视频都在用户目录里，
+  # 卸载只应该带走程序本身。
+  deleteAppDataOnUninstall: false
+  # 安装时不要自动拉起应用：用户刚点完安装，多半想先自己看一眼
+  runAfterFinish: false
+  artifactName: JimengConsole-${version}-x64-Setup.${ext}
+
+# 不生成 32 位与 ARM 包：本机目标就是 Win10/11 x64（计划 §4 首版范围）
+portable:
+  artifactName: JimengConsole-${version}-portable.${ext}

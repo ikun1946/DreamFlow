@@ -1,29 +1,45 @@
 'use strict';
 /* ============================================================
    config.js —— 服务配置
-   优先级：环境变量 > server/config.json > 内置默认
+   优先级：loadConfig(overrides) > 环境变量 > server/config.json > 内置默认
    ⚠ 2026-09-18：画布 CLI（dreamina-canvas）已移除，本项目只使用创作 CLI（dreamina）。
-     随之下线的配置项：cliPath / creditCeiling / probeTtlMs / modelCacheTtlMs。
+      随之下线的配置项：cliPath / creditCeiling / probeTtlMs / modelCacheTtlMs。
+   ⚠ 2026-09-20 桌面化：数据根不再写死，改由 runtime.js 提供（见该文件说明）。
+      DATA_DIR / DB_FILE 仍可读，但**必须每次现取**，不能解构快照。
    ============================================================ */
 const fs = require('fs');
 const path = require('path');
+const runtime = require('./runtime');
 
 const SERVER_DIR = __dirname;
 const PROJECT_ROOT = path.join(SERVER_DIR, '..');
-const DATA_DIR = path.join(SERVER_DIR, 'data');
-const DB_FILE = path.join(DATA_DIR, 'db.json');
-/* 旧的扁平资源目录（data/output、data/assets）已废弃 —— 现在每个项目的资源都在
-   data/projects/<项目>/ 下，布局与地址形状一律以 paths.js 为唯一事实来源。
-   这两个常量只作为"迁移要清空的历史位置"保留给文档与排查用，任何新代码都不要再用它们。 */
-const LEGACY_OUTPUT_DIR = path.join(DATA_DIR, 'output');
-const LEGACY_ASSET_DIR = path.join(DATA_DIR, 'assets');
 
-function loadConfig() {
-  let fileCfg = {};
-  try { fileCfg = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, 'config.json'), 'utf8')); }
-  catch (e) { /* 无配置文件，用默认 */ }
+/* 配置文件位置：命令行版是 server/config.json；桌面版指向 userData 下的 config.json
+   （安装目录只读，用户配置必须写在可写位置）。 */
+function configFilePath() {
+  return runtime.getConfigPath() || path.join(SERVER_DIR, 'config.json');
+}
+
+function readConfigFile() {
+  try { return JSON.parse(fs.readFileSync(configFilePath(), 'utf8')); }
+  catch (e) { return {}; }
+}
+
+/* 读取本进程生效的配置。
+
+   ⚠ 一旦加载过就直接复用同一份对象：services.js / dreamina-cli.js 里散落的
+   loadConfig() 必须拿到**注入后的**结果，否则桌面版的随机端口与随机 Token
+   会被默认值悄悄盖掉（那种故障表现为"页面打不开"或"接口全部 40100"）。
+   overrides 只在启动时由入口传一次。 */
+function loadConfig(overrides) {
+  if (!overrides && runtime.getCurrentConfig()) return runtime.getCurrentConfig();
+
+  const fileCfg = readConfigFile();
   const env = process.env;
-  return {
+  const cfg = {
+    mode: runtime.getMode(),
+    dataDir: runtime.getDataDir(),
+    logsDir: runtime.getLogsDir(),
     port: Number(env.JC_PORT || fileCfg.port || 8787),
     host: env.JC_HOST || fileCfg.host || '127.0.0.1',
     token: env.JC_TOKEN || fileCfg.token || '',            // 空 = 不校验 Bearer
@@ -69,9 +85,10 @@ function loadConfig() {
        默认 15 与本项目单镜时长上限一致（services.js 的 meta.duration.max）。 */
     audioTotalSecMax: Number(env.JC_AUDIO_TOTAL_SEC_MAX || fileCfg.audioTotalSecMax || 15),
     /* 是否允许 file:// 打开的前端（发布版单文件双击）访问本服务。
-       浏览器对 file:// 页面发来的请求带 `Origin: null`，无法与"恶意网页里被沙箱化的
+       浏览器对 file:// 页面发来的请求带 Origin: null，无法与"恶意网页里被沙箱化的
        iframe"区分开。默认 true = 保留发布版双击即用的既有体验；
-       想要最严的本地 API 防护可置 false（此时只有 http://127.0.0.1:8787 打开的页面能用）。 */
+       想要最严的本地 API 防护可置 false（此时只有 http://127.0.0.1:8787 打开的页面能用）。
+       ⚠ 桌面版显式置 false：页面由内嵌服务自己托管，不需要给 file:// 开口子。 */
     allowFileOrigin: env.JC_ALLOW_FILE_ORIGIN ? env.JC_ALLOW_FILE_ORIGIN === '1' : fileCfg.allowFileOrigin !== false,
     /* 创作 CLI 探测（user_credit）的缓存 TTL。单次实测 8.4–9.5 秒，积分又是低频指标，
        故默认 5 分钟。env JC_DREAMINA_PROBE_TTL_MS 可覆盖。 */
@@ -85,6 +102,24 @@ function loadConfig() {
        不再参与任何作用域判断；启动时会提示它已失效。 */
     projectId: env.JC_PROJECT_ID || fileCfg.projectId || 'pj_1'
   };
+
+  if (overrides) Object.assign(cfg, overrides);
+  /* port = 0 是合法值（让系统分配空闲端口），所以不能用 port || 8787 兜底 */
+  if (!Number.isFinite(cfg.port) || cfg.port < 0 || cfg.port > 65535) cfg.port = 8787;
+
+  runtime.setCurrentConfig(cfg);
+  return cfg;
 }
 
-module.exports = { loadConfig, SERVER_DIR, PROJECT_ROOT, DATA_DIR, LEGACY_OUTPUT_DIR, LEGACY_ASSET_DIR, DB_FILE };
+module.exports = {
+  loadConfig,
+  SERVER_DIR,
+  PROJECT_ROOT,
+  configFilePath,
+  /* 用 getter 而不是快照值：桌面版会把数据根指到用户目录，
+     任何在 require 时解构这三个值的写法都会拿到错目录。 */
+  get DATA_DIR() { return runtime.getDataDir(); },
+  get DB_FILE() { return path.join(runtime.getDataDir(), 'db.json'); },
+  get LEGACY_OUTPUT_DIR() { return path.join(runtime.getDataDir(), 'output'); },
+  get LEGACY_ASSET_DIR() { return path.join(runtime.getDataDir(), 'assets'); }
+};

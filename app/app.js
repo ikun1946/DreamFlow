@@ -1758,8 +1758,14 @@
 
     /* 只预取**整机级**的适配器状态（与项目无关，任何视图都可能用到）。
        options / settings 是**项目级**的，等作用域确定后由各自的 enter* 去取 ——
-       在这里提前取会用默认作用域打一次无用请求。 */
-    await loadAdapterOnly();
+       在这里提前取会用默认作用域打一次无用请求。
+
+       ⚠ 这里**不能 await**（2026-09-20 桌面版实测）：适配器探测要真去问一次
+       dreamina CLI，冷启动实测 2.5s。await 的话这三层视图在探测完成前都还是
+       hidden，用户看到的就是"窗口打开了、一片空白、几秒后才出现首页" ——
+       在桌面版里这跟"启动失败"没有区别。适配器状态只喂顶栏/状态栏，
+       所以改成只发起不等待，结果回来再补一次顶栏即可。 */
+    loadAdapterOnly().then(() => { renderTopbar(); renderStatusbar(); });
 
     if (projectId && workspaceId) {
       /* URL 指向具体的分镜表 → 直接进工作区视图；enterWorkspace 内部对"不存在"有降级 */

@@ -63,6 +63,39 @@ function probeAudioDuration(absPath) {
   });
 }
 
+/* ---------------- 子进程登记表（2026-09-20 桌面化） ----------------
+   为什么要它：桌面版关窗口时必须把本进程起过的 dreamina 子进程一并收掉。
+   没有这张表的话，退出时只关 HTTP 服务，CLI 子进程会变成孤儿 —— 用户看到的是
+   "程序已经关了，任务管理器里还挂着 dreamina.exe"，而它可能还在轮询、继续计费。
+
+   ⚠ 只登记**本进程** spawn 出来的直接子进程，不碰用户在别处手工起的 CLI。
+   ⚠ 不动 execFile 那两处（ffprobe 读时长 / ffmpeg 抽封面）：它们自带 15–30 秒超时，
+      且是短命进程，登记进来只会让退出路径多等。 */
+const liveChildren = new Set();
+
+function trackChild(child) {
+  if (!child || !child.pid) return child;
+  liveChildren.add(child);
+  const drop = () => liveChildren.delete(child);
+  child.once('close', drop);
+  child.once('error', drop);
+  return child;
+}
+
+/* Windows 上 child.kill() 只终止直接子进程，孙进程会留下来。
+   因此先 kill，再用 taskkill /T 兜一层进程树（失败无所谓，本来就是尽力而为）。 */
+function killChild(child) {
+  if (!child) return;
+  try { child.kill(); } catch (e) { /* 已经退了 */ }
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      const t = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      t.on('error', () => {});
+      t.unref();
+    } catch (e) { /* 没有 taskkill 就算了 */ }
+  }
+}
+
 function makeDreaminaAdapter(cfg) {
   const bin = cfg.dreaminaCliPath || 'dreamina';
   const state = { probe: null, credit: null, running: new Map() };
@@ -71,7 +104,7 @@ function makeDreaminaAdapter(cfg) {
   function rawSpawn(args, timeoutMs) {
     return new Promise((resolve) => {
       let child;
-      try { child = spawn(bin, args, { windowsHide: true, shell: false }); }
+      try { child = trackChild(spawn(bin, args, { windowsHide: true, shell: false })); }
       catch (e) { return resolve({ kind: 'cli_down', reason: 'spawn 失败: ' + e.message }); }
       let stdout = '', stderr = '', done = false;
       const timer = setTimeout(() => {
@@ -219,7 +252,7 @@ function makeDreaminaAdapter(cfg) {
   function startProcess(args, timeoutMs) {
     const t0 = Date.now();
     let child = null, spawnErr = null;
-    try { child = spawn(bin, args, { windowsHide: true, shell: false }); }
+    try { child = trackChild(spawn(bin, args, { windowsHide: true, shell: false })); }
     catch (e) { spawnErr = e; }
 
     let stdout = '', stderr = '', exited = false, exitCode = null, killedByTimeout = false;
@@ -740,7 +773,21 @@ function makeDreaminaAdapter(cfg) {
 
   /* parseChallenge 一并导出：仅用于单元验证「授权材料解析」是否稳健
      （切换账号会先退出登录态，无法在真机反复试，必须靠样本单测覆盖）。 */
-  return { probe, peek, lastProbe, credit, invalidate, authLoginFlow, switchAccount, pending, parseChallenge, buildSubmitArgs, runVideo, downloadResult, makeCover, recoverSubmitId, pickArtifact, pickCover, state, normResolution };
+  /* 停止本适配器起过的所有子进程。桌面版退出 / 服务 stop() 会调用它。
+     ⚠ 语义是"断开本地跟踪"，不是"取消即梦侧任务" —— 远端任务可能仍在跑并照常计费，
+     所以调用方（Electron 主进程）必须先跟用户确认。 */
+  async function shutdown() {
+    const kids = Array.from(liveChildren);
+    if (!kids.length) return 0;
+    kids.forEach((c) => killChild(c));
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline && liveChildren.size) await sleep(100);
+    const left = liveChildren.size;
+    if (left) console.warn('[dreamina] 仍有 ' + left + ' 个子进程未退出');
+    return kids.length - left;
+  }
+
+  return { probe, peek, lastProbe, credit, invalidate, authLoginFlow, switchAccount, pending, parseChallenge, buildSubmitArgs, runVideo, downloadResult, makeCover, recoverSubmitId, pickArtifact, pickCover, state, normResolution, shutdown };
 }
 
 module.exports = { makeDreaminaAdapter, DREAMINA_MODELS, normResolution, probeAudioDuration };

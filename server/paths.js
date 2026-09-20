@@ -30,7 +30,8 @@
    ============================================================ */
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR } = require('./config');
+const configMod = require('./config');
+const runtime = require('./runtime');
 
 /* 根目录放在一个**可替换的对象**里，而不是三个模块级常量 —— 所有函数都在**调用时**
    读 roots，而不是在 require 时定死。这样"把根指到别处"是一个显式动作（setRoots），
@@ -39,13 +40,23 @@ const { DATA_DIR } = require('./config');
    ⚠ 生产代码不要调用 setRoots —— 目前**没有任何调用方**（仓库已不保留自动化测试，
    见 README「版本」一节）。留着它是为了将来需要沙箱时有个明确的入口，
    而不是让人去覆盖常量。 */
-const roots = {
-  projects: path.join(DATA_DIR, 'projects'),
-  /* 迁移前的旧位置。只在两处用到：v2→v3 迁移读取，以及服务端的兜底路由。 */
-  legacyAssets: path.join(DATA_DIR, 'assets'),
-  legacyOutput: path.join(DATA_DIR, 'output')
-};
-function setRoots(r) { Object.assign(roots, r || {}); return Object.assign({}, roots); }
+/* 派生根的默认值**每次现算**：数据根可以被桌面版重定向（见 runtime.js），
+   而这三个目录必须跟着走，否则会出现"库在用户目录、素材还在安装目录"的撕裂状态。 */
+function defaultRoots() {
+  const dataDir = configMod.DATA_DIR;
+  return {
+    projects: path.join(dataDir, 'projects'),
+    /* 迁移前的旧位置。只在两处用到：v2→v3 迁移读取，以及服务端的兜底路由。 */
+    legacyAssets: path.join(dataDir, 'assets'),
+    legacyOutput: path.join(dataDir, 'output')
+  };
+}
+/* null = 用默认值；setRoots 之后才是一份显式覆盖（当前只有沙箱会用到）。 */
+let roots = null;
+const R = () => (roots || (roots = defaultRoots()));
+function setRoots(r) { roots = Object.assign(defaultRoots(), r || {}); return Object.assign({}, roots); }
+function resetRoots() { roots = null; return Object.assign({}, R()); }
+runtime.onChange(resetRoots);
 
 /* id 白名单：本项目所有 id 都是 `<前缀>_<字母数字>` 形状（pj_ / ws_ / st_ / as_ / rc_） */
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -55,7 +66,7 @@ const FILE_RE = /^[A-Za-z0-9._-]{1,200}$/;
 const safeId = (v) => (typeof v === 'string' && ID_RE.test(v) ? v : null);
 const safeFile = (v) => (typeof v === 'string' && FILE_RE.test(v) && v !== '.' && v !== '..' ? v : null);
 
-const projectDir = (pj) => path.join(roots.projects, pj);
+const projectDir = (pj) => path.join(R().projects, pj);
 const assetDir = (pj) => path.join(projectDir(pj), 'assets');
 const outputDir = (pj) => path.join(projectDir(pj), 'output');
 const sbOutputDir = (pj, sb) => path.join(outputDir(pj), sb);
@@ -96,7 +107,7 @@ function assetFileOf(asset, projectIdHint) {
   /* 旧形状：文件既可能在旧平铺目录，也可能已经在新目录（迁移中途） */
   const inNew = path.join(assetDir(pj), file);
   if (fs.existsSync(inNew)) return inNew;
-  return path.join(roots.legacyAssets, file);
+  return path.join(R().legacyAssets, file);
 }
 
 /* 产物目录（下载目标 / 封面落点）。projectId 必传 —— 调用方从分镜的工作区推导。 */
@@ -110,7 +121,7 @@ function sbOutputDirOf(projectId, storyboardId) {
 /* 旧地址（迁移前落的库）里那条产物现在在哪：先看新目录，再看旧目录。
    只在"地址还是旧形状"时用到。 */
 function legacyOutputFile(file) {
-  return file ? path.join(roots.legacyOutput, file) : null;
+  return file ? path.join(R().legacyOutput, file) : null;
 }
 
 /* ---------------- 服务端静态路由：URL 路径 → 绝对路径 ----------------
@@ -128,7 +139,7 @@ function resolveServePath(pathname) {
       /* 旧形状兜底：全项目平铺目录（迁移成功后应为空） */
       const file = safeFile(parts[0]);
       if (!file) return null;
-      return contained(roots.legacyAssets, path.join(roots.legacyAssets, file));
+      return contained(R().legacyAssets, path.join(R().legacyAssets, file));
     }
     return null;
   }
@@ -145,7 +156,7 @@ function resolveServePath(pathname) {
       /* 旧形状兜底：data/output/<分镜>/<文件> */
       const sb = safeId(parts[0]), file = safeFile(parts[1]);
       if (!sb || !file) return null;
-      return contained(roots.legacyOutput, path.join(roots.legacyOutput, sb, file));
+      return contained(R().legacyOutput, path.join(R().legacyOutput, sb, file));
     }
     return null;
   }
@@ -173,10 +184,10 @@ function ensureProjectDirs(projectId) {
 module.exports = {
   /* 用 getter 而不是快照值：schema.js 读的是 `PATHS.LEGACY_ASSET_DIR`，
      必须是**调用时**的值，setRoots 之后才能生效（测试沙箱依赖这一点）。 */
-  get PROJECTS_DIR() { return roots.projects; },
-  get LEGACY_ASSET_DIR() { return roots.legacyAssets; },
-  get LEGACY_OUTPUT_DIR() { return roots.legacyOutput; },
-  setRoots,
+  get PROJECTS_DIR() { return R().projects; },
+  get LEGACY_ASSET_DIR() { return R().legacyAssets; },
+  get LEGACY_OUTPUT_DIR() { return R().legacyOutput; },
+  setRoots, resetRoots,
   ID_RE, FILE_RE, safeId, safeFile,
   projectDir, assetDir, outputDir, sbOutputDir,
   assetUrl, outputUrl, parseAssetUrl, parseOutputUrl,

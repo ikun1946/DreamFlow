@@ -44,6 +44,22 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 ├── dist/                            发布版：由 app/ 构建而来，不要手改
 │   └── 即梦批量生成控制台.html        单文件版（CSS/JS 全内联，双击即连后端）
 │
+├── desktop/                         Windows 桌面版（Electron 主进程；网页版不用它）
+│   ├── main.js                      主进程：单实例、窗口、托盘、IPC、优雅退出
+│   ├── preload.js                   最小权限桥（contextBridge，只暴露具名方法）
+│   ├── runtime-paths.js             目录布局唯一事实来源（配置 / 日志 / 数据根）
+│   ├── external-tools.js            dreamina / ffmpeg / ffprobe 定位
+│   ├── legacy-import.js             旧版 server/data → 桌面版数据目录：导入 + 完整性体检
+│   └── logger.js                    主进程日志落盘（2 MB 轮转）
+│
+├── build/                           打包图标（scripts/make-icons.js 生成，**需入库**）
+│   ├── icon.png                     512×512：窗口与托盘图标
+│   └── icon.ico                     16/24/32/48/64/128/256 多尺寸：安装包图标
+│
+├── electron-builder.yml             NSIS 安装包配置（appId / 文件白名单 / 不删用户数据）
+├── package.json                     桌面版依赖与脚本（运行时仍零依赖）
+├── release/                         electron-builder 产物：安装包与 win-unpacked（不入库）
+│
 ├── docs/                            文档
 │   ├── 前端页面与接口对接说明.md      接口契约（22 个接口、字段表、错误码、轮询）
 │   ├── 后端服务设计方案.md           后端架构 + CLI 调用协议 + 实现状态
@@ -53,10 +69,11 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 │
 └── scripts/
     ├── push-to-github.sh            创建 GitHub 私有仓库并推送（需 GITHUB_TOKEN）
-    └── backup-data.sh               把运行数据与本地快照备份到项目之外（git 保不住的那部分）
+    ├── backup-data.sh               把运行数据与本地快照备份到项目之外（git 保不住的那部分）
+    └── make-icons.js                生成 build/icon.png 与 icon.ico（零依赖，自写 PNG/ICO 编码）
 ```
 
-**路径约定**：源码只进 `app/`、产物只进 `dist/`、文档只进 `docs/`、脚本只进 `scripts/`、后端只进 `server/`；目录名用 ASCII，文件名可用中文；根目录只留 `README.md` + `build.js`。
+**路径约定**：源码只进 `app/`、产物只进 `dist/`、文档只进 `docs/`、脚本只进 `scripts/`、后端只进 `server/`、桌面壳只进 `desktop/`；目录名用 ASCII，文件名可用中文；根目录只留 `README.md` + `build.js` + 桌面端的 `package.json` / `electron-builder.yml`。
 
 ---
 
@@ -76,6 +93,60 @@ node server/index.js          # 1. 启动后端（唯一启动步骤，零依赖
 node build.js                              # 重建发布版（改完 app/ 后必须执行）
 dist/即梦批量生成控制台.html                # 双击单文件版，自动连接 127.0.0.1:8787
 ```
+
+---
+
+## Windows 桌面版
+
+网页版是"手动起服务 + 浏览器打开"；桌面版把这条链路收进一个窗口里：**内嵌服务由主进程启停，页面由同一个服务托管**（同源，视频 Range 与轮询都不用改）。前端源码是同一份 `app/`，两边共用。
+
+### 跑起来 / 打包
+
+```bash
+npm install                   # 只为桌面端装 electron 与 electron-builder
+npm start                     # 开发态直接起桌面窗口
+npm run dist                  # 打 NSIS 安装包 → release/JimengConsole-<版本>-x64-Setup.exe
+npm run pack                  # 只出免安装目录 → release/win-unpacked/（排障时更快）
+npm run icons                 # 重新生成 build/icon.png 与 icon.ico
+```
+
+安装包约 106 MB（Electron 运行时占绝大部分）。**不携带 dreamina / ffmpeg**，见下方"已知边界"。
+
+### 数据放在哪
+
+桌面版**不往安装目录写任何东西**（装到 Program Files 后那里是只读的），两个位置分开：
+
+| 位置 | 放什么 | 为什么在这 |
+|---|---|---|
+| `%APPDATA%\即梦批量生成控制台\` | `desktop-config.json`、`desktop-state.json`（窗口尺寸）、`logs\main.log` | 配置与日志体积小，跟着用户走没负担 |
+| `%USERPROFILE%\Videos\JimengConsole\` | `db.json`、`backup\`、`projects\<项目>\{assets,output}\` | **视频动辄几个 GB**，不能放会被云同步拖走的漫游目录 |
+
+数据根可以用 `JC_DATA_DIR` 环境变量覆盖（换盘、或者把库放到别的机器上）。
+
+### 和网页版的行为差异
+
+- **随机端口 + 一次性 Token**：不再抢 `8787`，端口被占也能启动。Token 每次启动重新生成、只在本进程内存里，用来挡住"本机其它网页偷偷调用生成接口"（那些接口会真扣积分）。仅监听 `127.0.0.1`。
+- **单实例**：第二次启动不会开出第二个服务，而是把已有窗口顶到前面。
+- **托盘常驻**：窗口关闭时若还有任务在跑，会收进托盘并弹气泡提示，而不是直接掐断本地跟踪。托盘菜单可看运行中任务数、打开数据/日志目录、跑环境检测、导入旧数据。
+- **外部工具自动定位**：`dreamina` / `ffmpeg` / `ffprobe` 按「显式配置 → 随包 `resources\bin\` → PATH → 常见安装位置（WinGet、`C:\ffmpeg\bin` 等）」查找，缺失时只影响对应功能，不会让应用起不来。
+- **退出一定走优雅停止**：先停轮询、再收 dreamina 子进程（Windows 下用 `taskkill /T /F` 收整棵进程树）、落盘、最后关服务，不留孤儿进程。
+
+### 旧数据导入
+
+桌面版的数据根和网页版的 `server/data/` 不是同一个目录，所以首次启动会**自动检测**旧库并询问是否导入（检测到且新库为空时才问，不重复打扰）。之后随时可以从托盘菜单「从旧版导入数据…」手动选目录。
+
+导入是**复制**，不是搬家：旧目录原样保留；目标已有库时会先备份到 `backup/pre-import-<时间戳>/`。导入后会输出一份报告 —— 项目 / 分镜表 / 分镜 / 素材 / 生成记录 / 视频文件各多少个，以及**库里引用的文件有没有全部找到**（有缺失会逐条列出，这是判断"丢没丢东西"的唯一依据）。
+
+### 自检（打包后也能验）
+
+```powershell
+$env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
+.\release\win-unpacked\JimengConsole.exe
+```
+
+会截图、落一份 DOM 快照、打印标题 / 视图几何 / 资源加载状态 / 数据目录 / 工具路径，然后自己退出。用于确认"打包出来的应用真的能把界面画出来"，而不是只看进程有没有起来。
+
+> 排障提示：`JC_DESKTOP_SMOKE` 之外，渲染进程的 `error` 级控制台消息会一律写进 `logs\main.log`。打包版没有 DevTools，页面一抛异常表现就是"窗口开了但一片白"，这条日志是唯一线索。
 
 ---
 
@@ -258,7 +329,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.21.0`**
+当前版本：**`0.22.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -271,6 +342,29 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.22.0` — 2026-09-20
+
+**Windows 桌面版（Electron + electron-builder + NSIS）** —— 从"手动起服务 + 浏览器打开"变成可安装的桌面应用。前端 `app/` 与后端业务逻辑**一行未改**，改的是"谁启停服务、数据放哪、怎么退出"。
+
+- **服务从"加载即启动"改成可启停模块**：新增 `server/server.js`（`createServer()` → `{start, stop, url, …}`）与 `server/runtime.js`（运行模式 / 数据根 / 生效配置的唯一持有者）。`server/index.js` 退化成命令行入口。旧写法的问题不是"不够优雅"：`index.js` 一旦被 require 就起服务、起定时器、挂信号监听，Electron 主进程既管不了它的生命周期，也没法在退出时保证落盘。
+- **数据根从常量改成"调用时读取"**：`config.js` 的 `DATA_DIR` / `store.js` 的 `DB_FILE` 原来是模块级常量，require 时就快照死了。桌面版必须把库放到用户可写目录（装到 Program Files 后安装目录只读），所以改成 getter + 懒加载的 `paths.js` 根。`runtime.js` 刻意**不** require `config`/`paths`，避免循环依赖。
+- **随机端口 + 一次性 Token**：`port: 0` 让系统分配空闲端口（不再因为 8787 被占而整个应用起不来）；Token 每次启动重新生成、只存内存，页面在 `api.js` 之前被注入 `window.APP_CONFIG={token}`。仅监听 `127.0.0.1`，Origin 不匹配直接 403。
+- **优雅退出**：`stop()` 清 tick → `dreamina.shutdown()`（Windows 用 `taskkill /T /F` 收整棵进程树）→ `store.flush()` → `closeAllConnections()` + 关服务（3 秒兜底）。修掉了此前 Node 退出时的 libuv 断言崩溃。
+- **目录布局拆成两处**：配置/日志在 `%APPDATA%\即梦批量生成控制台\`，数据根在 `%USERPROFILE%\Videos\JimengConsole\`（视频动辄几个 GB，不放会被云同步拖走的漫游目录）。数据根可用 `JC_DATA_DIR` 覆盖。
+- **旧数据导入**（`desktop/legacy-import.js`）：首次启动自动检测旧 `server/data` 并询问；导入是**复制**不是搬家，目标已有库先备份到 `backup/pre-import-<时间戳>/`，结束后输出"项目/分镜表/分镜/素材/记录/视频文件"计数 + **引用完整性检查**（逐条列出找不到的文件）。托盘菜单另有手动入口，供打包后自选目录。
+- **外部工具检测**（`desktop/external-tools.js`）：按「显式配置 → 随包 `resources\bin\` → PATH → 常见安装位置」定位 `dreamina`/`ffmpeg`/`ffprobe`；缺失只影响对应功能，不阻断启动。
+- **托盘与任务保护**：有任务在跑时关窗只收进托盘并弹气泡（不让一次误点关窗掐断本地跟踪）；托盘可看运行中任务数、开数据/日志目录、跑环境检测。
+- **渲染进程加固**：`nodeIntegration:false` / `contextIsolation:true` / `sandbox:true` / `webSecurity:true`；preload 只经 `contextBridge` 暴露具名方法；新窗口与导航只放行本机同端口，其余 `https` 交给系统浏览器、其它协议拒绝；`shell:showItem` 校验路径必须落在数据目录内。页面加 CSP。
+- **打包**：`electron-builder.yml` + NSIS，`perMachine:false`（不弹 UAC）、可选安装路径、桌面/开始菜单快捷方式、**`deleteAppDataOnUninstall:false`（卸载不删用户数据）**。`files` 白名单排除 `server/data`，避免把开发机上的库误发给别人。图标由 `scripts/make-icons.js` 零依赖生成（自写 PNG/ICO 编码）。
+- **打包后自检**：`JC_DESKTOP_SMOKE=1` 会截图 + 落 DOM 快照 + 打印视图几何/资源状态/工具路径后自行退出；渲染进程 `error` 级控制台消息一律转进 `logs\main.log`（打包版没有 DevTools，页面抛异常的表现就是"窗口开了但一片白"，这条日志是唯一线索）。
+- **修掉一个真机上很难查的首屏缺陷**：`bootFromUrl()` 原来 `await` 适配器探测，而该探测要真去问一次 dreamina CLI（本机实测 **2.5s**）。桌面版冷启动时这三层视图在探测完成前都是 `hidden`，用户看到的就是"窗口打开了、一片空白、几秒后才出现首页"——在桌面场景里这跟启动失败没有区别。改为只发起不等待，结果回来再补一次顶栏；实测首屏从 >2.5s 降到 1.5s 内可见。
+
+**同版本内的前端改动**（`c88f051`）：分镜命名优化、三层页面转场、窄屏布局修复。
+
+**⚠ 发布阻塞项（未解决，别当成已完成）**：仓库仍无 `LICENSE`；本机 `dreamina.exe` 未签名且**未确认允许再分发**（故首版只做检测、不内置）；FFmpeg 为 GPL 构建且单二进制约 212 MB（同样未内置）；安装包**无代码签名**（`Get-AuthenticodeSignature` 为 `NotSigned`，用户会看到 SmartScreen 警告）。
+
+**版本**：`0.21.0 → 0.22.0`（MINOR：新增桌面端交付形态；网页版接口与数据格式不变，旧库可由桌面版导入）。
 
 #### `0.21.0` — 2026-09-20
 

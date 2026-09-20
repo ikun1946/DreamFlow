@@ -49,3 +49,16 @@ dist/
 # ── 本地备份 ───────────────────────────
 # 历史快照与手工备份，内部留档用
 backup/
+
+# ── 桌面端安装包产物（electron-builder）─────────────────────────
+# release/ 里是 NSIS 安装包、未打包目录和 blockmap，动辄上百 MB，可随时重建，不入库。
+# 注意 build/ **要**入库：里面的 icon.png / icon.ico 是打包时的图标资源，
+# electron-builder 在 npm run dist 时就要读它，不入库会导致别人克隆后打包失败。
+# （图标本身由 `npm run icons` 生成，脚本在 scripts/make-icons.js。）
+release/
+
+# ── 桌面端本机状态 ─────────────────────────────────────────────
+# 桌面版把配置/日志写在 %APPDATA%\<产品名>\，正常不会落在仓库里；
+# 这里只做防御性忽略，防止有人用 JC_DATA_DIR 指到仓库内做实验。
+/desktop-config.json
+/desktop-state.json

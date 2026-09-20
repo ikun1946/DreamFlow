@@ -1,0 +1,22 @@
+{
+  "name": "jimeng-console",
+  "productName": "即梦批量生成控制台",
+  "version": "0.22.0",
+  "private": true,
+  "description": "即梦批量生成控制台 —— 面向 AI 短剧 / 分镜视频生产的分镜批量管理工作台（Windows 桌面版）",
+  "author": "ikun1946",
+  "license": "UNLICENSED",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/index.js",
+    "build:web": "node build.js",
+    "icons": "node scripts/make-icons.js",
+    "pack": "electron-builder --win --dir",
+    "dist": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3"
+  }
+}

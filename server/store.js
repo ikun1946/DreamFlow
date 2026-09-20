@@ -8,7 +8,11 @@
    ============================================================ */
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR, DB_FILE } = require('./config');
+const configMod = require('./config');
+/* ⚠ 这两个路径**不是常量**：桌面版会把数据根指到用户可写目录（见 runtime.js）。
+   每次调用现取，绝不在这里解构快照 —— 否则桌面版会写进安装目录（Program Files 下只读）。 */
+const DATA_DIR = () => configMod.DATA_DIR;
+const DB_FILE = () => configMod.DB_FILE;
 const { nowIso } = require('./util');
 const schema = require('./schema');   // schema 版本与迁移框架（迁移唯一入口）
 
@@ -62,28 +66,28 @@ function quarantine(file, why) {
    必须有名字可辨识、不会被轮转挤掉的独立副本。
    ⚠ 备份失败即**中止迁移** —— 没有回退点的迁移不许做。 */
 function backupBeforeMigration(fromVersion) {
-  const dir = path.join(DATA_DIR, 'backup');
+  const dir = path.join(DATA_DIR(), 'backup');
   fs.mkdirSync(dir, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const dest = path.join(dir, 'pre-schema-v' + (fromVersion + 1) + '-' + ts + '.json');
-  fs.copyFileSync(DB_FILE, dest);
+  fs.copyFileSync(DB_FILE(), dest);
   console.log('[迁移] 迁移前备份：' + path.relative(path.join(__dirname, '..'), dest));
   return dest;
 }
 
 function load() {
   if (db) return db;
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(DATA_DIR(), { recursive: true });
   /* ⚠ 这里以前还会 mkdir data/output 与 data/assets。那两处是旧的扁平布局，
      现在已经没有代码往里面写东西了；再建出来只会让"彻底删除项目"之后
      看起来还剩两个空目录，误导人以为没删干净。需要时由 paths.ensureProjectDirs 建项目目录。 */
-  if (fs.existsSync(DB_FILE)) {
+  if (fs.existsSync(DB_FILE())) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      const parsed = JSON.parse(fs.readFileSync(DB_FILE(), 'utf8'));
       // JSON.parse('null') 不抛异常却返回 null：必须按「损坏」处理，否则会被当成空库静默重建
       if (parsed && typeof parsed === 'object') db = parsed;
-      else { quarantine(DB_FILE, '内容不是对象：' + String(parsed)); db = null; }
-    } catch (e) { quarantine(DB_FILE, '解析失败：' + e.message); db = null; }
+      else { quarantine(DB_FILE(), '内容不是对象：' + String(parsed)); db = null; }
+    } catch (e) { quarantine(DB_FILE(), '解析失败：' + e.message); db = null; }
   }
   if (!db) { db = emptyDb(); saveNow(); console.log('[store] 空库初始化完成'); return db; }
 
@@ -144,24 +148,24 @@ let lastBackupAt = 0;
 
 function listBackups() {
   try {
-    return fs.readdirSync(DATA_DIR)
+    return fs.readdirSync(DATA_DIR())
       .filter((f) => f.startsWith('db.json.bak-'))
       .sort().reverse()
-      .map((f) => path.join(DATA_DIR, f));
+      .map((f) => path.join(DATA_DIR(), f));
   } catch (e) { return []; }
 }
 
 function rotateBackup() {
   try {
-    if (!fs.existsSync(DB_FILE)) return;
+    if (!fs.existsSync(DB_FILE())) return;
     const now = Date.now();
     if (now - lastBackupAt < BACKUP_MIN_MS) return;
-    const st = fs.statSync(DB_FILE);
+    const st = fs.statSync(DB_FILE());
     if (!st.size) return;
     const prev = listBackups()[0];
-    if (prev && fs.readFileSync(prev, 'utf8') === fs.readFileSync(DB_FILE, 'utf8')) { lastBackupAt = now; return; }
-    const bak = DB_FILE + '.bak-' + new Date().toISOString().replace(/[:.]/g, '-');
-    fs.copyFileSync(DB_FILE, bak);
+    if (prev && fs.readFileSync(prev, 'utf8') === fs.readFileSync(DB_FILE(), 'utf8')) { lastBackupAt = now; return; }
+    const bak = DB_FILE() + '.bak-' + new Date().toISOString().replace(/[:.]/g, '-');
+    fs.copyFileSync(DB_FILE(), bak);
     lastBackupAt = now;
     listBackups().slice(BACKUP_KEEP).forEach((f) => { try { fs.unlinkSync(f); } catch (e) { /* 忽略 */ } });
   } catch (e) { console.error('[store] 自动备份失败：', e.message); }
@@ -177,9 +181,9 @@ function saveNow() {
     return;
   }
   rotateBackup();
-  const tmp = DB_FILE + '.tmp';
+  const tmp = DB_FILE() + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(db, null, 1));
-  fs.renameSync(tmp, DB_FILE);
+  fs.renameSync(tmp, DB_FILE());
 }
 
 /* 合并写：单用户本地场景下 200ms 防抖足够，进程退出前 flush */
@@ -194,6 +198,13 @@ function save() {
 
 function flush() { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; saveNow(); } }
 
+/* 丢弃内存副本，从磁盘重新读一次。
+   只给桌面版的「从旧版导入数据」用 —— 导入会把磁盘上的 db.json 换成旧库，
+   而内存里还留着导入前的库，不重读的话界面看到的还是旧数据。
+   ⚠ 调用前**绝对不能先 flush()**：那会把内存里的库盖回刚导入的库上，
+   等于把用户的导入结果抹掉。 */
+function reload() { db = null; return load(); }
+
 function pushLog(storyboardId, level, msg) {
   const d = load();
   const arr = (d.logs[storyboardId] = d.logs[storyboardId] || []);
@@ -202,4 +213,4 @@ function pushLog(storyboardId, level, msg) {
   save();
 }
 
-module.exports = { load, save, saveNow, flush, pushLog };
+module.exports = { load, save, saveNow, flush, reload, pushLog };
