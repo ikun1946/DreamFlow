@@ -159,6 +159,9 @@
     poll: { timer: null, idle: 0, lastSig: null, gen: 0 },
     imp: { raw: '', delimiter: { type: 'custom', value: ';;' }, preview: null, busy: false, timer: null, seq: 0, impType: null },   // impType = 本次导入的目标素材类型（由打开它的入口决定）
     cliBusy: null, cliMsg: '', cliUrl: null, cliUserCode: null, cliRaw: null,
+    /* 创作 CLI 的安装/更新状态（来自 GET /system/cli，见 server/cli-installer.js）。
+       null = 还没拉到；拉失败也保持 null，界面退回"不显示安装向导"而不是报错。 */
+    cliInfo: null,
     settingsDirty: false,   // 抽屉本次打开期间用户是否已改动过设置（"先显示后刷新"的守卫）
     cliHint: null,          // 后端给的"下一步怎么做"提示（如手工执行 dreamina relogin）
     dCliUrl: null, dCliCode: null,   // 创作 CLI（dreamina）的授权链接与设备码，独立存放
@@ -4534,11 +4537,22 @@
     $('#settingsDrawer').classList.add('open');
     $('#settingsDrawer').setAttribute('aria-hidden', 'false');
     try {
-      const [st, ad] = await Promise.all([Api.getSettings(), Api.getAdapter()]);
-      S.adapter = ad;
+      /* 三个请求**各自独立失败**：任何一个挂掉都不该让整个抽屉停在半渲染状态。
+         ⚠ 实测（2026-09-20）：空库（还没建项目）时 getSettings 会返回
+         "当前没有任何项目，请先创建项目"，原来 Promise.all 被它一并 reject，
+         于是 await 之后的第二次 renderSettings 永远不执行 —— 抽屉就停在
+         第一次渲染的占位内容上，连 CLI 区块也跟着显示成"状态未知"。
+         而"刚装完、还没建项目、正准备装创作 CLI"恰恰是最需要这个抽屉正常的场景。 */
+      const [st, ad, ci] = await Promise.all([
+        Api.getSettings().catch(() => null),
+        Api.getAdapter().catch(() => null),
+        Api.getCliStatus().catch(() => null)
+      ]);
+      if (ad) S.adapter = ad;
+      if (ci) S.cliInfo = ci;
       /* 抽屉这时已经可交互了：如果用户在等待期间改过任何设置项，就别拿服务端的旧值盖回去，
          否则他的修改会当场回退（"先显示、后刷新"必须配这个守卫）。 */
-      if (!S.settingsDirty) S.settings = st;
+      if (st && !S.settingsDirty) S.settings = st;
       renderSettings();
       /* 冷启动时后端会用"读取中"占位限时返回（不为了一个 9 秒的探测卡住响应）→ 补拉一次，
          免得抽屉一直停在占位文案上。只在抽屉还开着时执行。 */
@@ -4579,6 +4593,119 @@
     return S.cliMsg ? '<div class="hint-sm" id="cliActMsg">' + cliMsgInner() + '</div>' : '';
   }
 
+  /* ---------------- 创作 CLI 的安装向导 ----------------
+     为什么要有这一段（2026-09-20）：官方只提供 `curl … | bash` 一种安装方式，
+     而它的 Windows 分支要求 Git Bash —— 干净的 Windows 电脑跑不了。
+     所以"让用户自己去装"这条路本来就不通，安装必须由应用代劳
+     （从官方 CDN 下载，见 server/cli-installer.js）。
+
+     界面要做成的核心一件事：**把"没装"和"装了没登录"分开说**。
+     这两件事用户要做的动作完全不同（一个去装、一个去登录），
+     而旧实现只有一句"未就绪"，还把 Windows 执行不了的 bash 命令当指引。 */
+
+  function cliStateCardHTML(probing, ok, dInfo, dAcct, credit, creditAt, stale, info) {
+    if (probing) {
+      return '<div class="statecard">' + I.warn +
+        '<span>状态读取中…（首次探测需要几秒，拿到结果后会自动更新，无需刷新）</span></div>';
+    }
+    const installed = info ? info.installed : null;
+
+    /* 态 1：没装 —— 最需要被明确告知的状态 */
+    if (installed === false) {
+      return '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
+        '<span><b>未安装</b>　·　没有它就无法生成视频' +
+        '<span class="hint-sm" style="display:block">' +
+        '创作 CLI 是即梦官方的命令行工具，本应用靠它调用生成能力。' +
+        '点「安装创作 CLI」会从<b>即梦官方源</b>下载并装到 <code>' + esc(info.exePath) + '</code>' +
+        '（与官方安装脚本用的位置一致，不经过第三方）。' +
+        (info.latest && info.latest.ok && info.latest.version ? '　官方当前版本 ' + esc(info.latest.version) + '。' : '') +
+        '</span></span></div>';
+    }
+
+    /* 态 2：装了但没登录 —— 只差一次授权，别说成"未就绪"让人摸不着头脑。
+       ⚠ 必须要求 installed === true 才走这一支。installed 为 null 表示
+       "安装状态还没拉到"（getCliStatus 失败或还没返回），这时**不能**说"已安装" ——
+       在真的没装的机器上显示"已安装，但未登录"，正是本次要消灭的那类误导。 */
+    if (installed === true && !ok) {
+      return '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
+        '<span><b>已安装，但未登录</b>' +
+        '<span class="hint-sm" style="display:block">' +
+        'CLI 已经就位，只差一次浏览器授权。点「创作 CLI 登录」，按提示在浏览器里完成即可。' +
+        '</span></span></div>';
+    }
+
+    /* 态 2b：状态未知 / 不可用 —— 老实说"不知道"，并把可做的动作给出来。
+       宁可说"没读到状态"，也不要编一个可能错的原因让用户去查错方向。 */
+    if (!ok) {
+      return '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
+        '<span><b>当前不可用</b>' +
+        (dInfo && dInfo.message ? '：' + esc(dInfo.message) : '') +
+        '<span class="hint-sm" style="display:block">' +
+        (installed === null
+          ? '安装状态还没读到（可能是查询超时或网络不通）。点右上角「检测连接状态」重试；'
+          : '') +
+        '若 CLI 确实没装，点下面的「安装创作 CLI」由应用从官方源安装。' +
+        '</span></span></div>';
+    }
+
+    /* 态 3：就绪 */
+    const build = dInfo && dInfo.commit ? esc(String(dInfo.commit).slice(0, 7)) : null;
+    return '<div class="statecard ok">' + I.check +
+      '<span>已就绪' +
+      (dAcct && dAcct.userId != null ? '　·　账号 <b>' + esc(String(dAcct.userId)) + '</b>' + (dAcct.vipLevel ? '（' + esc(dAcct.vipLevel) + '）' : '') : '') +
+      (credit != null ? '　·　积分 <b>' + credit + '</b>' : '') +
+      (creditAt ? '　<span class="hint-sm">读取于 ' + esc(creditAt) + (stale ? '（已过期，正在后台更新…）' : '') + '</span>' : '') +
+      '<span class="hint-sm" style="display:block">' +
+      (build ? '本机构建 <code>' + build + '</code>' : '') +
+      (info && info.latest && info.latest.ok && info.latest.version ? '　·　官方当前版本 <b>' + esc(info.latest.version) + '</b>' : '') +
+      (info && info.exePath ? '　·　<code>' + esc(info.exePath) + '</code>' : '') +
+      '</span></span></div>';
+  }
+
+  /* 更新提示：只在"确实发现新版本"时出现，不打扰已经是最新的用户 */
+  function cliUpdateNoticeHTML(info) {
+    if (!info || !info.needsUpdate) return '';
+    return '<div class="statecard" style="background:var(--primary-bg);color:var(--ink80)">' + I.warn +
+      '<span>发现创作 CLI 新版本' +
+      (info.latest && info.latest.version ? '（官方 ' + esc(info.latest.version) + '）' : '') +
+      '<span class="hint-sm" style="display:block">' +
+      (info.updateNote ? esc(info.updateNote) + '。' : '') +
+      '点「更新创作 CLI」即可就地替换，旧版会自动备份保留。' +
+      '</span></span></div>';
+  }
+
+  /* 按钮：按"当前该做什么"决定给哪几个 —— 没装就只给安装，别拿登录按钮干扰 */
+  function cliActionsHTML(info, ok) {
+    const busy = S.cliBusy;
+    const dis = busy ? ' disabled' : '';
+    const out = [];
+    const installed = info ? info.installed : null;
+
+    /* 没装、或"装没装还没读到"（null）→ 都给安装入口。
+       对 null 宁可多给一个按钮：装过的人点它只是重装一遍（下载-校验-备份-替换，幂等），
+       而真没装的人少了这个按钮就完全无从下手。 */
+    if (installed !== true) {
+      out.push('<button class="btn-mini btn-mini-cta" data-cliact="install"' + dis +
+        ' title="从即梦官方源下载创作 CLI 并安装（约 30 MB），装到官方安装脚本使用的默认位置">' +
+        (busy === 'install' ? '下载安装中…（约 30 MB，请勿关闭）' : '安装创作 CLI') + '</button>');
+    } else if (info && info.needsUpdate) {
+      out.push('<button class="btn-mini btn-mini-cta" data-cliact="install"' + dis +
+        ' title="就地更新到官方最新版；旧版会备份成 .bak-<时间> 留在原处">' +
+        (busy === 'install' ? '更新中…（约 30 MB，请勿关闭）' : '更新创作 CLI') + '</button>');
+    }
+
+    /* 登录 / 切换账号只在 CLI 确实存在时才有意义 */
+    if (installed !== false) {
+      out.push('<button class="btn-mini" data-cliact="dlogin"' + dis +
+        ' title="创作 CLI 登录：若本地登录态仍有效，CLI 会直接复用、不重新授权">' +
+        (busy === 'dlogin' ? '等待授权中…' : '创作 CLI 登录') + '</button>');
+      out.push('<button class="btn-mini" data-cliact="dswitch"' + dis +
+        ' title="切换创作 CLI 账号：会先退出当前账号再重新授权（有二次确认）">' +
+        (busy === 'dswitch' ? '切换中（先退出再授权）…' : '创作 CLI 切换账号') + '</button>');
+    }
+    return out.join('');
+  }
+
   /* CLI 账户操作：检测 / 登录 / 切换账号（后端 spawn 创作 CLI，登录含最长 10 分钟授权等待）。
      2026-09-18 画布 CLI 移除后只剩这一套（原本还有画布 CLI 的 login/switch 两套独立登录）。 */
   async function runCliAction(kind) {
@@ -4594,15 +4721,19 @@
     }
     const labels = {
       check: '正在检测创作 CLI 连接…',
+      install: '正在从即梦官方源下载并安装创作 CLI（约 30 MB）…',
       dlogin: '已启动创作 CLI 登录流程：请在打开的浏览器中完成授权（最长等待约 10 分钟，完成后自动确认）…',
       dswitch: '正在退出创作 CLI 当前账号并重新授权（请在打开的浏览器中完成新账号登录，最长约 10 分钟）…'
     };
     S.cliBusy = kind; S.cliMsg = labels[kind]; S.cliRaw = null; S.cliHint = null;
     S.dCliUrl = null; S.dCliCode = null;
     renderSettings();
-    // 登录/切换：POST 等待授权期间，每 3s 轮询适配器状态，实时显示等待时长与授权链接
+    /* 登录/切换：POST 等待授权期间，每 3s 轮询适配器状态，实时显示等待时长与授权链接。
+       ⚠ 这里原来写的是 `kind !== 'check'`。加入 install 之后，那个条件会把**安装**
+       也卷进来 —— 安装期间界面会错报"等待浏览器授权中"，把用户引向完全错误的方向。
+       所以必须**显式列出**两种登录动作，而不是"非检测即登录"。 */
     var liveTimer = null, waited = 0, shownUrl = null;
-    if (kind !== 'check') {
+    if (kind === 'dlogin' || kind === 'dswitch') {
       liveTimer = setInterval(async () => {
         waited += 3;
         try {
@@ -4623,13 +4754,44 @@
         } catch (e) { /* 轮询失败忽略 */ }
       }, 3000);
     }
+    /* 安装进度：install 是一次长请求（30 MB，慢网下要几分钟），请求返回之前拿不到
+       任何中间态。所以另开一个 1 秒轮询去问 GET /system/cli 的 progress 字段，
+       **只改按钮文案**、不整块重绘 —— 整块重绘会打断用户正在看的滚动位置。 */
+    var progTimer = null;
+    if (kind === 'install') {
+      progTimer = setInterval(async () => {
+        try {
+          const ci = await Api.getCliStatus();
+          S.cliInfo = ci;
+          const el = document.querySelector('[data-cliact="install"]');
+          if (!el) return;
+          const p = ci.progress;
+          if (!p || !p.active) return;
+          if (p.phase === 'download') {
+            const pct = p.total ? Math.floor(p.got / p.total * 100) : 0;
+            el.textContent = '下载中 ' + pct + '%（' + (p.got / 1048576).toFixed(1) + ' MB / 约 30 MB）…';
+          } else {
+            const nm = { verify: '校验文件', replace: '替换文件', sync: '同步官方状态' }[p.phase] || '收尾';
+            el.textContent = '正在' + nm + '…';
+          }
+        } catch (e) { /* 进度查询失败不影响安装本身 */ }
+      }, 1000);
+    }
     try {
+      /* install 是长请求（要下 ~30 MB，慢网下可能几十秒）—— S.cliBusy 在等待期间
+         一直是 'install'，按钮显示"下载安装中…"并禁用，用户不会以为没反应而连点。 */
       const res = kind === 'check' ? await Api.adapterCheck()
+        : kind === 'install' ? await Api.installCli()
         : kind === 'dlogin' ? await Api.dreaminaLogin()
         : await Api.dreaminaSwitch();
       S.adapter = Object.assign({}, S.adapter, res);
       const okFlag = kind === 'check' ? res.cliAvailable !== false : res.ok !== false;
       S.cliMsg = res.message || (okFlag ? '操作完成' : '操作未完成');
+      /* 装完之后"官方最新版/要不要更新"这些也跟着变了，重拉一次安装状态，
+         否则界面还停在"未安装"或"有新版"的旧结论上。 */
+      if (kind === 'install') {
+        try { S.cliInfo = await Api.getCliStatus(); } catch (e) { /* 拉不到就保留旧值 */ }
+      }
       /* 后端流程结束时会回收链接，这里用本地已捕获的值兜底：
          只要流程中出现过链接就不丢 —— 否则用户会看到"等待授权"却没有任何可点的链接。 */
       S.dCliUrl = res.authUrl || S.dCliUrl || null;
@@ -4648,6 +4810,7 @@
       S.cliMsg = errText(e); fail(e);
     }
     if (liveTimer) clearInterval(liveTimer);
+    if (progTimer) clearInterval(progTimer);
     S.cliBusy = null;
     renderSettings();
   }
@@ -4695,7 +4858,7 @@
     return '创作 CLI';
   }
 
-  function renderSettings() {
+ function renderSettings() {
     const s = S.settings || Api.META && { delimiter: { type: 'custom', value: ';;' }, defaults: {}, queue: {}, adapter: {} };
     const o = opts();
     const dur = o.duration;
@@ -4847,29 +5010,19 @@
               (dmNotice && dmNotice.reason === 'invalid'
                 ? '<span class="hint-sm" style="display:block">' + esc(dmNotice.message) + '</span>' : '') +
               '</div>') +
-          /* —— 创作 CLI：唯一的生成引擎（画布 CLI 已移除）—— */
+          /* —— 创作 CLI：唯一的生成引擎（画布 CLI 已移除）——
+             三态（没装 / 装了没登录 / 就绪）+ 安装·更新入口。
+             渲染见上面的 cliStateCardHTML / cliUpdateNoticeHTML / cliActionsHTML。
+             ⚠ 这里不再出现 `curl … | bash` —— 那是官方脚本的安装命令，Windows 原生
+             跑不了（它要求 Git Bash），把它当指引等于把没装 CLI 的用户卡死。 */
           '<div class="sblock">' +
             '<div class="sblock-hd"><b>创作 CLI（dreamina）</b></div>' +
-            '<div class="statecard' + (dreaminaProbing ? '' : (dreaminaOk ? ' ok' : '')) + '">' +
-              (dreaminaProbing || !dreaminaOk ? I.warn : I.check) +
-              '<span>' + (dreaminaProbing
-                ? '状态读取中…（首次探测需要几秒，拿到结果后会自动更新，无需刷新）'
-                : (dreaminaOk
-                  ? '已就绪' + (dInfo.version ? '　v' + esc(dInfo.version) : '') +
-                    (dAcct && dAcct.userId != null ? '　·　账号 <b>' + esc(String(dAcct.userId)) + '</b>' + (dAcct.vipLevel ? '（' + esc(dAcct.vipLevel) + '）' : '') : '') +
-                    (dreaminaCredit != null ? '　·　积分 <b>' + dreaminaCredit + '</b>' : '') +
-                    (creditAt
-                      ? '　<span class="hint-sm">读取于 ' + esc(creditAt) + (dreaminaStale ? '（已过期，正在后台更新…）' : '') + '</span>'
-                      : '')
-                  : '未就绪（安装：curl -s https://jimeng.jianying.com/cli | bash）')) +
-            '</span></div>' +
+            cliStateCardHTML(dreaminaProbing, dreaminaOk, dInfo, dAcct, dreaminaCredit, creditAt, dreaminaStale, S.cliInfo) +
+            cliUpdateNoticeHTML(S.cliInfo) +
             '<p class="hint-sm">命令：<code>dreamina</code>　·　负责视频生成的全部链路（<code>--image</code> / <code>--audio</code> 混合参考）。' +
               '下方按钮作用于创作 CLI 自己的 OAuth 登录态；' +
               '<b>「切换账号」会先退出现有账号</b>（CLI 的 <code>relogin</code> 语义），因此会先弹一次确认</p>' +
-            '<div class="cli-actions">' +
-              '<button class="btn-mini" data-cliact="dlogin"' + (S.cliBusy ? ' disabled' : '') + ' title="创作 CLI 登录：若本地登录态仍有效，CLI 会直接复用、不重新授权">' + (S.cliBusy === 'dlogin' ? '等待授权中…' : '创作 CLI 登录') + '</button>' +
-              '<button class="btn-mini" data-cliact="dswitch"' + (S.cliBusy ? ' disabled' : '') + ' title="切换创作 CLI 账号：会先退出当前账号再重新授权（有二次确认）">' + (S.cliBusy === 'dswitch' ? '切换中（先退出再授权）…' : '创作 CLI 切换账号') + '</button>' +
-            '</div>' +
+            '<div class="cli-actions">' + cliActionsHTML(S.cliInfo, dreaminaOk) + '</div>' +
           '</div>' +
           /* 待完成的创作 CLI 授权：后端在启动授权后就把链接落库，这里轮询显示，随时可点 */
           (dAuthUrl

@@ -82,6 +82,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 | `server/index.js` | 网页版命令行入口 |
 | `server/runtime.js` | 运行模式 / 数据根 / 生效配置的唯一持有者 |
 | `server/paths.js` | 磁盘布局与资源 URL 形状的唯一事实来源 |
+| `server/cli-installer.js` | 创作 CLI 的下载 / 安装 / 更新（走官方 CDN，**不内置二进制**） |
 | `server/store.js` | JSON 持久化（原子写、滚动备份、迁移前备份） |
 | `server/schema.js` | schemaVersion 与迁移框架（旧库升级唯一入口） |
 | `desktop/main.js` | Electron 主进程（单实例、窗口、托盘、优雅退出） |
@@ -98,12 +99,27 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 
 刻意分开：视频动辄几个 GB，不能放进会被云同步拖走的漫游目录。数据根可用 `JC_DATA_DIR` 覆盖（测试隔离、换盘都靠它）。
 
+## 创作 CLI 的安装能力（改动前必读）
+
+应用内可以**一键安装 / 更新创作 CLI**（`server/cli-installer.js`，走官方 CDN）。这不是"顺手加的功能"：**没有 CLI 这个应用完全不可用**，而官方唯一的安装方式 `curl -s https://jimeng.jianying.com/cli | bash` 在干净的 Windows 上根本跑不了 —— 那个脚本的 Windows 分支要求 MINGW / MSYS / CYGWIN（即 Git Bash）。
+
+**三条不能破的约束**（破了会分别踩到授权、互操作性、数据损坏三类问题）：
+
+1. **绝不把 dreamina 二进制打进安装包。** 再分发授权至今未确认。必须保持"运行时从官方 CDN 下载"——用户从官方源拿，应用只是搬运，分发主体没变。
+2. **装到 `%USERPROFILE%\bin\dreamina.exe`**（官方安装脚本用的默认位置），**不要**装进应用自己的目录。否则手工装的、应用装的会变成两份互不知道的 CLI，用户更新了其中一份，另一份还在用旧的。
+3. **更新前必须备份旧文件、下载后必须校验是合法 PE。** CDN 出问题时可能返回一个 HTML 错误页；不校验就覆盖，等于把用户原本能用的 CLI 弄坏。
+
+**两个容易搞混的判据**（历史上都错过）：
+
+- **"装没装"要看 spawn 能不能起来**，不能看某个文件在不在。曾经读 `~/.dreamina_cli/version.json` 判断，结果 exe 不存在时照样报"已安装但未登录"，把用户引去查登录问题。
+- **版本号有两个来源，不要混用**：exe 自己报的是 commit（`dreamina version` → `ec1b9fa`），官方 `version.json` 报的是语义版本（`1.4.18`）。前者是"本机在跑的构建"，后者是"官方当前发布版"。
+
 ## 已知发布阻塞项（**尚未解决**）
 
 对外公开分发前必须处理，别当成已经完成了：
 
 1. 仓库**没有 `LICENSE`**
-2. `dreamina.exe` 未签名、**未确认允许再分发** → 桌面版只检测、不内置
+2. `dreamina.exe` 未签名、**未确认允许再分发** → 因此**不内置**，改为运行时从官方 CDN 下载（见上一节；这不改变分发主体，但"官方是否允许"这个问题本身仍未答复）
 3. FFmpeg 是 **GPL 构建**且单个约 212 MB → 同样未内置
 4. 安装包**无代码签名** → 使用者首次安装会看到 SmartScreen 警告
 

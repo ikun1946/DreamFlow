@@ -189,6 +189,11 @@
     me:           ()          => request('GET', '/auth/me'),
     getAdapter:   ()          => request('GET', '/system/adapter'),
     adapterCheck: ()          => request('POST', '/system/adapter/check'),
+    /* 创作 CLI 的安装 / 更新：走官方 CDN，见 server/cli-installer.js。
+       ⚠ installCli 是长请求（要下 ~30 MB），调用方**必须**给加载态；
+       request() 没有超时，所以慢网下它会一直等，不会中途被掐断。 */
+    getCliStatus: ()          => request('GET', '/system/cli'),
+    installCli:   ()          => request('POST', '/system/cli/install'),
     /* 画布 CLI 已移除：原先的 /system/adapter/login 与 /switch 两个画布专用入口随之删除 */
     dreaminaLogin: ()         => request('POST', '/system/adapter/dreamina/login'),
     dreaminaSwitch:()         => request('POST', '/system/adapter/dreamina/switch'),

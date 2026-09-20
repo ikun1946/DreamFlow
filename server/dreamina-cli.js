@@ -97,14 +97,19 @@ function killChild(child) {
 }
 
 function makeDreaminaAdapter(cfg) {
-  const bin = cfg.dreaminaCliPath || 'dreamina';
+  /* ⚠ 路径必须**每次 spawn 现取**，不能在适配器创建时快照。
+     理由：CLI 可能是在**应用运行期间**才装上的 —— 用户点一下界面上的
+     「安装创作 CLI」，我们就地把 exe 写进 %USERPROFILE%\bin 并把
+     cfg.dreaminaCliPath 更新成那个绝对路径（见 cli-installer.js）。
+     如果这里快照了旧值，装完还得重启应用才生效，用户会以为"点了没反应"。 */
+  const binPath = () => (cfg && cfg.dreaminaCliPath) || 'dreamina';
   const state = { probe: null, credit: null, running: new Map() };
 
   /* ---------------- spawn ---------------- */
   function rawSpawn(args, timeoutMs) {
     return new Promise((resolve) => {
       let child;
-      try { child = trackChild(spawn(bin, args, { windowsHide: true, shell: false })); }
+      try { child = trackChild(spawn(binPath(), args, { windowsHide: true, shell: false })); }
       catch (e) { return resolve({ kind: 'cli_down', reason: 'spawn 失败: ' + e.message }); }
       let stdout = '', stderr = '', done = false;
       const timer = setTimeout(() => {
@@ -170,23 +175,62 @@ function makeDreaminaAdapter(cfg) {
     if (!force && c && Date.now() - c.at < PROBE_TTL_MS) return c;
     if (probing) return probing;
     probing = (async () => {
-      // version 从随安装写入的 version.json 读取（零进程开销）；可用性只靠一次 user_credit 探测
-      let version = null;
-      try {
-        const vf = path.join(require('os').homedir(), '.dreamina_cli', 'version.json');
-        version = JSON.parse(fs.readFileSync(vf, 'utf8')).version || null;
-      } catch (e) { /* 文件缺失时退回未知 */ }
-      const cr = await call(['user_credit'], 20000);
+      /* ① 先问 exe 本身。这一步同时回答两个问题：
+            "装没装"（spawn 失败 = 没装）和"是哪个构建"（version 子命令自报）。
+
+         ⚠ 这里**必须**问实际在跑的那个 exe，不能读 ~/.dreamina_cli/version.json。
+         那个文件是**上次安装脚本写下的**，跟当前用的 exe 没有任何绑定关系。
+         旧实现读它，制造了两个方向相反的错判（2026-09-20 实测复现）：
+           · exe 不存在、但文件还在 → 报"已安装但未登录"，把用户引向登录问题，
+             而真正的问题是 CLI 根本不在（我实测把路径指向不存在的 exe，
+             它照样回 "已安装但未登录 v1.4.18"）；
+           · exe 正常、但文件缺失 → version 为 null，于是 available 恒为 false，
+             一个完全可用的 CLI 被判成"不可用"。
+         `dreamina version` 返回 {version, commit, build_time}，是 exe 自己的身份。 */
+      /* ② 两条命令**并行**跑，不要串行。
+         实测（2026-09-20 本机）：version ≈ 2.7s、user_credit ≈ 2.8s ——
+         串行合计 5.9s，并行 3.1s。并行把"首次探测要等多久"压回了加 version
+         之前的水平，否则每 5 分钟一次的探测会白白多花近 3 秒。
+         两条命令互不依赖，也不存在资源争用（不是同一条命令开两个进程）。
+         CLI 没装时两条都会立刻 spawn 失败，不产生额外等待。 */
+      const [vr, cr] = await Promise.all([
+        call(['version'], 15000),
+        call(['user_credit'], 20000)
+      ]);
+      /* "装没装"看 spawn 有没有失败：任一条能起来就说明 exe 在。
+         用 || 而不是只看 version —— 万一将来 version 子命令改名或出错，
+         user_credit 成功照样能证明 CLI 可用，不该因此被判成"没装"。 */
+      const installed = vr.kind !== 'cli_down' || cr.kind !== 'cli_down';
+      const build = (vr.kind === 'ok' && vr.data) ? vr.data : null;
       const creditData = cr.kind === 'ok' && cr.data ? cr.data : null;
-      const available = !!(version && creditData && typeof creditData.total_credit === 'number');
+      const loggedIn = !!(creditData && typeof creditData.total_credit === 'number');
+
+      /* ⚠ 可用性判据只看"CLI 能跑 + 拿到积分"，**不再要求 version 非空**。 */
+      const available = installed && loggedIn;
+
+      let message;
+      if (!installed) {
+        message = '未检测到创作 CLI（' + binPath() + '）';
+      } else if (!loggedIn) {
+        message = '创作 CLI 已安装但未登录（dreamina login）';
+      } else {
+        message = '即梦创作 CLI 已就绪（积分 ' + creditData.total_credit + '）';
+      }
+
       state.probe = {
         at: Date.now(),
         available,
-        version,
+        installed,
+        loggedIn,
+        /* version 字段：exe 自报的是 commit 形状（如 ec1b9fa-dirty），**不是**语义版本。
+           语义版本（1.4.18）只存在于官方 version.json 里，它描述的是"官方当前发布版"，
+           跟本机这个 exe 无关 —— 两者不要混用（官方版本的获取见 cli-installer.status()）。 */
+        version: build ? (build.version || null) : null,
+        commit: build ? (build.commit || null) : null,
+        buildTime: build ? (build.build_time || null) : null,
         credit: creditData ? creditData.total_credit : null,
         account: creditData ? { userId: creditData.user_id, vipLevel: creditData.vip_level } : null,
-        message: available ? '即梦创作 CLI 已就绪（积分 ' + creditData.total_credit + '）'
-          : (version ? '创作 CLI 已安装但未登录（dreamina login）' : '未检测到创作 CLI（dreamina）')
+        message
       };
       if (creditData) state.credit = { at: Date.now(), value: creditData.total_credit };
       return state.probe;
@@ -203,7 +247,13 @@ function makeDreaminaAdapter(cfg) {
     const c = state.probe;
     if (!c) return null;
     if (Date.now() - c.at >= PROBE_TTL_MS) return null;      // 过期 = 视为无缓存
-    return { at: c.at, available: c.available, version: c.version, credit: c.credit, account: c.account, message: c.message };
+    /* 字段清单是**显式列举**的，不是展开 c —— 所以新增状态字段时必须同步这里，
+       否则界面拿不到 installed / loggedIn，只能继续靠 available 猜。 */
+    return {
+      at: c.at, available: c.available, installed: c.installed, loggedIn: c.loggedIn,
+      version: c.version, commit: c.commit, buildTime: c.buildTime,
+      credit: c.credit, account: c.account, message: c.message
+    };
   }
 
   /* 「最后已知值」——不看 TTL。
@@ -215,7 +265,8 @@ function makeDreaminaAdapter(cfg) {
     const c = state.probe;
     if (!c) return null;
     return {
-      at: c.at, available: c.available, version: c.version,
+      at: c.at, available: c.available, installed: c.installed, loggedIn: c.loggedIn,
+      version: c.version, commit: c.commit, buildTime: c.buildTime,
       credit: c.credit, account: c.account, message: c.message,
       stale: (Date.now() - c.at) >= PROBE_TTL_MS
     };
@@ -252,7 +303,7 @@ function makeDreaminaAdapter(cfg) {
   function startProcess(args, timeoutMs) {
     const t0 = Date.now();
     let child = null, spawnErr = null;
-    try { child = trackChild(spawn(bin, args, { windowsHide: true, shell: false })); }
+    try { child = trackChild(spawn(binPath(), args, { windowsHide: true, shell: false })); }
     catch (e) { spawnErr = e; }
 
     let stdout = '', stderr = '', exited = false, exitCode = null, killedByTimeout = false;

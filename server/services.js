@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const { loadConfig } = require('./config');
 const PATHS = require('./paths');    // 磁盘布局与资源 URL 形状的唯一事实来源
+const CLI = require('./cli-installer');   // 创作 CLI 的下载 / 安装 / 更新（官方 CDN）
 /* ⚠ 注意与上面的 `P`（= ./projects，项目/工作区数据层）区分开：两个 P 会重名。 */
 
 /* 素材上传允许的扩展名（创建/批量导入共用） */
@@ -1928,6 +1929,16 @@ async function adapterStatus(db, adapter, fast) {
   if (dp) {
     dreamina = {
       available: dp.available, version: dp.version, credit: dp.credit,
+      /* 装没装 / 登没登录 —— 和 available 是**三件不同的事**，必须分开传：
+         · installed=false         → CLI 根本不在 → 界面要给"安装"入口
+         · installed && !loggedIn  → CLI 在但没登录 → 界面要给"登录"入口
+         · available=true          → 两者都满足，可以生成
+         旧实现只传 available，界面分不出前两种，只能笼统说"未就绪"，
+         用户看到"未就绪"却不知道该装还是该登录 —— 这是本次要修的核心体验问题。 */
+      installed: dp.installed !== false,
+      loggedIn: dp.loggedIn === true,
+      commit: dp.commit || null,
+      buildTime: dp.buildTime || null,
       creditAt: dp.at ? new Date(dp.at).toISOString() : null,   // 积分读取时刻，界面据此说明新鲜度
       stale: dp.stale === true,                                 // 来自过期缓存 → 界面标注"后台更新中"
       account: dp.account, message: dp.message
@@ -1940,6 +1951,10 @@ async function adapterStatus(db, adapter, fast) {
     /* 单引擎后 cliAvailable / cliVersion 指的就是创作 CLI；保留字段名是为了不破坏既有前端契约 */
     cliAvailable: dpAvail,
     cliVersion: (dp && dp.version) || null,
+    /* null = 尚未探到（与 false 不同：false 是"已确认没装"）。界面靠这个区分
+       "还在读" 和 "确实没有"，否则读取中会闪一下"未安装"的误导提示。 */
+    cliInstalled: dp ? dp.installed !== false : null,
+    cliLoggedIn: dp ? dp.loggedIn === true : null,
     dreaminaProbing,                  // 尚未探到 → 界面显示"读取中…"
     checkedAt: new Date((dp && dp.at) || Date.now()).toISOString(),
     message: dpMsg + (!dpAvail && db.settings.adapter.dreaminaAuthUrl
@@ -2002,11 +2017,84 @@ async function adapterCheck(db, adapter) {
     /* 兼容既有前端字段名：cliAvailable 现在表示"唯一的那个 CLI（创作 CLI）是否就绪" */
     cliAvailable: !!(dp && dp.available),
     cliVersion: (dp && dp.version) || null,
+    cliInstalled: dp ? dp.installed !== false : null,
+    cliLoggedIn: dp ? dp.loggedIn === true : null,
     message: (dp && dp.message) || '创作 CLI 探测失败（未取得任何响应）',
     checkedAt: new Date().toISOString(),
     dreamina: dp ? {
       available: dp.available, version: dp.version, credit: dp.credit,
+      installed: dp.installed !== false, loggedIn: dp.loggedIn === true,
+      commit: dp.commit || null, buildTime: dp.buildTime || null,
       creditAt: dp.at ? new Date(dp.at).toISOString() : null,
+      account: dp.account, message: dp.message
+    } : null
+  };
+}
+
+/* ---------------- 创作 CLI 的安装 / 更新 ----------------
+   这一组解决的是"用户根本没有 CLI"这个**前置**问题。
+   官方唯一的安装方式是 `curl -s https://jimeng.jianying.com/cli | bash`，
+   而那个脚本的 Windows 分支要求 MINGW/MSYS/CYGWIN（即 Git Bash）——
+   干净的 Windows 电脑跑不了。于是我们替用户做官方脚本本来就会做的事：
+   从官方 CDN 下载官方二进制，装到官方默认位置（%USERPROFILE%\bin）。
+   实现与授权取舍见 server/cli-installer.js。 */
+
+async function cliStatus(adapter) {
+  const D = adapter && adapter.dreamina;
+  /* "装没装"以 **probe 的实际 spawn 结果**为准，而不是文件存在性：
+     文件在但跑不起来（架构不对、被杀软拦下、权限不足）同样等于不可用。 */
+  const dp = (D && typeof D.lastProbe === 'function') ? D.lastProbe() : null;
+  const info = await CLI.status(loadConfig());
+  return {
+    /* probe 有结论时以 probe 为准；还没探到时退回"文件在不在" ——
+       这样用户一打开设置就能立刻看到本机状态，不必先等一轮探测。 */
+    installed: dp ? dp.installed !== false : info.installed,
+    loggedIn: dp ? dp.loggedIn === true : null,
+    available: dp ? dp.available === true : false,
+    exePath: info.path,
+    exeSize: info.size,
+    exeMtime: info.mtime,
+    targetSource: info.target.source,     // 'config'（就地更新）| 'default'（官方默认位置）
+    latest: info.latest,                  // { ok, version, releaseDate, releaseNotes } | { ok:false, error }
+    cdn: info.cdn,                        // { ok, size, lastModified } | { ok:false, error }
+    needsUpdate: info.needsUpdate,
+    updateNote: info.updateNote,
+    probeMessage: dp ? dp.message : null,
+    /* 安装进度（可能为 null）。install 是长请求，前端在等待期间靠轮询这个字段
+       显示百分比 —— 30 MB 在慢网下要几分钟，只有"下载中…"用户判断不了死活。 */
+    progress: CLI.progressOf()
+  };
+}
+
+async function cliInstall(adapter) {
+  const cfg = loadConfig();
+  const res = await CLI.install(cfg, {});
+  if (!res.ok) throw new ApiError(ERR.INTERNAL, res.error || '创作 CLI 安装失败');
+
+  /* ⚠ 装完必须做这两件事，缺一不可：
+     ① 把配置里的路径改成**刚装好的绝对路径**。默认配置是裸命令名 'dreamina'，
+        它靠 PATH 解析，而 PATH 在**已启动的进程**里不会刷新 —— 不改成绝对路径，
+        文件明明装好了 spawn 仍然找不到，用户会看到"装完了还是未安装"。
+     ② 作废探测缓存并强制重探，否则界面还停留在安装前的结论上。 */
+  cfg.dreaminaCliPath = res.path;
+  const D = adapter && adapter.dreamina;
+  if (D && typeof D.invalidate === 'function') D.invalidate();
+  const dp = D ? await D.probe(true).catch(() => null) : null;
+
+  return {
+    ok: true,
+    path: res.path,
+    bytes: res.bytes,
+    backup: res.backup || null,
+    steps: res.steps,
+    cliAvailable: !!(dp && dp.available),
+    cliInstalled: dp ? dp.installed !== false : true,
+    cliLoggedIn: dp ? dp.loggedIn === true : null,
+    message: (dp && dp.message) || '安装完成，但状态探测没有返回结果',
+    dreamina: dp ? {
+      available: dp.available, version: dp.version, credit: dp.credit,
+      installed: dp.installed !== false, loggedIn: dp.loggedIn === true,
+      commit: dp.commit || null, buildTime: dp.buildTime || null,
       account: dp.account, message: dp.message
     } : null
   };
@@ -2123,6 +2211,7 @@ module.exports = {
   batchDuration, batchSubmit, cancel, retry, batchDelete, reorder,
   listAssets, createAsset, createAssetMeta, deleteAsset, updateAsset, replaceAsset, bindAsset, unbindAsset, autoMatchAssets, autoDuration, importPreview, importConfirm, dryRunStoryboard, importAssetPrompts,
   getSettings, putSettings, resetSettings, getOptions, adapterStatus, adapterCheck,
+  cliStatus, cliInstall,
   adapterDreaminaLogin, adapterDreaminaSwitch,
   listRecords, getRecordDetail, deleteRecord, clearRecords, exportRecords,
   /* 以下为内部实现，导出只为测试能直接钉住规则（音频预算 / 素材名解析） */

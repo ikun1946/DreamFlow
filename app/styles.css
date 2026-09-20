@@ -950,6 +950,13 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   background:var(--surface);border:1px solid var(--primary);color:var(--primary-ink);
 }
 .btn-mini:hover{background:var(--primary-bg)}
+/* 创作 CLI 的"安装 / 更新"按钮：这是"没它就完全用不了"的前置动作，
+   值得比普通 btn-mini（描边、次要）更重一档。
+   ⚠ 不能直接叠加 .btn-primary —— 那个类在文件里更靠前，background/color
+   会被后面的 .btn-mini 覆盖（同优先级、后者胜），结果还是个描边按钮。 */
+.btn-mini.btn-mini-cta{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn-mini.btn-mini-cta:hover{background:var(--primary-600)}
+.btn-mini.btn-mini-cta:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
 /* 状态栏里的批量操作按钮改 ghost：它们是工具动作，不该和面板里的主 CTA 抢视觉权重 */
 .statusbar .btn-mini{background:transparent;border-color:var(--chipgray);color:var(--ink80)}
 .statusbar .btn-mini:hover{background:var(--surface);border-color:var(--primary);color:var(--primary-ink)}

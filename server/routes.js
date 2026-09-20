@@ -104,6 +104,11 @@ function makeRouter(cfg, adapter) {
     ['GET', /^\/meta\/options$/, async (ctx) => ok(ctx.res, await S.getOptions(ctx.db, adapter, scopeOf(ctx)))],
     ['GET', /^\/auth\/me$/, async (ctx) => ok(ctx.res, { userId: 'u_1', name: '本地用户', credits: null, plan: 'local' })],
     ['GET', /^\/system\/adapter$/, async (ctx) => ok(ctx.res, await S.adapterStatus(ctx.db, adapter, true))],   // fast：优先回缓存，后台刷新
+    /* 创作 CLI 的安装 / 更新（走官方 CDN，见 services.cliStatus / cliInstall）。
+       install 是长请求：要下 ~30 MB，慢网下可能几十秒 —— 前端必须给加载态，
+       不能让用户以为按钮没反应（实测本机 2.2 秒，但那不是普遍情况）。 */
+    ['GET', /^\/system\/cli$/, async (ctx) => ok(ctx.res, await S.cliStatus(adapter))],
+    ['POST', /^\/system\/cli\/install$/, async (ctx) => ok(ctx.res, await S.cliInstall(adapter))],
     // CLI 账户操作（长耗时：check 秒级；登录/切换含轮询等待，受 loginTimeoutMs 约束）
     // 画布 CLI 已移除，故不再有 /system/adapter/login 与 /switch 两个画布专用入口。
     ['POST', /^\/system\/adapter\/check$/, async (ctx) => ok(ctx.res, await S.adapterCheck(ctx.db, adapter))],
