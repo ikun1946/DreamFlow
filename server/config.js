@@ -59,6 +59,15 @@ function loadConfig() {
        封面生成静默跳过，缩略图退回 ID 派生的渐变（不影响任何其他功能）。
        装了但不在 PATH 里，就把绝对路径填这里。 */
     ffmpegPath: env.JC_FFMPEG_PATH || fileCfg.ffmpegPath || 'ffmpeg',
+    /* ffprobe 可执行文件路径：只用于读**音频素材的时长**（音频参考的总时长有上限，
+       见 audioTotalSecMax）。它与 ffmpeg 一起分发，所以装了 ffmpeg 就通常有它。
+       和 ffmpeg 一样是**可选**依赖：缺失或失败时音频时长保持"未知"，
+       不报错、不影响其他功能（但"时长未知"的音频不允许绑定，见 services.checkAudioBudget）。 */
+    ffprobePath: env.JC_FFPROBE_PATH || fileCfg.ffprobePath || 'ffprobe',
+    /* 单个分镜上「音频参考」的总时长上限（秒）。数量上限走 models.limitsFor(model).audio，
+       这里是**时长**上限 —— 两者同时生效。
+       默认 15 与本项目单镜时长上限一致（services.js 的 meta.duration.max）。 */
+    audioTotalSecMax: Number(env.JC_AUDIO_TOTAL_SEC_MAX || fileCfg.audioTotalSecMax || 15),
     /* 是否允许 file:// 打开的前端（发布版单文件双击）访问本服务。
        浏览器对 file:// 页面发来的请求带 `Origin: null`，无法与"恶意网页里被沙箱化的
        iframe"区分开。默认 true = 保留发布版双击即用的既有体验；

@@ -37,9 +37,44 @@ const ASSET_TYPE_KIND = {
 
 /* **多值槽位**的唯一事实来源：这些 role 可以绑多个素材，其余为单值（再绑会替换）。
    ⚠ 原先后端硬编码成 `role !== 'character'`、前端另有一份 ROLE_META.multi ——
-   两处各写各的，改一处就不同步。现在两边都以这份表为准。 */
-const ROLE_MULTI = { character: true, prop: true };
+   两处各写各的，改一处就不同步。现在两边都以这份表为准。
+   ⚠ 2026-09-20：audio 由单值改为多值。一个分镜常有多角色（林晚 + 顾言），
+   各自的音色是不同的音频文件，而创作 CLI 本来就支持多路 --audio
+   （数量上限见 models.limitsFor(model).audio）。单值时第二个音色只能顶掉第一个。
+   音频另受**总时长**上限约束（见 checkAudioBudget 与 config.audioTotalSecMax）。 */
+const ROLE_MULTI = { character: true, prop: true, audio: true };
 const isMultiRole = (role) => ROLE_MULTI[role] === true;
+
+/* 音频素材名里可以省略的「音色」类后缀：`林晚音色` 的匹配主体应当是 `林晚`，
+   否则它永远匹配不到提示词里的「林晚」。
+   ⚠ 只在 type === 'audio' 时并入噪声词表 —— 图片素材的名称解析与今天**逐字节相同**，
+   保证"匹配规则与现有图片匹配逻辑保持一致"是字面成立的，而不是近似。 */
+const AUDIO_NAME_NOISE = ['音色', '声音'];
+
+/* 音频名长度上限（新建与改名共用一处，避免两个 60 各自漂移）。
+   与 projects.js 的 NAME_MAX 是同一数值，但那是项目/分镜表的名称，语义不同，故不共用。 */
+const ASSET_NAME_MAX = 60;
+
+/* 音频时长的解析：**客户端优先，服务端兜底**。
+   为什么两头都要：
+     · 浏览器侧（前端用 <audio> 读元数据）不需要任何外部依赖，是最可靠的来源；
+       但并非所有格式都能读到（部分 .flac/.ogg 拿不到 duration），所以不能只靠它。
+     · ffprobe 权威，但本项目**故意把 ffmpeg/ffprobe 当可选依赖**（缺失时封面静默跳过），
+       所以也不能只靠它。
+   两头都拿不到 → null（未知）。**未知时不允许绑定**，见 checkAudioBudget —— 宁可挡住
+   并说清原因，也不要让"总时长 ≤ 15 秒"这条约束对读不到时长的音频静默失效。 */
+async function resolveAudioDuration(absPath, clientSec) {
+  const given = Number(clientSec);
+  if (Number.isFinite(given) && given > 0) return roundSec(given);
+  try {
+    const probe = require('./dreamina-cli').probeAudioDuration;
+    if (typeof probe === 'function') {
+      const sec = await probe(absPath);
+      if (Number.isFinite(sec) && sec > 0) return roundSec(sec);
+    }
+  } catch (e) { /* 探测失败一律静默：时长未知是允许的状态，不该让上传失败 */ }
+  return null;
+}
 
 /* 静态模型兜底（探测不可用时使用）：清单与归属全部来自模型注册表。
    2026-09-18 画布 CLI 移除后，可用模型 = 创作 CLI 支持的全部型号。 */
@@ -154,6 +189,7 @@ function decorate(db, s) {
   /* 图号表在列表层也要算一次：表格槽位要显示「图片N」，干跑卡要判断记录是否过期。
      与详情、与创作 CLI 组装共用 asset-lock.js 的同一个函数，三处结果必然一致。 */
   const cat = AL.imageCatalog(s, db);
+  const audioBudget = audioBudgetOf(s, db);   // 只算一次：列表里每条分镜都要用
   const plan = s.dryRunPlan;
   const stale = !!(plan && plan.command) && (plan.sig ? plan.sig !== AL.signature(s, db) : true);
   return Object.assign({}, s, { dirty: undefined, _runtime: undefined, dryRunPlan: undefined, submitDryRun: undefined }, {
@@ -171,7 +207,12 @@ function decorate(db, s) {
     imageLimit: models.imageLimitFor(s.model),
     imageLimitFamily: models.limitFamilyOf(s.model),
     audioCount: cat.audios.length,
-    assets: (() => {
+    /* 音频的另一半约束：数量上限（按当前模型）与**总时长**上限。
+       上限值由服务端下发，前端不硬编码 15 —— 改了 config 界面要跟着变。 */
+    audioLimit: models.limitsFor(s.model).audio,
+    audioSecTotal: audioBudget.sec,
+    audioSecMax: loadConfig().audioTotalSecMax,
+    audioSecUnknown: audioBudget.unknown,    assets: (() => {
       /* 给每个绑定素材标上「图片N / 音频N」——图号与创作 CLI 的 --image 顺序同源，
          前端据此在槽位旁显示图号，作者才能知道自己该写 @图片N。 */
       const imgNo = {}, audNo = {}, why = {};
@@ -610,12 +651,46 @@ function listAssets(db, q, scope) {
 function viewAsset(a, usedIds) {
   return Object.assign({}, a, {
     gradSeedKey: undefined,
+    /* 音频时长：null = 未知（老数据、或浏览器与 ffprobe 都没读出来）。
+       显式归一成 null 而不是让字段缺省 —— 前端要区分"未知"和"没有这个字段"。 */
+    durationSec: a.durationSec == null ? null : a.durationSec,
     inCurrentShot: (usedIds || []).includes(a.id), grad: grad(a.gradSeedKey)
   });
 }
 
+/* ---------------- 新建素材（只建元数据，不带文件） ----------------
+   为什么需要这个入口：带文件的上传（createAsset）要求先有文件，而"新建素材"这个动作
+   应当是「先起个名字（与类型），文件之后再补」—— 提示词导入产生的素材本来就是
+   url 为空的形态，详情弹窗也有「无图」状态。文件随后由 POST /assets/:id/file 补上
+   （replaceAsset 已支持展示名覆盖，所以补文件不会把名称改掉）。 */
+function createAssetMeta(db, b, scope) {
+  const body = b || {};
+  const type = String(body.type || '');
+  if (!ASSET_TYPE_KIND[type]) {
+    throw new ApiError(ERR.PARAM, '素材类型不合法：' + type + '（支持 ' + Object.keys(ASSET_TYPE_KIND).join('/') + '）');
+  }
+  const name = String(body.name || '').trim();
+  if (!name) throw new ApiError(ERR.PARAM, '素材名称不能为空');
+  if (name.length > ASSET_NAME_MAX) throw new ApiError(ERR.PARAM, '素材名称不能超过 ' + ASSET_NAME_MAX + ' 个字符');
+  const prompt = String(body.prompt || '').trim();
+  if (prompt.length > 10000) throw new ApiError(ERR.PARAM, '提示词不能超过 10000 字符');
+  const id = rid('as_');
+  const asset = {
+    id, projectId: scope.projectId, name, type,
+    url: null, thumbUrl: null,
+    width: 0, height: 0, size: 0, tags: [],
+    createdAt: nowIso(), updatedAt: null,
+    gradSeedKey: id, origin: 'manual'
+  };
+  if (prompt) asset.prompt = prompt;
+  if (ASSET_TYPE_KIND[type] === 'audio') asset.durationSec = null;   // 文件还没上传，时长未知
+  db.assets.push(asset);
+  store.save();
+  return viewAsset(asset);
+}
+
 /* ---------------- 创建 / 批量导入素材（本地上传，文件名默认为素材名） ---------------- */
-function createAsset(db, opts, scope) {
+async function createAsset(db, opts, scope) {
   const type = String(opts.type || '');
   const kind = ASSET_TYPE_KIND[type];
   if (!kind) throw new ApiError(ERR.PARAM, '素材类型不合法：' + type + '（支持 ' + Object.keys(ASSET_TYPE_KIND).join('/') + '）');
@@ -634,7 +709,8 @@ function createAsset(db, opts, scope) {
   /* 落到**本项目自己的目录**（data/projects/<项目>/assets/）——
      这样"彻底删除项目"只需删一个文件夹，不会牵动别的项目。 */
   PATHS.ensureProjectDirs(scope.projectId);
-  fs.writeFileSync(path.join(PATHS.assetDir(scope.projectId), fname), buf);
+  const absPath = path.join(PATHS.assetDir(scope.projectId), fname);
+  fs.writeFileSync(absPath, buf);
   const base = filename.replace(/\.[^.]+$/, '').trim() || ('素材-' + id.slice(3, 9));
   const url = PATHS.assetUrl(scope.projectId, fname);
   const asset = {
@@ -645,9 +721,93 @@ function createAsset(db, opts, scope) {
     createdAt: nowIso(), updatedAt: null,
     gradSeedKey: id, origin: 'upload'
   };
+  /* 音频必须带上时长：它是"总时长上限"的唯一依据（见 checkAudioBudget）。
+     客户端能读到就传上来；读不到再服务端兜底探测；都没有就是 null（未知）。 */
+  if (kind === 'audio') asset.durationSec = await resolveAudioDuration(absPath, opts.durationSec);
   db.assets.push(asset);
   store.save();
   return viewAsset(asset);
+}
+
+/* ---------------- 音频预算：数量 + 总时长 ----------------
+   一个分镜上「音频参考」有两重上限，**同时生效**：
+     · 数量：models.limitsFor(model).audio（seedance2.0 = 3 / 2.5 = 10），按**当前模型**算；
+     · 总时长：config.audioTotalSecMax（默认 15 秒）。
+   为什么要一个共享守卫：能新增音频绑定的代码路径只有 bindAsset 与 autoMatchAssets 两处
+   （其余全是解绑或素材库操作，已核对），所以一处实现、两处调用即可全覆盖。
+
+   ⚠ 「时长未知」一律拒绝，而不是当成 0 放过 —— 否则这条约束对读不到时长的音频
+   就是静默失效的，等于没有。现在没有任何存量音频，所以这不会挡住历史数据。
+   ⚠ 浮点比较留 1e-6 容差：15.0000001 > 15 是浮点噪声，不是真的超限。 */
+const AUDIO_SEC_EPS = 1e-6;
+const roundSec = (v) => Math.round(Number(v) * 100) / 100;
+
+/* 当前已绑音频的用量：数量、时长合计、以及**时长未知**的那些（名字）。
+   时长未知的按 0 计入合计，但它会让"总时长"这个数不可信 —— 所以单独列出来拦住。 */
+function audioBudgetOf(s, db) {
+  const refs = (s.assets || []).filter((r) => r.role === 'audio');
+  let sec = 0;
+  const unknown = [];
+  refs.forEach((r) => {
+    const a = findAsset(db, r.assetId);
+    if (a && Number.isFinite(a.durationSec)) sec += a.durationSec;
+    else unknown.push((a && a.name) || '(已删除素材)');
+  });
+  return { count: refs.length, sec: roundSec(sec), unknown };
+}
+
+/**
+ * 单条音频能否再进。返回 null = 可以；否则返回 { reason, message }。
+ * reason ∈ count | duration | unknown-duration。
+ * ⚠ 数量与时长**两重上限同时生效**；未知时长一律拒绝（当成 0 放过就等于没有约束）。
+ */
+function audioFit(state, a, model, maxSec) {
+  if (!Number.isFinite(a.durationSec)) {
+    return {
+      reason: 'unknown-duration',
+      message: '音频「' + a.name + '」没有可用的时长信息，无法计入总时长上限。' +
+        '请在素材详情里重新选择一次文件（浏览器与服务端都会尝试读取时长）。'
+    };
+  }
+  const limit = models.limitsFor(model).audio;
+  if (state.count + 1 > limit) {
+    return { reason: 'count', message: '音频数量超限：当前模型（' + model + '）最多 ' + limit + ' 个' };
+  }
+  if (state.sec + a.durationSec > maxSec + AUDIO_SEC_EPS) {
+    return {
+      reason: 'duration',
+      message: '音频总时长超限：上限 ' + maxSec + ' 秒，已占 ' + roundSec(state.sec) +
+        ' 秒，再加「' + a.name + '」（' + roundSec(a.durationSec) + ' 秒）会达到 ' +
+        roundSec(state.sec + a.durationSec) + ' 秒'
+    };
+  }
+  return null;
+}
+
+/**
+ * 检查「再绑这些音频素材」是否越界（bindAsset 用：全有或全无）。
+ * @param incoming 待新增的音频素材记录数组（调用方已确保它们是音频类型、且不属于已绑集合）
+ * @returns { ok:true } 或 { ok:false, reason, message }
+ */
+function checkAudioBudget(s, db, incoming) {
+  const list = incoming || [];
+  if (!list.length) return { ok: true };
+  const state = audioBudgetOf(s, db);
+  /* 已绑里有时长未知的：总时长这个数本身就不可信，先把它挑明，否则约束会被悄悄放宽 */
+  if (state.unknown.length) {
+    return {
+      ok: false, reason: 'unknown-duration',
+      message: '该分镜已绑的音频「' + state.unknown.join('、') + '」没有可用的时长信息，' +
+        '无法核算总时长上限。请先在素材详情里重新选择一次文件，或先解绑它。'
+    };
+  }
+  const maxSec = loadConfig().audioTotalSecMax;
+  for (const a of list) {
+    const bad = audioFit(state, a, s.model, maxSec);
+    if (bad) return { ok: false, reason: bad.reason, message: bad.message };
+    state.count++; state.sec = roundSec(state.sec + a.durationSec);
+  }
+  return { ok: true, count: state.count, sec: state.sec };
 }
 
 function bindAsset(db, id, b, scope) {
@@ -660,9 +820,15 @@ function bindAsset(db, id, b, scope) {
   /* ⚠ 跨项目绑定必须拒绝（指令 §43）：分镜所在工作区的项目 == 素材的 projectId。
      即使调用方构造请求传入别的项目的素材 id，也必须在这里被拦下 —— 这是隔离的最后一道闸。 */
   const asset = findScopedAsset(db, b.assetId, scope);
+  /* 已绑过的同一个素材是幂等操作：不重复计数、也不重复走预算检查 */
+  const already = s.assets.some((r) => r.assetId === b.assetId && r.role === role);
+  if (role === 'audio' && !already) {
+    const budget = checkAudioBudget(s, db, [asset]);
+    if (!budget.ok) throw new ApiError(ERR.PARAM, budget.message);
+  }
   const single = !isMultiRole(role);
   if (single) s.assets = s.assets.filter((r) => r.role !== role);
-  if (!s.assets.some((r) => r.assetId === b.assetId && r.role === role)) {
+  if (!already) {
     s.assets.push({ assetId: b.assetId, role });
   }
   s.dirty = true;
@@ -706,11 +872,13 @@ const stripExt = (name) => String(name || '').replace(/\.[a-z0-9]{1,5}$/i, '');
 
 /* 粘连式去噪：名称与描述词粘连时（「林雪正面」「小狗三视图」）把描述词剥掉。
    尾部剥任意噪声词（剥完至少剩 2 字），头部只剥长度 ≥ 2 的词（避免「图/照/片」等单字误伤） */
-function stripNoiseWords(s) {
+function stripNoiseWords(s, type) {
+  /* 音频额外多几个后缀词（「音色」「声音」）。图片的噪声词表与今天完全相同。 */
+  const noise = type === 'audio' ? NAME_NOISE.concat(AUDIO_NAME_NOISE) : NAME_NOISE;
   let x = s;
   for (let guard = 0; guard < 6; guard++) {
     const before = x;
-    for (const w of NAME_NOISE) {
+    for (const w of noise) {
       const wl = w.length;
       if (x.length - wl >= 2 && x.endsWith(w)) { x = x.slice(0, x.length - wl); break; }
       if (wl >= 2 && x.length - wl >= 2 && x.startsWith(w)) { x = x.slice(wl); break; }
@@ -723,13 +891,18 @@ function stripNoiseWords(s) {
 /* 素材名 → 候选关键词
    core 取「去噪形」优先（剥掉描述词后剩下的才是名字本身），而非最长的分词块——
    否则「林雪正面」会拿整串去匹配，永远命中不了提示词里的「林雪」。
-   group = 去噪形，用于「同一角色的多张素材只绑一张」的同名去重。 */
-function nameKeys(name) {
+   group = 去噪形，用于「同一角色的多张素材只绑一张」的同名去重。
+
+   ⚠ type 参数只影响**音频**：音频素材按「角色名+音色」命名（「林晚音色」），
+   要把「音色」当噪声词剥掉，主体才是「林晚」，否则它匹配不到提示词里的「林晚」。
+   type 不是 'audio'（含未传）时行为与引入该参数之前**逐字节相同**。 */
+function nameKeys(name, type) {
   const full = stripExt(name).trim();
   const flat = full.replace(/[\s_\-—–·]+/g, '');
-  const stripped = stripNoiseWords(flat);
+  const stripped = stripNoiseWords(flat, type);
+  const noise = type === 'audio' ? NAME_NOISE.concat(AUDIO_NAME_NOISE) : NAME_NOISE;
   const chunks = full.split(NAME_SPLIT).map((x) => x.trim())
-    .filter((c) => c.length >= 2 && !NAME_NOISE.includes(c.toLowerCase()));
+    .filter((c) => c.length >= 2 && !noise.includes(c.toLowerCase()));
   const longest = chunks.slice().sort((a, b) => b.length - a.length)[0] || null;
   let core;
   if (stripped && stripped.length >= 2 && stripped !== flat) core = stripped;   // 去噪形更短 → 更可能是名字
@@ -777,14 +950,20 @@ function autoMatchAssets(db, b, scope) {
 
   const projectAssets = scopeAssets(db, scope);
   const rows = [];
-  const stat = { storyboards: pool.length, bound: 0, kept: 0, occupied: 0, noMatch: 0, overLimit: 0, ambiguous: 0 };
+  const stat = {
+    storyboards: pool.length, bound: 0, kept: 0, occupied: 0, noMatch: 0, overLimit: 0, ambiguous: 0,
+    /* bound 按素材类型拆分：只报一个总数的话，用户看不出音色到底绑上没绑 */
+    boundImages: 0, boundAudios: 0
+  };
 
   pool.forEach((s) => {
     const p = normKey(s.prompt);
     const hits = [];
     // ① 逐素材试匹配（只在本项目的素材里找）
     projectAssets.forEach((a) => {
-      const k = nameKeys(a.name);
+      /* type 传进去只为音频服务：音频名按「角色名+音色」写（「林晚音色」），
+         要把「音色」当噪声剥掉才能匹配到提示词里的「林晚」。图片路径不受影响。 */
+      const k = nameKeys(a.name, a.type);
       const hit = matchByText(p, k);
       if (!hit) return;
       hits.push({
@@ -853,9 +1032,27 @@ function autoMatchAssets(db, b, scope) {
        替换同 role 的已有绑定不新增名额（老的那张让位）；character 是多值槽位，永远算新增。 */
     const limit = models.imageLimitFor(s.model);
     let used = AL.imageCatalog(s, db).images.length;
+    /* 音频走**另一套预算**（数量 + 总时长），与图片名额互不影响，故单独累加。
+       规则与 bindAsset 共用 audioFit，两处口径不会漂移。 */
+    const audioState = audioBudgetOf(s, db);
+    const audioSecMax = loadConfig().audioTotalSecMax;
     const allowed = [], overLimit = [];
     toBind.forEach((m) => {
       const a = findAsset(db, m.assetId);
+      if (m.role === 'audio') {
+        /* 已绑里若有时长未知的，整条预算不可信 —— 先挑明，不静默放宽 */
+        if (audioState.unknown.length) {
+          overLimit.push(Object.assign({
+            reason: 'unknown-duration',
+            message: '该分镜已绑的音频「' + audioState.unknown.join('、') + '」没有可用的时长信息，无法核算总时长上限'
+          }, m));
+          return;
+        }
+        const bad = audioFit(audioState, a, s.model, audioSecMax);
+        if (bad) { overLimit.push(Object.assign({ reason: bad.reason, message: bad.message }, m)); return; }
+        audioState.count++; audioState.sec = roundSec(audioState.sec + a.durationSec);
+        allowed.push(m); return;
+      }
       const replaces = !isMultiRole(m.role) && existing.some((r) => r.role === m.role);
       if (replaces || !AL.countsAsImage(db, a, m.role)) { allowed.push(m); return; }
       if (used + 1 > limit) { overLimit.push(m); return; }   // 名额用完：不绑，留给用户手工取舍
@@ -873,16 +1070,27 @@ function autoMatchAssets(db, b, scope) {
       s.dirty = true;
     }
     stat.bound += allowed.length;
+    /* 拆分给界面用：「已自动绑定 N 个参考（图片 X · 音色 Y）」——
+       只报一个总数的话，用户看不出音色到底绑上没绑。 */
+    stat.boundImages += allowed.filter((m) => m.role !== 'audio').length;
+    stat.boundAudios += allowed.filter((m) => m.role === 'audio').length;
     stat.kept += kept.length;
     stat.occupied += occupied.length;
     stat.overLimit = (stat.overLimit || 0) + overLimit.length;
     stat.ambiguous += ambiguous.length;
     if (!won.length) stat.noMatch++;
 
-    const strip = (m) => ({ assetId: m.assetId, name: m.name, type: m.type, role: m.role, via: m.via, keyword: m.keyword });
+    const strip = (m) => ({
+      assetId: m.assetId, name: m.name, type: m.type, role: m.role, via: m.via, keyword: m.keyword,
+      /* 未绑原因（仅 overLimit 有）：数量超限 / 时长超限 / 时长未知。
+         没有它的话，用户只看到"没绑上"却不知道为什么。 */
+      reason: m.reason, message: m.message
+    });
     rows.push({
       id: s.id, seq: s.seq, status: s.status, prompt: s.prompt,
       imageCount: used, imageLimit: limit,          // 预览里显示「将占 X / 上限 Y」
+      audioCount: audioState.count, audioLimit: models.limitsFor(s.model).audio,
+      audioSec: audioState.sec, audioSecMax: audioSecMax,
       toBind: allowed.map(strip),
       overLimit: overLimit.map(strip),               // 命中但名额不够，未绑定（前端单独列出并说明）
       kept: kept.map(strip),
@@ -1282,7 +1490,7 @@ function updateAsset(db, id, body, scope) {
   if (hasName) {
     const name = String(body.name || '').trim();
     if (!name) throw new ApiError(ERR.PARAM, '素材名称不能为空');
-    if (name.length > 60) throw new ApiError(ERR.PARAM, '素材名称不能超过 60 个字符');
+    if (name.length > ASSET_NAME_MAX) throw new ApiError(ERR.PARAM, '素材名称不能超过 ' + ASSET_NAME_MAX + ' 个字符');
     a.name = name;
   }
   if (hasPrompt) {
@@ -1297,7 +1505,7 @@ function updateAsset(db, id, body, scope) {
 
 /* 素材设置：更换文件（保留素材 id 与全部分镜绑定，只替换磁盘文件与访问地址）
    —— name 显式传入优先；否则沿用既有约定：取新文件名去扩展名 */
-function replaceAsset(db, id, opts, scope) {
+async function replaceAsset(db, id, opts, scope) {
   const a = findScopedAsset(db, id, scope);
   const kind = ASSET_TYPE_KIND[a.type];
   const filename = String(opts.filename || '');
@@ -1318,14 +1526,17 @@ function replaceAsset(db, id, opts, scope) {
      项目 id 取素材记录上的 projectId —— 调用方已用 findScopedAsset 校验过它属于当前项目。 */
   PATHS.ensureProjectDirs(a.projectId);
   const oldFile = PATHS.assetFileOf(a);
-  fs.writeFileSync(path.join(PATHS.assetDir(a.projectId), fname), buf);
-  if (oldFile && oldFile !== path.join(PATHS.assetDir(a.projectId), fname)) {
+  const absPath = path.join(PATHS.assetDir(a.projectId), fname);
+  fs.writeFileSync(absPath, buf);
+  if (oldFile && oldFile !== absPath) {
     try { fs.unlinkSync(oldFile); } catch (e) { /* 旧文件可能已不存在 */ }
   }
   a.url = PATHS.assetUrl(a.projectId, fname);
   a.thumbUrl = kind === 'audio' ? null : a.url;
   a.size = buf.length;
   a.updatedAt = nowIso();
+  /* 换文件后**时长要重新探测并覆盖** —— 预算按"当前文件"算，沿用旧时长会让总时长失真 */
+  if (kind === 'audio') a.durationSec = await resolveAudioDuration(absPath, opts.durationSec);
   const name = String(opts.name || '').trim();
   a.name = name || filename.replace(/\.[^.]+$/, '').trim() || a.name;
   store.save();
@@ -1568,6 +1779,9 @@ async function getOptions(db, adapter, scope) {
   meta.ratios = models.DREAMINA_RATIOS.map((v) => ({ value: v, label: v }));
   // 积分余额提醒阈值（前端在提交前据此做二次确认；与 worker 派发前的提醒同源）
   meta.creditWarnBelow = loadConfig().creditWarnBelow;
+  /* 音频参考总时长上限（秒）：随 meta 下发，前端不硬编码 15 ——
+     改了 config 界面上的提示要跟着变。硬上限的判定仍在服务端（checkAudioBudget）。 */
+  meta.audioSecMax = loadConfig().audioTotalSecMax;
 
   /* ---------------- 默认值：读**项目级生效值**，并只做"读时归一" ----------------
      ⚠ 这里**不再改写数据库**（2026-09-19 多项目升级的清理）。
@@ -1894,8 +2108,10 @@ module.exports = {
   META, DEFAULT_SETTINGS, splitSegments, stats,
   listStoryboards, getProgress, getStoryboard, createStoryboard, patchStoryboard,
   batchDuration, batchSubmit, cancel, retry, batchDelete, reorder,
-  listAssets, createAsset, deleteAsset, updateAsset, replaceAsset, bindAsset, unbindAsset, autoMatchAssets, autoDuration, importPreview, importConfirm, dryRunStoryboard, importAssetPrompts,
+  listAssets, createAsset, createAssetMeta, deleteAsset, updateAsset, replaceAsset, bindAsset, unbindAsset, autoMatchAssets, autoDuration, importPreview, importConfirm, dryRunStoryboard, importAssetPrompts,
   getSettings, putSettings, resetSettings, getOptions, adapterStatus, adapterCheck,
   adapterDreaminaLogin, adapterDreaminaSwitch,
-  listRecords, getRecordDetail, deleteRecord, clearRecords, exportRecords
+  listRecords, getRecordDetail, deleteRecord, clearRecords, exportRecords,
+  /* 以下为内部实现，导出只为测试能直接钉住规则（音频预算 / 素材名解析） */
+  checkAudioBudget, audioBudgetOf, nameKeys
 };

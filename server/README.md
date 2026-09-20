@@ -26,6 +26,9 @@ node server/index.js
 | `creditWarnBelow` | `50` | 积分余额提醒阈值：余额低于它时提交前提醒（替代原画布链路的 `creditCeiling` 报价安全阀） |
 | `dreaminaPollMs` | `900000` | 单任务等待窗口（即梦队列高峰期可达数十万条，15 分钟等不到是常态；超时不丢 submit_id，可事后续查） |
 | `maxConcurrencySafety` | `0`（不限制） | **可选的本地保护上限**：设 >0 时才限制并发数（保护本机进程数用）；设 0 表示不限制 |
+| `ffmpegPath` | `ffmpeg` | 产物封面（视频抽帧）用；**可选**，缺失时封面静默跳过 |
+| `ffprobePath` | `ffprobe` | 读**音频素材时长**用；**可选**，与 ffmpeg 一起分发。读不到时长时该音频不允许绑定（见下） |
+| `audioTotalSecMax` | `15` | 单个分镜上「音频参考」的**总时长**上限（秒）。与模型的数量上限（`limitsFor(model).audio`）**同时生效** |
 
 > 并发数**不设人为上限**：即梦侧无公开的并发上限，真实配额由即梦服务端在运行时裁决——超出时服务端会拒绝并返回限流错误，后端已将其映射为明确的限流提示。`meta/options` 下发的 `settings.concurrency.max = 0` 即表示不限制（仅当配置了本地保护上限 `maxConcurrencySafety` 时才有具体值）。
 
@@ -68,7 +71,7 @@ server/
 ├── store.js      JSON 持久化（原子写），空库启动
 ├── util.js       统一信封 / ApiError / 工具
 ├── config.js     配置加载
-└── data/         运行时数据（db.json / output/ / assets/），不入库
+└── data/         运行时数据（db.json / backup/ / projects/<项目>/），不入库
 ```
 
 ## 已知边界

@@ -26,6 +26,7 @@ const store = require('./store');
 const { ERR, ApiError, nowIso } = require('./util');
 const M = require('./models');
 const AL = require('./asset-lock');
+const { loadConfig } = require('./config');   // 仅 probeAudioDuration 用（模块级函数，拿不到适配器的 cfg）
 
 /* 模型清单与能力约束统一来自 server/models.js（唯一事实来源） */
 const DREAMINA_MODELS = M.DREAMINA_VIDEO_MODELS;
@@ -36,6 +37,30 @@ function normResolution(v) {
   if (s === '480p' || s === '720p' || s === '1080p' || s === '4k') return s;
   if (s === '2k') return '1080p';
   return '720p';
+}
+
+/* ---------------- 音频时长探测（模块级，不依赖适配器实例） ----------------
+   为什么用 ffprobe 而不是 ffmpeg：ffmpeg 只在 stderr 的文本里打一行
+   「Duration: 00:00:03.20」，解析文本很脆；ffprobe 有 `-show_entries format=duration`
+   这种机器可读输出。ffprobe 与 ffmpeg 一起分发，所以装了 ffmpeg 就通常有它。
+
+   ⚠ 与 makeCover 同样的取舍：**可选依赖，失败一律静默返回 null**。
+   时长读不出来不是错误状态（素材照样能存、能看），只是"未知"；
+   而"未知"会在绑定时被 services.checkAudioBudget 明确拦下并说明原因，
+   不会静默放宽「音频总时长 ≤ 15 秒」这条约束。 */
+function probeAudioDuration(absPath) {
+  const cfg = loadConfig();
+  return new Promise((resolve) => {
+    try { if (!fs.existsSync(absPath)) return resolve(null); } catch (e) { return resolve(null); }
+    execFile(cfg.ffprobePath || 'ffprobe',
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', absPath],
+      { timeout: 15000, windowsHide: true },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        const sec = Number(String(stdout || '').trim());
+        resolve(Number.isFinite(sec) && sec > 0 ? sec : null);
+      });
+  });
 }
 
 function makeDreaminaAdapter(cfg) {
@@ -458,6 +483,23 @@ function makeDreaminaAdapter(cfg) {
     }
     if (audios.length > lim.audio) { notes.push('音频参考 ' + audios.length + ' 条超出上限，仅前 ' + lim.audio + ' 条生效'); audios.splice(lim.audio); }
 
+    /* 音频总时长兜底（2026-09-20）：绑定时的守卫（services.checkAudioBudget）挡住了两个
+       写入点，但**模型可能在绑定之后被改小**（例如按 2.5 绑了 5 条音频、之后把分镜模型
+       改成 2.0），也可能有人手工改过库。这里再核一次，超限就**明确失败**，
+       而不是悄悄多发几秒音频 —— 否则「音频总时长不得超过 15 秒」就不是一条真规则。
+       注意这里只算**真正会发出**的那几条（上面已按 lim.audio 截断）。 */
+    const audioSecMax = loadConfig().audioTotalSecMax;
+    const audioSec = cat0.audios.slice(0, audios.length).reduce((sum, x) => sum + (Number.isFinite(x.durationSec) ? x.durationSec : 0), 0);
+    const unknownAudio = cat0.audios.slice(0, audios.length).filter((x) => !Number.isFinite(x.durationSec));
+    if (unknownAudio.length) {
+      throw new ApiError(ERR.PARAM, '音频参考「' + unknownAudio.map((x) => x.name).join('、') +
+        '」没有可用的时长信息，无法核算总时长上限（' + audioSecMax + ' 秒）。请在素材详情里重新选择一次文件。');
+    }
+    if (audioSec > audioSecMax + 1e-6) {
+      throw new ApiError(ERR.PARAM, '音频参考总时长 ' + (Math.round(audioSec * 100) / 100) + ' 秒超过上限 ' + audioSecMax +
+        ' 秒。请解绑几条音频，或把模型改回支持更多音频的型号后重试。');
+    }
+
     /* 素材锁定：只在**确有图片**时追加（无图可锁）。原文一字不改，区块放在最前面。 */
     const lockBlock = AL.lockBlock(lockImages, sb);
     const issues = AL.validate(sb.prompt, lockImages, { truncated, skipped });
@@ -697,4 +739,4 @@ function makeDreaminaAdapter(cfg) {
   return { probe, peek, lastProbe, credit, invalidate, authLoginFlow, switchAccount, pending, parseChallenge, buildSubmitArgs, runVideo, downloadResult, makeCover, recoverSubmitId, pickArtifact, pickCover, state, normResolution };
 }
 
-module.exports = { makeDreaminaAdapter, DREAMINA_MODELS, normResolution };
+module.exports = { makeDreaminaAdapter, DREAMINA_MODELS, normResolution, probeAudioDuration };

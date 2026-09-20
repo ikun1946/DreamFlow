@@ -233,12 +233,20 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .prompt-text::-webkit-scrollbar-thumb:hover{background:var(--ink48)}
 .prompt-text::-webkit-scrollbar-track{background:transparent}
 
-/* 提示词里的素材名着色：按素材类型分色，颜色只作区分、不抢正文可读性 */
+/* 提示词里的素材名着色：按素材类型分色，颜色只作区分、不抢正文可读性。
+   ⚠ 颜色必须覆盖**每一个** ASSET_TABS 取值：`hl-<type>` 的类名直接由素材的 type 拼出，
+   少一条规则不会报错，只会静默退回"只有加粗、没有颜色"—— 表现为"这个类型的素材从不着色"。
+   server/hl-rules.test.js 有一条静态断言盯着这件事，别删规则。 */
 .hl{border-radius:4px;padding:0 3px;font-weight:600}
 .hl-character{color:#0066CC;background:#E6F0FA}
 .hl-scene{color:#1F7A38;background:#E7F6EC}
 .hl-prop{color:#B25000;background:#FFF1E0}
 .hl-audio{color:#7A3FA8;background:#F3E9FB}
+.hl-firstFrame{color:#0B7285;background:#E3F6F8}
+.hl-storyboard{color:#3B4CC0;background:#E8EAFB}
+/* 兜底：类型没对上（新类型漏加规则、或索引里查不到类型）时至少给个中性色，
+   而不是完全不着色 —— 不着色看起来像"功能坏了"，中性色只是"没分类"。 */
+.hl-other{color:var(--ink80);background:var(--parchment)}
 
 /* 提示词放大钮：挂在标题行右端，常驻可见（单元格小，悬停浮现太难找） */
 .zoom-btn{
@@ -417,6 +425,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .acard .nm{width:100%;max-width:100%;font-size:10.5px;color:var(--ink80);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .acard.add .pic{border:1px dashed var(--chipgray);background:var(--pearl);background-image:none;display:grid;place-items:center}
 .acard.add .nm{color:var(--ink48)}
+/* 新建瓦片的悬停：与分镜面板的 .slot-add 同一套反馈（虚线变主色 + 淡主色底），
+   让"点这里能新建"这件事一眼看得出来 —— 资产库里它是空分类下唯一的新建入口。 */
+.acard.add{cursor:pointer}
+.acard.add:hover .pic{border-color:var(--primary);background:var(--primary-bg)}
+.acard.add:hover .nm{color:var(--primary)}
 .acard .pic .note{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.22)}
 /* 无图素材（提示词导入的那批）的缩略图：半透明的「图片样式」空槽位，替代原来的随机渐变。
    虚线框 + 淡图标说明"这里该有一张图、点开可补"，而不是给一个没有含义的色块。
@@ -470,6 +483,10 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .ap-name{flex:1;min-width:0;font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ap-type{font-size:11px;color:var(--ink48);flex:none}
+/* 音频行的时长：总时长有上限，不显示时长就没法判断该选哪几条。
+   「时长未知」用警示色 —— 这种素材**绑不上**（后端守卫），在这里就说清比选完再报错好。 */
+.ap-dur{font-size:11px;color:var(--ink48);background:var(--parchment);border-radius:6px;padding:2px 6px;flex:none}
+.ap-dur.bad{color:var(--warn);background:var(--warn-bg)}
 .ap-bound{font-size:10.5px;color:var(--ink48);background:var(--parchment);border-radius:6px;padding:2px 6px;flex:none}
 .ap-tick{
   width:18px;height:18px;border-radius:999px;flex:none;
@@ -562,7 +579,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .btn-danger{border-color:#F0C4C8;color:#D70015;background:#fff}
 .btn-danger:hover{border-color:#D70015}
 .btn-danger:disabled{opacity:.45}
-/* 「自动匹配参考图」原本和三个素材操作挤在同一行：它没有 flex:1，
+/* 「自动匹配」原本和三个素材操作挤在同一行：它没有 flex:1，
    在 336px 面板里会被 nowrap 顶出容器、右侧被裁掉。改成它自己占满一行——
    它本来就是作用于「全部素材 × 全部分镜」的智能操作，与左侧三个文件操作不同层。 */
 /* 面板动作区：2×2 网格 —— 四颗按钮各占一格、高度一致、左右边缘严格对齐。
@@ -899,7 +916,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
   font-size:11.5px;font-weight:600;
 }
 
-/* 自动匹配参考图 */
+/* 自动匹配 */
 .mk-line{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px}
 .mk-line>b{color:var(--ink48);font-weight:600;flex:none}
 .mk-tag{

@@ -90,7 +90,9 @@ function imageCatalog(sb, db) {
     }
     const exists = existsCached(file);
     if (a.type === 'audio' || ref.role === 'audio') {
-      if (exists) audios.push({ assetId: a.id, name: a.name, file });
+      /* durationSec 一并带出：派发前要核「音频总时长上限」（dreamina-cli 的兜底检查），
+         它需要**真正会发出**的那几条的时长。null = 未知，调用方据此明确失败而不是当成 0。 */
+      if (exists) audios.push({ assetId: a.id, name: a.name, file, durationSec: Number.isFinite(a.durationSec) ? a.durationSec : null });
       else skipped.push({ assetId: a.id, name: a.name, type: 'audio', reason: '音频文件已丢失' });
       return;
     }

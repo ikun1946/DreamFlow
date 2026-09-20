@@ -79,13 +79,16 @@
        ② firstFrame / storyboard 原来都被指到 'scene' —— 于是这两类素材无处存放，
           点开槽位只看到场景图、必然"资产缺失"。现在各有自己的库。
      `multi` 必须与后端 `services.js` 的 ROLE_MULTI 一致（两边都以此为准，改一处要同步另一处）。 */
+  /* ⚠ multi 必须与后端 server/services.js 的 ROLE_MULTI **保持一致**（两处各有一份表，
+     改一处忘一处就会出现"后端允许绑多个、前端却不给 ＋ 按钮"这类静默不一致）。
+     2026-09-20：audio 由单值改为多值 —— 一个分镜常有多角色，各自的音色是不同文件。 */
   const ROLE_META = {
     character:  { label: '角色',   type: 'character',  multi: true,  key: 'characters' },
     scene:      { label: '场景',   type: 'scene',      multi: false, key: 'scene' },
     prop:       { label: '道具',   type: 'prop',       multi: true,  key: 'prop' },
     firstFrame: { label: '首帧图', type: 'firstFrame', multi: false, key: 'firstFrame' },
     storyboard: { label: '分镜图', type: 'storyboard', multi: false, key: 'storyboard' },
-    audio:      { label: '音频',   type: 'audio',      multi: false, key: 'audio' }
+    audio:      { label: '音频',   type: 'audio',      multi: true,  key: 'audio' }
   };
   /* 素材面板的 Tab 顺序与标签：与资产类型一一对应（6 类） */
   const ASSET_TABS = ['character', 'scene', 'prop', 'firstFrame', 'storyboard', 'audio'];
@@ -142,14 +145,14 @@
        gen：**轮询代际令牌**（指令 §38/§39）。切换项目/分镜表时 +1，
        在飞的旧响应回来时代际已变，直接丢弃 —— 否则 A 表的进度会画到 B 表的表格上。 */
     poll: { timer: null, idle: 0, lastSig: null, gen: 0 },
-    imp: { raw: '', delimiter: { type: 'custom', value: ';;' }, preview: null, busy: false, timer: null, seq: 0 },
+    imp: { raw: '', delimiter: { type: 'custom', value: ';;' }, preview: null, busy: false, timer: null, seq: 0, impType: null },   // impType = 本次导入的目标素材类型（由打开它的入口决定）
     cliBusy: null, cliMsg: '', cliUrl: null, cliUserCode: null, cliRaw: null,
     settingsDirty: false,   // 抽屉本次打开期间用户是否已改动过设置（"先显示后刷新"的守卫）
     cliHint: null,          // 后端给的"下一步怎么做"提示（如手工执行 dreamina relogin）
     dCliUrl: null, dCliCode: null,   // 创作 CLI（dreamina）的授权链接与设备码，独立存放
     dryBusy: false,                 // 干跑提交进行中
     cmdRows: [], cmdAt: 0,                     // 命令核对面板数据
-    autoBusy: false, autoRows: [], autoStats: null, autoIds: [], autoScopeAll: false, autoPending: false,   // 自动匹配参考图
+    autoBusy: false, autoRows: [], autoStats: null, autoIds: [], autoScopeAll: false, autoPending: false,   // 自动匹配
     durBusy: false, durRows: [], durStats: null, durIds: [], durScopeAll: false,       // 按时长标注重算
     /* 生成记录视图（全屏）：列表分页 + 筛选 + 选中详情。
        记录由后端在任务收尾时落盘（成功/失败/取消/干跑各一条），前端只读+删。 */
@@ -280,11 +283,27 @@
     if (canAdd) {
       /* 参考图已达当前模型上限：按钮改成「满额」样式并说明原因。
          仍然可点（点击给出解释而不是毫无反应的禁用态），拦截在 data-bind 处理器里。 */
-      const full = role !== 'audio' && s.imageLimit != null && (s.imageCount || 0) >= s.imageLimit;
+      /* 音频有两重上限（数量 + 总时长），图片只有数量 —— 提示语要说清是哪一条满了，
+         否则用户看到"加不上"却不知道是该删一条还是该换短的音频。
+         上限值都来自服务端（s.imageLimit / s.audioLimit / s.audioSecMax），不硬编码。 */
+      let full = false, fullTip = '';
+      if (role === 'audio') {
+        const aMax = s.audioLimit;
+        const secMax = s.audioSecMax;
+        const overCount = aMax != null && (s.audioCount || 0) >= aMax;
+        const overSec = secMax != null && Number(s.audioSecTotal || 0) >= Number(secMax);
+        if (overCount || overSec) {
+          full = true;
+          fullTip = '已达音频上限：当前模型（' + esc(s.model) + '）最多 ' + aMax + ' 个' +
+            (overSec ? '，且总时长已占 ' + s.audioSecTotal + ' / ' + secMax + ' 秒' : '') +
+            '。可先移除一条，或改用时长更短的音频';
+        }
+      } else if (s.imageLimit != null && (s.imageCount || 0) >= s.imageLimit) {
+        full = true;
+        fullTip = '已达参考图上限：当前模型（' + esc(s.model) + '）最多 ' + s.imageLimit + ' 张，已用满 ' + s.imageCount + ' 张';
+      }
       out += '<button class="slot-add' + (full ? ' full' : '') + '" data-bind="' + role + '" title="' +
-        (full
-          ? '已达参考图上限：当前模型（' + esc(s.model) + '）最多 ' + s.imageLimit + ' 张，已用满 ' + s.imageCount + ' 张'
-          : '添加' + meta.label) + '">' + I.add + '</button>';
+        (full ? fullTip : '添加' + meta.label) + '">' + I.add + '</button>';
     }
     if (!items.length && !canAdd) out += '<span class="dash">—</span>';
     return out;
@@ -491,7 +510,7 @@
       '<div class="panel-actions">' +
         '<button class="btn-mini" data-assetact="openImport" title="两种模式：导入本地图片文件，或粘贴提示词文本（@ 分段自动识别 场景/道具/角色）"' + (S.assetBusy ? ' disabled' : '') + '>' + (S.assetBusy ? '导入中…' : '导入资产') + '</button>' +
         '<button class="btn-mini" data-assetact="batch" title="进入批量选择模式（操作在底部弹出的操作条中完成）"' + (S.assetBusy || S.assetSelMode ? ' disabled' : '') + '>批量选择</button>' +
-        '<button class="btn-mini" id="btnAutoMatch" title="按素材名称在分镜提示词里匹配对应素材并自动绑定（先预览，确认后再应用）"' + (S.autoBusy ? ' disabled' : '') + '>' + (S.autoBusy ? '匹配中…' : '自动匹配参考图') + '</button>' +
+        '<button class="btn-mini" id="btnAutoMatch" title="按素材名称在分镜提示词里匹配对应素材（图片与音色都匹配）并自动绑定（先预览，确认后再应用）"' + (S.autoBusy ? ' disabled' : '') + '>' + (S.autoBusy ? '匹配中…' : '自动匹配') + '</button>' +
         '<button class="btn-mini" id="btnDrySubmit" title="干跑：走完整提交链路组装命令，但不发送给即梦（不创建任务、不扣费），提交后在弹层里核对真实命令"' + (S.dryBusy ? ' disabled' : '') + '>' + (S.dryBusy ? '干跑中…' : '干跑提交') + '</button>' +
       '</div>' +
       (S.assetMsg ? '<div class="hint-sm asset-msg">' + esc(S.assetMsg) + '</div>' : '') +
@@ -780,7 +799,12 @@
   }
 
   /* 重建「素材名 → 类型」索引。索引一变就补一次行重绘，让提示词里的高亮跟着更新；
-     索引没变则不重绘（避免每次 loadAssets 都闪一下）。失败就保持旧索引，不打断主流程。 */
+     索引没变则不重绘（避免每次 loadAssets 都闪一下）。失败就保持旧索引，不打断主流程。
+
+     ⚠ 键要去扩展名（与后端 nameKeys 的 stripExt 对齐）：素材若是「林晚音色.mp3」这样的
+     文件名命名，不去扩展名就永远匹配不到提示词里的「林晚音色」—— 表现为"这条素材从不着色"。
+     扩展名规则与后端保持一致：末尾的点 + 1~5 位字母数字。 */
+  const stripAssetExt = (n) => String(n || '').replace(/\.[a-z0-9]{1,5}$/i, '');
   let assetIndexPending = null;
   function refreshAssetIndex() {
     if (assetIndexPending) return assetIndexPending;
@@ -788,7 +812,7 @@
       .then((lib) => {
         const idx = new Map();
         lib.forEach((a) => {
-          const k = String(a.name || '').trim().toLowerCase();
+          const k = stripAssetExt(String(a.name || '').trim()).toLowerCase();
           if (k) idx.set(k, a.type);
         });
         const same = idx.size === S.assetIndex.size &&
@@ -840,7 +864,7 @@
   }
 
   async function executeImportPlan(plan, conflictAction) {
-    const type = S.panelTab;
+    const type = S.imp.impType || S.panelTab;
     const steps = [];
     plan.autoFill.forEach((it) => steps.push({ kind: 'fill', file: it.file, asset: it.asset }));
     plan.plain.forEach((f) => steps.push({ kind: 'new', file: f }));
@@ -1874,21 +1898,40 @@
     ).join('') + '</div>';
   }
 
+  /* 资产库的「新建素材」瓦片：与分镜面板的 .slot-add 是同一套视觉语言（虚线框 + ＋），
+     尺寸对齐 .acard（缩略图区 64px + 名称行），所以直接复用已有的 .acard.add 样式。
+     为什么要有它：新建素材是资产库最主要的动作，此前只有工具栏的「+ 上传素材」
+     （批量导入、按文件名自动命名），单个"起个名字"的新建没有入口。 */
+  function assetAddCardHTML(type) {
+    const label = ASSET_TAB_LABEL[type] || '素材';
+    return '<div class="acard add" data-newasset="' + esc(type) + '" title="新建' + esc(label) + '">' +
+      '<span class="pic">' + I.add + '</span>' +
+      '<span class="nm">新建' + esc(label) + '</span>' +
+    '</div>';
+  }
+
   function renderProjAssets() {
     const body = $('#projBody');
     if (!body) return;
     const tabs = ASSET_TABS.map((k) =>
       '<button class="pv-tab' + (S.proj.assetTab === k ? ' on' : '') + '" data-atab="' + k + '">' + esc(ASSET_TAB_LABEL[k]) + '</button>'
     ).join('');
-    const cards = S.proj.assets.length
-      ? '<div class="pv-grid">' + S.proj.assets.map((a) => assetCardHTML(a, {})).join('') + '</div>'
-      : '<div class="pv-empty"><span class="t">这个分类下还没有素材</span><span class="s">素材属于<strong>项目</strong>，本项目下所有分镜表都能使用它；绑定到具体分镜的操作在分镜表里做。</span></div>';
+    /* ⚠ 网格**始终渲染**（哪怕这一类还没有素材）：新建瓦片就在网格末尾，
+       那是空分类下唯一的新建入口 —— 只在有素材时才渲染网格，等于"空分类建不了东西"。 */
+    const grid = '<div class="pv-grid">' +
+      S.proj.assets.map((a) => assetCardHTML(a, {})).join('') +
+      assetAddCardHTML(S.proj.assetTab) +
+      '</div>';
+    const empty = S.proj.assets.length ? '' :
+      '<div class="pv-empty"><span class="t">这个分类下还没有素材</span>' +
+      '<span class="s">素材属于<strong>项目</strong>，本项目下所有分镜表都能使用它；绑定到具体分镜的操作在分镜表里做。' +
+      '点上面的「新建' + esc(ASSET_TAB_LABEL[S.proj.assetTab] || '素材') + '」建一个，或用右上角「+ 上传素材」批量导入。</span></div>';
     body.innerHTML =
       '<div class="pv-toolbar">' + tabs +
         '<span class="grow"></span>' +
         '<label class="panel-search" style="margin:0"><input id="projAssetKw" class="input-sm" placeholder="搜索素材" value="' + esc(S.proj.assetKeyword) + '" /></label>' +
         '<button class="btn-primary" id="projAssetUp">+ 上传素材</button>' +
-      '</div>' + cards;
+      '</div>' + grid + empty;
   }
 
   /* ---------------- 项目 / 分镜表 的增删改 ---------------- */
@@ -2052,7 +2095,12 @@
         }
         const atab = e.target.closest('[data-atab]');
         if (atab) { S.proj.assetTab = atab.dataset.atab; renderProjAssets(); loadProjAssets(); return; }
-        if (e.target.id === 'projAssetUp') return openAssetImport();
+        if (e.target.id === 'projAssetUp') return openAssetImport(S.proj.assetTab);
+        /* 新建瓦片：类型**只认当前资产库标签页**（S.proj.assetTab）。
+           ⚠ 不能像批量导入那样读 S.panelTab —— 那是分镜面板的标签，资产库切页不会同步它，
+             于是站在「场景」页新建会被存成「角色」。 */
+        const newAsset = e.target.closest('[data-newasset]');
+        if (newAsset) return createAssetFlow(newAsset.dataset.newasset);
         const row = e.target.closest('[data-ws]');
         if (row) return enterWorkspace(S.cur.projectId, row.dataset.ws);
       });
@@ -2507,6 +2555,222 @@
       '</div>', 'fs-textview');
   }
 
+  /* ---------------- 新建素材（资产库的「新建…」瓦片） ----------------
+     为什么单独做一个弹窗而不是复用「素材详情」：详情弹窗是**编辑既有素材**的，
+     保存路径是"改名 / 换文件 / 改提示词"；新建需要的是"先建元数据、再补文件"，
+     校验也不同（名称必填）。但两者的**视觉与关闭行为必须一致**，
+     所以结构照抄 openAssetSettings：同一个 .modal.narrow + head/body/foot、
+     同样支持 × / 取消 / ESC / 点遮罩关闭、关闭时回收 blob URL。
+
+     ⚠ 音频与图片的创建路径**完全分开**（各自的文件选择控件与提示）：
+     音频没有图片预览、没有文生图提示词（与详情弹窗一致），图片不接受音频文件。 */
+  function openAssetCreate(type) {
+    return new Promise((resolve) => {
+      const isAudio = type === 'audio';
+      const label = ASSET_TAB_LABEL[type] || '素材';
+      const accept = isAudio ? 'audio/*' : 'image/*';
+      /* 音频的时长上限提示取服务端下发的值，不硬编码 15（改了 config 界面要跟着变）。
+         拿不到就退到 15 —— 与后端默认值一致，且这里只是**提示文案**，
+         真正的硬上限在服务端（checkAudioBudget）。 */
+      const secMax = Number((opts() || {}).audioSecMax) || 15;
+
+      /* 预览区：图片可点选文件（与详情弹窗同一套 .asset-preview.pickable）；
+         音频用 .asset-preview.audio 的音符 + 渐变，**另配一个明确的选择文件按钮** ——
+         详情弹窗的音频区不可点击，没有现成的选文件入口，新建必须有。 */
+      const previewHTML = isAudio
+        ? '<div class="asset-preview audio na-audiobox">' +
+            '<span class="note">' + I.note + '</span>' +
+          '</div>' +
+          '<div class="row-inline"><span class="label-sm">音频文件</span>' +
+            '<button class="btn-outline btn-sm" id="naPick">选择音频文件</button>' +
+            '<span class="hint-sm" id="naFileName">未选择（也可以先建好，之后再补文件）</span>' +
+          '</div>'
+        : '<div class="asset-preview pickable" id="naPreview">' +
+            '<span class="empty-ph">' + I.img + '<span>点击上传图片</span></span>' +
+          '</div>';
+
+      const promptHTML = isAudio ? '' :
+        '<div class="sec-title" style="margin-top:12px">文生图提示词</div>' +
+        '<div class="asset-promptwrap">' +
+          '<textarea id="naPrompt" class="asset-prompt" placeholder="可选。该资产的文生图提示词，可粘贴整段（含风格要求、反向提示词）。" maxlength="10000"></textarea>' +
+          '<span class="hint-sm" id="naPromptCount">0 / 10000</span>' +
+        '</div>';
+
+      const mask = document.createElement('div');
+      mask.className = 'mask'; mask.style.zIndex = 200;
+      mask.innerHTML =
+        '<div class="modal narrow">' +
+          '<div class="modal-head"><h2>新建' + esc(label) + '</h2><span class="grow"></span>' +
+            '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
+          '<div class="modal-body">' +
+            previewHTML +
+            '<div class="row-inline"><span class="label-sm">名称</span>' +
+              '<input class="input-sm" id="naName" style="flex:1;min-width:0" maxlength="60" ' +
+                'placeholder="' + (isAudio ? '例如：林晚音色' : '例如：林晚') + '" /></div>' +
+            '<div class="row-inline"><span class="label-sm">类型</span><span class="hint-sm">' + esc(label) + '</span></div>' +
+            (isAudio
+              ? '<div class="hint-sm">建议按「<strong>角色名 + 音色</strong>」命名（如「林晚音色」）——' +
+                  '自动匹配会把它关联到提示词里的「林晚」。' +
+                  '音频参考有数量与总时长两重上限（总时长上限 ' + secMax + ' 秒）。</div>'
+              : '') +
+            promptHTML +
+            '<input type="file" id="naFile" accept="' + accept + '" hidden />' +
+          '</div>' +
+          '<div class="modal-foot">' +
+            '<span class="hint-sm" id="naHint"></span><span class="grow"></span>' +
+            '<button class="btn-outline" data-cancel>取消</button>' +
+            '<button class="btn-primary" data-ok>创建</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(mask);
+
+      let picked = null;              // 选中的文件（可为空 = 先建空素材）
+      let pickedSec = null;           // 音频读到的时长（秒），读不到为 null
+      let previewBlobUrl = null;
+      const done = (v) => {
+        if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+        mask.remove();
+        resolve(v);
+      };
+      const hint = (t, kind) => {
+        const el = mask.querySelector('#naHint');
+        if (el) { el.textContent = t || ''; el.className = 'hint-sm' + (kind ? ' ' + kind : ''); }
+      };
+
+      const fileInput = mask.querySelector('#naFile');
+      async function acceptFile(f) {
+        if (!f) return;
+        picked = f;
+        if (isAudio) {
+          const nameEl = mask.querySelector('#naFileName');
+          if (nameEl) nameEl.textContent = f.name + '（读取时长…）';
+          /* 前端读时长是**主来源**（不依赖任何外部程序）；读不到就留 null，
+             服务端会用 ffprobe 兜底。两者都失败 → 时长未知 → 不允许绑定（后端守卫）。 */
+          pickedSec = await readAudioDuration(f);
+          if (nameEl) {
+            nameEl.textContent = f.name + (pickedSec != null ? '（' + pickedSec.toFixed(2) + ' 秒）' : '（读不到时长，创建后由服务端再试）');
+          }
+          return;
+        }
+        // 图片：选中即本地预览（与详情弹窗同款，不等保存）
+        if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+        previewBlobUrl = URL.createObjectURL(f);
+        const box = mask.querySelector('#naPreview');
+        if (box) {
+          box.classList.add('has-pic');
+          box.innerHTML = '<img src="' + previewBlobUrl + '" alt="预览" />';
+        }
+      }
+      fileInput.addEventListener('change', () => { acceptFile(fileInput.files && fileInput.files[0]); });
+      const pickBtn = mask.querySelector('#naPick');
+      if (pickBtn) pickBtn.addEventListener('click', () => fileInput.click());
+      const previewBox = mask.querySelector('#naPreview');
+      if (previewBox) previewBox.addEventListener('click', () => fileInput.click());
+
+      const promptEl = mask.querySelector('#naPrompt');
+      if (promptEl) {
+        promptEl.addEventListener('input', () => {
+          const c = mask.querySelector('#naPromptCount');
+          if (c) c.textContent = promptEl.value.length + ' / 10000';
+        });
+      }
+      const nameEl = mask.querySelector('#naName');
+      if (nameEl) nameEl.focus();
+
+      const submit = () => {
+        const name = String((nameEl && nameEl.value) || '').trim();
+        if (!name) { hint('请先填素材名称', 'err'); if (nameEl) nameEl.focus(); return; }
+        if (name.length > 60) { hint('素材名称不能超过 60 个字符', 'err'); return; }
+        done({
+          name: name,
+          prompt: promptEl ? String(promptEl.value || '').trim() : '',
+          file: picked,
+          durationSec: pickedSec
+        });
+      };
+      mask.querySelector('[data-ok]').addEventListener('click', submit);
+      if (nameEl) {
+        nameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+      }
+      mask.querySelector('[data-cancel]').addEventListener('click', () => done(null));
+      mask.querySelector('[data-x]').addEventListener('click', () => done(null));
+      mask.addEventListener('click', (ev) => { if (ev.target === mask) done(null); });
+      document.addEventListener('keydown', function esc3(ev) {
+        if (ev.key !== 'Escape') return;
+        document.removeEventListener('keydown', esc3); done(null);
+      });
+    });
+  }
+
+  /* 读音频文件的时长（秒）。**不依赖任何外部程序**：浏览器自己解元数据。
+     为什么需要它：音频参考有"总时长上限"，而时长只能从文件本身得到。
+     ⚠ 并非所有格式都能读到（部分 .flac/.ogg 拿不到 duration），
+       所以读不到时返回 null 而不是 0 —— 服务端还会用 ffprobe 兜底，
+       两边都失败就是"未知"，绑定时会被明确拦下（而不是当成 0 悄悄放过）。 */
+  function readAudioDuration(file) {
+    return new Promise((resolve) => {
+      let url = null;
+      let settled = false;
+      const finish = (v) => {
+        if (settled) return;
+        settled = true;
+        if (url) URL.revokeObjectURL(url);
+        resolve(v);
+      };
+      try {
+        url = URL.createObjectURL(file);
+        const a = new Audio();
+        a.preload = 'metadata';
+        a.addEventListener('loadedmetadata', () => {
+          const d = Number(a.duration);
+          finish(Number.isFinite(d) && d > 0 ? Math.round(d * 100) / 100 : null);
+        });
+        a.addEventListener('error', () => finish(null));
+        /* 兜底超时：某些编码下浏览器既不触发 loadedmetadata 也不触发 error，
+           不设上限的话"选完文件就卡住"。 */
+        setTimeout(() => finish(null), 5000);
+        a.src = url;
+      } catch (e) { finish(null); }
+    });
+  }
+
+  /* 新建流程：**先建元数据，再补文件**。
+     为什么这个顺序：① 名称是用户唯一的输入，先落库才能保证它不丢；
+     ② 空素材是合法状态（提示词导入产生的素材本来就没有文件）；
+     ③ 补文件失败时**不回滚** —— 素材已存在且名称正确、显示「无图」，
+        用户可在素材详情里重试；回滚会把刚填的名称一起丢掉，反而更糟。 */
+  async function createAssetFlow(type) {
+    if (S.assetBusy) return;
+    const r = await openAssetCreate(type);
+    if (!r) return;
+    S.assetBusy = true;
+    try {
+      const body = { name: r.name, type: type };
+      if (r.prompt) body.prompt = r.prompt;
+      const created = await Api.createAsset(body);
+      if (r.file) {
+        try {
+          await Api.replaceAsset(created.id, r.file, r.name, r.durationSec);
+        } catch (e) {
+          /* 素材已建成，只是文件没上去 —— 如实说明并指出怎么补，不要假装成功 */
+          await loadProjAssets();
+          if (S.proj.tab === 'assets') renderProjAssets();
+          toast('素材「' + r.name + '」已创建，但文件上传失败：' + errText(e) + '。可在素材详情里重新上传。', 'err');
+          return;
+        }
+      }
+      toast('已新建' + (ASSET_TAB_LABEL[type] || '素材') + '「' + r.name + '」' +
+        (r.file ? '' : '（还没有文件，可稍后在素材详情里补）'), 'ok');
+      await loadProjAssets();
+      if (S.proj.tab === 'assets') renderProjAssets();
+      await loadAssets();          // 让分镜面板的素材面板也刷新（新建的素材应立即可用）
+    } catch (e) {
+      fail(e);
+    } finally {
+      S.assetBusy = false;
+    }
+  }
+
   function openAssetSettings(asset) {
     return new Promise((resolve) => {
       const accept = asset.type === 'audio' ? 'audio/*' : 'image/*';
@@ -2806,8 +3070,13 @@
   /* 模式一：导入本地图片/音频文件（按当前面板 tab 的类型上传，可多选）；
      模式二：粘贴提示词文本 → 后端按「@ 分段」自动识别 场景/道具/角色 → 预览 → 确认导入。
      提示词模式创建的资产暂无图片（渐变占位），点开详情弹窗可补图与编辑提示词。 */
-  function openAssetImport() {
-    const isAudioTab = S.panelTab === 'audio';
+  /* ⚠ 导入的目标类型必须由**打开它的那个界面**决定，不能一律读 S.panelTab：
+     资产库切页只改 S.proj.assetTab，从不同步 S.panelTab —— 于是站在资产库的「场景」页
+     上传，素材会被存成「角色」（分镜面板上次停留的分类）。这与"音频不与其他类型混用"
+     是同一类问题，一并修掉。 */
+  function openAssetImport(type) {
+    S.imp.impType = type || S.panelTab;
+    const isAudioTab = S.imp.impType === 'audio';
     let mode = 'file';                        // 'file' | 'text' | 'conflict'
     let pickedFiles = [];                     // 文件模式待传清单
     let parsed = null;                        // 文本模式解析结果
@@ -2828,7 +3097,7 @@
     function render() {
       const filePane =
         '<div class="imp-pane">' +
-          '<div class="hint-sm" style="margin-bottom:8px">选择一个或多个本地' + (isAudioTab ? '音频' : '图片') + '文件。文件名（忽略扩展名、首尾空格，大小写不敏感）与<b>全库任意分类</b>的资产名一致时：<b>无图资产自动补图</b>；<b>已有图资产会先询问</b>你覆盖 / 跳过 / 并存。匹配不到任何资产的文件，按当前「' + tabLabel[S.panelTab] + '」分类新增（文件名无法判断类型，需要你切到对应分类再导入）。</div>' +
+          '<div class="hint-sm" style="margin-bottom:8px">选择一个或多个本地' + (isAudioTab ? '音频' : '图片') + '文件。文件名（忽略扩展名、首尾空格，大小写不敏感）与<b>全库任意分类</b>的资产名一致时：<b>无图资产自动补图</b>；<b>已有图资产会先询问</b>你覆盖 / 跳过 / 并存。匹配不到任何资产的文件，按当前「' + tabLabel[S.imp.impType] + '」分类新增（文件名无法判断类型，需要你切到对应分类再导入）。</div>' +
           '<button class="btn-mini" id="impPick"' + (busy ? ' disabled' : '') + '>选择文件…</button>' +
           '<input type="file" id="impFile" accept="' + (isAudioTab ? 'audio/*' : 'image/*') + '" multiple hidden />' +
           (pickedFiles.length
@@ -3077,13 +3346,44 @@
       const bound = new Set((sb.assets || []).filter((r) => r.role === role).map((r) => r.assetId));
       const sel = new Set();
       let list = [], keyword = '', busy = false, loaded = false;
+      /* 本次已勾选的音频用量：条数 + 时长合计 + 有没有读不到时长的。
+         为什么要在前端算：勾两个各 10 秒的音频时，界面必须知道"再加就超 15 秒了"，
+         而不是等用户点了确定才由后端报错。后端仍会独立复核（前端只是提前拦）。 */
+      function pickedSec() {
+        let count = 0, sec = 0, unknown = 0;
+        sel.forEach((id) => {
+          const a = list.find((x) => x.id === id);
+          if (!a) return;
+          count++;
+          if (Number.isFinite(a.durationSec)) sec += a.durationSec; else unknown++;
+        });
+        return { count: count, sec: Math.round(sec * 100) / 100, unknown: unknown };
+      }
       /* 参考图配额：X = 该分镜当前**真会发出**的图片数（后端 imageCatalog 口径，只算有本地文件的），
          Y = 当前模型的上限（models.js 的系列规则表下发）。音频槽位不占图片名额，故不显示。
          打开时先用列表行的值（同一份服务端计算），随后拉一次详情校准。
          替换模式要先把「即将解绑的那一张」从占用里扣掉，否则满额时明明能换却换不了。 */
       const isImageRole = role !== 'audio';
       let quota = { count: sb.imageCount || 0, limit: sb.imageLimit != null ? sb.imageLimit : 9 };
+      /* 音频走**另一套预算**：数量（audioLimit）+ 总时长（audioSecTotal / audioSecMax）。
+         与图片名额互不影响 —— 图片不会因为多绑了音频而少一张，反之亦然。
+         上限值全部来自服务端，前端不硬编码 15。 */
+      let audioQ = {
+        count: sb.audioCount || 0,
+        limit: sb.audioLimit != null ? sb.audioLimit : 3,
+        sec: Number(sb.audioSecTotal || 0),
+        secMax: Number(sb.audioSecMax || 15)
+      };
       const isFull = () => isImageRole && (quota.count - (replacing ? 1 : 0)) >= quota.limit;
+      /* 音频的"已满"：数量满 或 时长满。时长的判定还要算上**本次已勾选的**时长
+         （见 pickedSec()）—— 否则勾了两个各 10 秒的音频，界面会以为还能再加。 */
+      const isAudioFull = () => {
+        if (isImageRole) return false;
+        const add = pickedSec();
+        const cnt = audioQ.count - (replacing ? 1 : 0) + add.count;
+        const sec = audioQ.sec + add.sec;
+        return cnt >= audioQ.limit || sec >= audioQ.secMax - 1e-6;
+      };
       const isReplace = () => replacing || !meta.multi;   // 单选语义（一换一）
 
       const mask = document.createElement('div');
@@ -3093,7 +3393,7 @@
           '<div class="modal-head"><h2>' + (replacing ? '替换素材' : '添加资产') + ' · ' + meta.label + '</h2>' +
             '<span class="hint-sm">分镜 ' + sb.seq + '</span>' +
             '<span class="grow"></span>' +
-            (isImageRole ? '<span class="ap-quota" id="apQuota"></span>' : '') +
+            '<span class="ap-quota" id="apQuota"></span>' +   /* 图片与音频都显示配额，只是口径不同（见 renderQuota） */
             '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
           '<div class="modal-body">' +
             '<label class="panel-search">' + I.search +
@@ -3128,16 +3428,40 @@
           : '--g:' + a.grad + ';background-image:var(--g)';
       }
 
-      /* 配额状态：头部「已添加 X / 上限 Y」+ 满额时的说明条。满额后行不可选、确定不可点。 */
+      /* 配额状态：头部「已添加 X / 上限 Y」+ 满额时的说明条。满额后行不可选、确定不可点。
+         音频走另一套口径（数量 + 总时长），提示语也换成对应的说法 ——
+         "超时长了"和"条数满了"的处置方式完全不同，不能混成一句。 */
       function renderQuota() {
-        if (!isImageRole) return;
-        const full = isFull();
         const quotaEl = q('#apQuota');
+        const bar = q('#apFull');
+        if (!isImageRole) {
+          const add = pickedSec();
+          const cnt = audioQ.count - (replacing ? 1 : 0) + add.count;
+          const sec = Math.round((audioQ.sec + add.sec) * 100) / 100;
+          const overCount = cnt > audioQ.limit;
+          const overSec = sec > audioQ.secMax + 1e-6;
+          const full = overCount || overSec;
+          if (quotaEl) {
+            quotaEl.textContent = '音频 ' + cnt + ' / ' + audioQ.limit + ' 个 · ' + sec + ' / ' + audioQ.secMax + ' 秒';
+            quotaEl.classList.toggle('full', full);
+          }
+          if (bar) {
+            bar.hidden = !full;
+            if (full) {
+              q('#apFullTxt').textContent = overCount
+                ? '音频数量超限：当前模型（' + (sb.model || '—') + '）最多 ' + audioQ.limit +
+                  ' 个，当前会有 ' + cnt + ' 个。请少选几条，或改用支持更多音频的模型。'
+                : '音频总时长超限：上限 ' + audioQ.secMax + ' 秒，当前会有 ' + sec +
+                  ' 秒。请少选几条，或改用时长更短的音频。';
+            }
+          }
+          return;
+        }
+        const full = isFull();
         if (quotaEl) {
           quotaEl.textContent = '已添加 ' + quota.count + ' / 上限 ' + quota.limit;
           quotaEl.classList.toggle('full', full);
         }
-        const bar = q('#apFull');
         if (bar) {
           bar.hidden = !full;
           if (full) {
@@ -3171,10 +3495,18 @@
         host.innerHTML = rows.map((a) => {
           const isBound = bound.has(a.id);
           const isSel = sel.has(a.id);
+          /* 音频行把时长显示出来 —— 总时长有上限，不显示时长用户就没法判断该选哪几条。
+             读不到时长要明确写「时长未知」：这种素材**绑不上**（后端守卫），
+             在这里说清楚，比让用户选了再报错好。 */
+          const dur = a.type === 'audio'
+            ? '<span class="ap-dur' + (Number.isFinite(a.durationSec) ? '' : ' bad') + '">' +
+                (Number.isFinite(a.durationSec) ? a.durationSec + 's' : '时长未知') + '</span>'
+            : '';
           return '<div class="ap-row' + (isSel ? ' sel' : '') + (isBound ? ' bound' : '') + '" data-ap="' + a.id + '"' +
             ' title="' + esc(a.name) + (isBound ? '（已在此分镜中）' : '') + '">' +
             '<span class="ap-thumb" style="' + thumbStyle(a) + '"></span>' +
             '<span class="ap-name">' + esc(a.name) + '</span>' +
+            dur +
             '<span class="ap-type">' + esc(ASSET_TAB_LABEL[a.type] || a.type) + '</span>' +
             (isBound ? '<span class="ap-bound">已添加</span>' : '') +
             '<span class="ap-tick">' + I.tick + '</span>' +
@@ -3187,7 +3519,7 @@
         const names = Array.from(sel).map((id) => ((list.find((a) => a.id === id) || {}).name || id));
         q('#apHint').textContent = n ? (replacing ? '将替换为：' : '已选 ' + n + ' 个：') + names.join('、') : '未选择';
         const ok = q('[data-ok]');
-        ok.disabled = busy || !n || isFull();
+        ok.disabled = busy || !n || (isImageRole ? isFull() : isAudioFull());
         ok.textContent = busy
           ? (replacing ? '替换中…' : '添加中…')
           : ((replacing ? '替换' : '确定') + (n ? '（' + n + '）' : ''));
@@ -3196,10 +3528,32 @@
 
       function toggle(a) {
         if (busy) return;
-        if (isFull()) {
+        if (isImageRole && isFull()) {
           toast('已达参考图上限：当前模型（' + (sb.model || '—') + '）最多 ' + quota.limit +
             ' 张，本分镜已用满 ' + quota.count + ' 张。请先移除部分图片，或改用上限更高的模型', 'err');
           return;
+        }
+        /* 音频：勾选前就把两重上限算清楚，并说明是**哪一种**满了 ——
+           "删一条"和"换短的"是两个不同的动作，混成一句用户无从下手。 */
+        if (!isImageRole && !sel.has(a.id)) {
+          if (!Number.isFinite(a.durationSec)) {
+            toast('音频「' + a.name + '」没有可用的时长信息，无法计入总时长上限。' +
+              '请在素材详情里重新选择一次文件。', 'err');
+            return;
+          }
+          const add = pickedSec();
+          const cnt = audioQ.count - (replacing ? 1 : 0) + add.count + 1;
+          const sec = Math.round((audioQ.sec + add.sec + a.durationSec) * 100) / 100;
+          if (cnt > audioQ.limit) {
+            toast('音频数量超限：当前模型（' + (sb.model || '—') + '）最多 ' + audioQ.limit +
+              ' 个，再选会有 ' + cnt + ' 个', 'err');
+            return;
+          }
+          if (sec > audioQ.secMax + 1e-6) {
+            toast('音频总时长超限：上限 ' + audioQ.secMax + ' 秒，再选「' + a.name +
+              '」会达到 ' + sec + ' 秒。请少选几条，或改用时长更短的音频', 'err');
+            return;
+          }
         }
         if (bound.has(a.id)) { toast('「' + a.name + '」已在此分镜中，无需重复添加', 'err'); return; }
         if (sel.has(a.id)) sel.delete(a.id);
@@ -3264,10 +3618,20 @@
       /* 拉一次详情校准配额（列表行的值可能已被轮询之外的操作改动过）——
          口径仍然后端算，前端不自己数。失败就沿用列表行的值，不阻断弹窗。 */
       async function refreshQuota() {
-        if (!isImageRole) return;
         try {
           const d = await Api.getStoryboard(sb.id);
-          if (d && d.imageLimit != null) quota = { count: d.imageCount || 0, limit: d.imageLimit };
+          if (!d) return;
+          if (isImageRole) {
+            if (d.imageLimit != null) quota = { count: d.imageCount || 0, limit: d.imageLimit };
+          } else if (d.audioLimit != null) {
+            /* 音频：数量与总时长一起校准。秒数取服务端算的（它才是权威口径），
+               勾选中的那部分由 pickedSec() 在前端叠加。 */
+            audioQ = {
+              count: d.audioCount || 0, limit: d.audioLimit,
+              sec: Number(d.audioSecTotal || 0),
+              secMax: Number(d.audioSecMax || audioQ.secMax)
+            };
+          }
         } catch (e) { /* 校准失败：保持现有配额值 */ }
       }
 
@@ -3490,7 +3854,7 @@
 
 
 
-  /* ------------------------------------------------ 自动匹配参考图（v1：只按素材名称）
+  /* ------------------------------------------------ 自动匹配（按素材名称，图片与音色都匹配）
      两步：先预览（apply:false，**不写库**）→ 用户确认后应用（apply:true）。
      作用范围：勾选了分镜 → 只处理勾选的；没勾选 → 处理全部「未提交」分镜。 */
   async function openAutoMatch() {
@@ -3531,9 +3895,13 @@
     const rows = S.autoRows || [];
     const n = st.bound || 0;
     const ow = isAutoOverwrite();
-    $('#autoTitle').textContent = '自动匹配参考图 · 将绑定 ' + n + ' 个';
+    /* 把「图片 / 音色」拆开报：只给一个总数的话，用户看不出音色到底绑上没绑 ——
+       而音色是这次新增的匹配目标，恰恰是最需要确认的部分。 */
+    const bi = st.boundImages || 0, ba = st.boundAudios || 0;
+    const split = '（图片 ' + bi + ' · 音色 ' + ba + '）';
+    $('#autoTitle').textContent = '自动匹配 · 将绑定 ' + n + ' 个' + (n ? split : '');
     /* 超额未绑要出现在计数里 —— 否则用户会疑惑"明明命中了却没绑上"。
-       名额口径与「添加资产」弹窗完全一致（后端 imageCount / imageLimit）。 */
+       图片名额口径与「添加资产」弹窗完全一致；音色另有**数量 + 总时长**两重上限。 */
     $('#autoHint').textContent = '扫描 ' + (st.storyboards || 0) + ' 条 · 命中 ' + n + ' · 已存在 ' +
       (st.kept || 0) + ' · 类型已占 ' + (st.occupied || 0) + ' · 无匹配 ' + (st.noMatch || 0) +
       (st.overLimit ? ' · 超上限未绑 ' + st.overLimit : '');
@@ -3545,6 +3913,9 @@
       '提示词里出现<b>素材全名</b> → 记 <code>名称</code>；出现剥掉「三视图 / 正面 / 设定图 / 角色」等描述词后的<b>主干</b> → 记 <code>主干</code>；' +
       '出现名称分词后的<b>词块</b> → 记 <code>词块</code>。默认<b>只增补、不覆盖</b>已有绑定；同一角色的多张素材（去描述词后同名）只取最优的一张。' +
       '依据词越长越可信，<code>词块</code>命中较松，请按下面的「依据」逐条确认。</span></div>');
+    h.push('<div class="hint-sm"><b>图片与音色都会匹配</b>：音色素材按「角色名+音色」命名（如「林晚音色」），' +
+      '匹配时会把「音色」当描述词剥掉，因此能关联到提示词里的「林晚」。' +
+      '音色受<b>数量</b>与<b>总时长</b>两重上限约束，超出的会列在「超上限未绑」里并写明原因。</div>');
     h.push('<div class="hint-sm">作用范围：' + (S.autoScopeAll
       ? '未勾选分镜 → 全部「未提交」分镜（' + (st.storyboards || 0) + ' 条）'
       : '仅勾选的 ' + (S.autoIds || []).length + ' 条分镜') +
@@ -3555,12 +3926,15 @@
         '<i>' + esc(roleLabelOf(m.role)) + ' · ' + esc(viaLabelOf(m.via)) + '「' + esc(m.keyword) + '」</i></span>';
       const box = [];
       if (r.toBind.length) box.push('<div class="mk-line"><b>将绑定</b>' + r.toBind.map((m) => tag(m)).join('') + '</div>');
-      /* 命中但名额已满：单独列出来并说明原因（模型上限 + 当前已占），
-         不能默默丢掉 —— 用户需要知道"为什么这个没绑上"以及怎么腾名额。 */
+      /* 命中但没绑上：单独列出并说明**具体原因**。
+         图片是"名额已满"；音色可能是数量超限、总时长超限、或时长未知 ——
+         三种原因的处置方式完全不同，混成一句"超上限"会让人无从下手。 */
       if (r.overLimit && r.overLimit.length) {
-        box.push('<div class="mk-line"><b>超上限未绑</b>' + r.overLimit.map((m) =>
-          '<span class="mk-tag occ">' + esc(m.name) + '<i>' + esc(roleLabelOf(m.role)) +
-          ' · 当前模型上限 ' + r.imageLimit + ' 张，本分镜已占 ' + r.imageCount + ' 张，名额已满</i></span>').join('') + '</div>');
+        box.push('<div class="mk-line"><b>超上限未绑</b>' + r.overLimit.map((m) => {
+          const why = m.message ? esc(m.message)
+            : ('当前模型上限 ' + r.imageLimit + ' 张，本分镜已占 ' + r.imageCount + ' 张，名额已满');
+          return '<span class="mk-tag occ">' + esc(m.name) + '<i>' + esc(roleLabelOf(m.role)) + ' · ' + why + '</i></span>';
+        }).join('') + '</div>');
       }
       if (r.occupied.length) box.push('<div class="mk-line"><b>类型已占</b>' + r.occupied.map((o) =>
         '<span class="mk-tag occ">' + esc(o.want.name) + '<i>与已绑定的「' + esc(o.currentName) + '」同为' + esc(roleLabelOf(o.role)) +
@@ -3586,8 +3960,12 @@
       $('#autoMask').hidden = true;
       await loadList({ skeleton: false });
       await loadAssets();
-      toast('已自动绑定 ' + (st.bound || 0) + ' 个参考图' +
-        (st.occupied ? '，' + st.occupied + ' 个因类型已占而跳过' : ''));
+      /* 报「图片 / 音色」两笔账：只报总数看不出音色绑上没绑，
+         而音色是这次新增的匹配目标。超上限的也要报数，否则用户不知道有东西被跳过了。 */
+      const bi = st.boundImages || 0, ba = st.boundAudios || 0;
+      toast('已自动绑定 ' + (st.bound || 0) + ' 个参考（图片 ' + bi + ' · 音色 ' + ba + '）' +
+        (st.occupied ? '，' + st.occupied + ' 个因类型已占而跳过' : '') +
+        (st.overLimit ? '，' + st.overLimit + ' 个超上限未绑' : ''));
     } catch (e) { fail(e); }
     // 失败时弹层仍开着 → setAutoBusy 会把按钮从「应用中…」恢复成可点击，避免卡死只能刷新页面
     finally { setAutoBusy(false); }
@@ -3818,7 +4196,7 @@
         S.assetSel = next; renderPanel(); return;
       }
       if (act === 'del') { await deleteSelectedAssets(); return; }
-      if (act === 'openImport') { if (!S.assetBusy) openAssetImport(); return; }
+      if (act === 'openImport') { if (!S.assetBusy) openAssetImport(S.panelTab); return; }
       return;
     }
     const locked = e.target.closest('[data-locked]');
@@ -4516,7 +4894,7 @@
     $('#cmdCopyAll').addEventListener('click', copyAllCmds);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#cmdMask').hidden) closeCmd(); });
 
-    // 自动匹配参考图弹层
+    // 自动匹配弹层
     $('#autoClose').addEventListener('click', closeAuto);
     $('#autoCancel').addEventListener('click', closeAuto);
     $('#autoMask').addEventListener('click', (e) => { if (e.target.id === 'autoMask') closeAuto(); });

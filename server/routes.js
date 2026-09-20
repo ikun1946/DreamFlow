@@ -190,21 +190,25 @@ function makeRouter(cfg, adapter) {
        同一项目的所有工作区共享同一份素材库。 */
     ['GET', /^\/projects\/([^/]+)\/assets$/, async (ctx) => ok(ctx.res, S.listAssets(ctx.db, ctx.query, scopeOf(ctx)))],
     ['GET', /^\/assets$/, async (ctx) => ok(ctx.res, S.listAssets(ctx.db, ctx.query, scopeOf(ctx)))],
+    // 新建素材：只建元数据（名称 + 类型 + 可选提示词），文件之后由 /assets/:id/file 补
+    ['POST', /^\/assets$/, async (ctx) => ok(ctx.res, S.createAssetMeta(ctx.db, ctx.body, scopeOf(ctx)))],
     // 创建 / 批量导入素材：原始字节上传（query: type + name，素材名默认取文件名去扩展名）
-    ['POST', /^\/assets\/upload$/, async (ctx) => ok(ctx.res, S.createAsset(ctx.db, {
+    ['POST', /^\/assets\/upload$/, async (ctx) => ok(ctx.res, await S.createAsset(ctx.db, {
       type: ctx.query.type,
       filename: ctx.query.name,
       mime: ctx.req.headers['content-type'] || '',
-      buffer: ctx.body
+      buffer: ctx.body,
+      durationSec: ctx.query.durationSec      // 音频时长（前端读到的；缺失则服务端 ffprobe 兜底）
     }, scopeOf(ctx)))],
     // 素材设置：重命名
     ['PATCH', /^\/assets\/([^/]+)$/, async (ctx) => ok(ctx.res, S.updateAsset(ctx.db, ctx.params[0], ctx.body, scopeOf(ctx)))],
     // 素材设置：更换文件（原始字节；query: filename 用于扩展名校验与取名，name 为展示名覆盖）
-    ['POST', /^\/assets\/([^/]+)\/file$/, async (ctx) => ok(ctx.res, S.replaceAsset(ctx.db, ctx.params[0], {
+    ['POST', /^\/assets\/([^/]+)\/file$/, async (ctx) => ok(ctx.res, await S.replaceAsset(ctx.db, ctx.params[0], {
       filename: ctx.query.filename,
       name: ctx.query.name,
       mime: ctx.req.headers['content-type'] || '',
-      buffer: ctx.body
+      buffer: ctx.body,
+      durationSec: ctx.query.durationSec
     }, scopeOf(ctx)))],
     // 提示词文本导入资产：@ 分段 → 自动识别 场景/道具/角色 → apply=false 预览 / true 落库
     ['POST', /^\/assets\/import-prompts$/, async (ctx) => ok(ctx.res, S.importAssetPrompts(ctx.db, ctx.body, scopeOf(ctx)))],

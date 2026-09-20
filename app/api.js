@@ -53,6 +53,11 @@
     return q;
   }
 
+  /* 音频时长（秒）只在**确实读到了**的时候才放进 query：
+     读不到就整项不传，让服务端去走 ffprobe 兜底，而不是传一个空串/NaN 上去。
+     传 `undefined` 时 URL 序列化会整项丢掉，正是想要的行为。 */
+  const secOrUndef = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
+
   /* ---------------------------------------------------------- 错误 */
   const ERR = {
     OK: 0,
@@ -226,17 +231,21 @@
     listAssets:   (query)     => request('GET', '/assets', { query: scopeQuery(query) }),
     // 素材设置：更新名称 / 文生图提示词（body: { name?, prompt? }，至少一项）/ 更换文件（更换保留素材 id 与全部分镜绑定）
     updateAsset:  (id, body)  => request('PATCH', '/assets/' + id, { body: body || {}, query: scopeQuery() }),
-    replaceAsset: (id, file, name) => request('POST', '/assets/' + id + '/file',
-      { raw: true, mime: file.type, body: file, query: scopeQuery({ filename: file.name, name: name || undefined }) }),
-    uploadAsset:  (file, type) => request('POST', '/assets/upload',
-      { raw: true, mime: file.type, body: file, query: scopeQuery({ type: type, name: file.name }) }),
+    replaceAsset: (id, file, name, durationSec) => request('POST', '/assets/' + id + '/file',
+      { raw: true, mime: file.type, body: file,
+        query: scopeQuery({ filename: file.name, name: name || undefined, durationSec: secOrUndef(durationSec) }) }),
+    uploadAsset:  (file, type, durationSec) => request('POST', '/assets/upload',
+      { raw: true, mime: file.type, body: file,
+        query: scopeQuery({ type: type, name: file.name, durationSec: secOrUndef(durationSec) }) }),
+    // 新建素材：只建元数据（名称 + 类型 + 可选提示词），文件之后用 replaceAsset 补
+    createAsset:  (body)     => request('POST', '/assets', { body: body || {}, query: scopeQuery() }),
     // 删除素材（同时解除所有分镜绑定并清理磁盘文件）
     deleteAsset:  (id) => request('DELETE', '/assets/' + id, { query: scopeQuery() }),
     // 提示词文本导入资产：@ 分段自动识别 场景/道具/角色；apply=false 仅解析预览，true 落库
     importAssetPrompts: (rawText, apply) => request('POST', '/assets/import-prompts', { body: { rawText, apply: !!apply }, query: scopeQuery() }),
     bindAsset:    (id, assetId, role) => request('POST', '/storyboards/' + id + '/assets', { body: { assetId, role }, query: scopeQuery() }),
     unbindAsset:  (id, assetId) => request('DELETE', '/storyboards/' + id + '/assets/' + assetId, { query: scopeQuery() }),
-    // 自动匹配参考图（v1 只按素材名称）：apply=false 仅预览不写库；overwrite 控制是否替换该类型已有绑定
+    // 自动匹配（按素材名匹配图片参考与音色参考）：apply=false 仅预览不写库；overwrite 控制是否替换该类型已有绑定
     autoMatchAssets: (body) => request('POST', '/storyboards/auto-assets', { body, query: scopeQuery() }),
     // 按提示词里的「总时长」标注重算时长（向上进位）：apply 缺省 true 直接生效，传 false 只预览
     autoDuration: (body) => request('POST', '/storyboards/auto-duration', { body, query: scopeQuery() }),
