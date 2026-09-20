@@ -120,8 +120,13 @@ function makeRouter(cfg, adapter) {
     ['POST', /^\/projects\/([^/]+)\/workspaces$/, async (ctx) => ok(ctx.res, P.createWorkspace(ctx.db, ctx.params[0], ctx.body))],
     ['GET', /^\/projects\/([^/]+)$/, async (ctx) => ok(ctx.res, P.getProject(ctx.db, ctx.params[0]))],
     ['PATCH', /^\/projects\/([^/]+)$/, async (ctx) => ok(ctx.res, P.patchProject(ctx.db, ctx.params[0], ctx.body))],
-    // 软删除（指令 §44/§45）：只标 deletedAt，不做级联物理销毁
-    ['DELETE', /^\/projects\/([^/]+)$/, async (ctx) => ok(ctx.res, P.deleteProject(ctx.db, ctx.params[0]))],
+    /* 删除项目。默认**软删除**（指令 §44/§45：只标 deletedAt，不做级联物理销毁）；
+       带 `?hard=1` 时**彻底删除** —— 连磁盘文件、分镜、素材、生成记录一起抹掉，不可恢复。
+       两条路都受"有活动任务则拒绝"的保护（见 projects.js）。 */
+    ['DELETE', /^\/projects\/([^/]+)$/, async (ctx) => {
+      const hard = ctx.query.hard === '1' || ctx.query.hard === 'true';
+      return ok(ctx.res, hard ? P.hardDeleteProject(ctx.db, ctx.params[0]) : P.deleteProject(ctx.db, ctx.params[0]));
+    }],
     ['GET', /^\/workspaces\/([^/]+)$/, async (ctx) => ok(ctx.res, P.getWorkspace(ctx.db, ctx.params[0]))],
     ['PATCH', /^\/workspaces\/([^/]+)$/, async (ctx) => ok(ctx.res, P.patchWorkspace(ctx.db, ctx.params[0], ctx.body))],
     ['DELETE', /^\/workspaces\/([^/]+)$/, async (ctx) => ok(ctx.res, P.deleteWorkspace(ctx.db, ctx.params[0]))],

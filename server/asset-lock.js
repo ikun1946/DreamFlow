@@ -21,7 +21,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { ASSET_DIR } = require('./config');
+const P = require('./paths');   // 素材文件的磁盘位置（按项目分区）
 
 /* 素材类型 → 中文职责标签（与前端素材面板的 tab 命名保持一致） */
 const ROLE_LABEL = {
@@ -62,8 +62,8 @@ function existsCached(file) {
 function countsAsImage(db, asset, role) {
   if (!asset) return false;
   if (asset.type === 'audio' || role === 'audio') return false;
-  if (!asset.url || !asset.url.startsWith('/media/assets/')) return false;
-  return existsCached(path.join(ASSET_DIR, asset.url.slice('/media/assets/'.length)));
+  const file = P.assetFileOf(asset);
+  return file ? existsCached(file) : false;
 }
 
 /**
@@ -83,11 +83,11 @@ function imageCatalog(sb, db) {
   (sb && sb.assets ? sb.assets : []).forEach((ref) => {
     const a = (db && db.assets ? db.assets : []).find((x) => x.id === ref.assetId);
     if (!a) { skipped.push({ assetId: ref.assetId, name: ref.assetId, reason: '素材已不存在' }); return; }
-    if (!a.url || !a.url.startsWith('/media/assets/')) {
+    const file = P.assetFileOf(a);
+    if (!file) {
       skipped.push({ assetId: a.id, name: a.name, type: a.type, reason: '素材没有可用的本地文件' });
       return;
     }
-    const file = path.join(ASSET_DIR, a.url.slice('/media/assets/'.length));
     const exists = existsCached(file);
     if (a.type === 'audio' || ref.role === 'audio') {
       if (exists) audios.push({ assetId: a.id, name: a.name, file });

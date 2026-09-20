@@ -199,6 +199,9 @@
     <span class="grow"></span>
     <button class="btn-outline" id="projRename">重命名</button>
     <button class="btn-outline btn-danger" id="projDelete">删除项目</button>
+    <!-- 彻底删除：连磁盘文件一起删，不可恢复。放在软删除右侧、用同一套危险样式，
+         但点击后会要求把项目名原样打一遍才执行。 -->
+    <button class="btn-outline btn-danger" id="projHardDelete" title="连磁盘上的素材与产物一起永久删除，不可恢复">彻底删除</button>
     <button class="btn-primary" id="projNewWs">+ 新建分镜表</button>
   </header>
   <div class="pv-tabs" id="projTabs"></div>

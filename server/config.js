@@ -11,9 +11,12 @@ const path = require('path');
 const SERVER_DIR = __dirname;
 const PROJECT_ROOT = path.join(SERVER_DIR, '..');
 const DATA_DIR = path.join(SERVER_DIR, 'data');
-const OUTPUT_DIR = path.join(DATA_DIR, 'output');
-const ASSET_DIR = path.join(DATA_DIR, 'assets');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
+/* 旧的扁平资源目录（data/output、data/assets）已废弃 —— 现在每个项目的资源都在
+   data/projects/<项目>/ 下，布局与地址形状一律以 paths.js 为唯一事实来源。
+   这两个常量只作为"迁移要清空的历史位置"保留给文档与排查用，任何新代码都不要再用它们。 */
+const LEGACY_OUTPUT_DIR = path.join(DATA_DIR, 'output');
+const LEGACY_ASSET_DIR = path.join(DATA_DIR, 'assets');
 
 function loadConfig() {
   let fileCfg = {};
@@ -75,4 +78,4 @@ function loadConfig() {
   };
 }
 
-module.exports = { loadConfig, SERVER_DIR, PROJECT_ROOT, DATA_DIR, OUTPUT_DIR, ASSET_DIR, DB_FILE };
+module.exports = { loadConfig, SERVER_DIR, PROJECT_ROOT, DATA_DIR, LEGACY_OUTPUT_DIR, LEGACY_ASSET_DIR, DB_FILE };

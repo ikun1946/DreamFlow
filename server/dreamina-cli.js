@@ -20,7 +20,8 @@
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { OUTPUT_DIR, ASSET_DIR } = require('./config');
+const PATHS = require('./paths');    // 磁盘布局与资源 URL 形状的唯一事实来源
+const PROJ = require('./projects');  // 分镜 → 工作区 → 项目的归属推导
 const store = require('./store');
 const { ERR, ApiError, nowIso } = require('./util');
 const M = require('./models');
@@ -656,8 +657,20 @@ function makeDreaminaAdapter(cfg) {
       || null;
   }
 
+  /* 分镜所属项目 id。权威来源是 workspace.projectId（见 projects.js 的说明）；
+     取不到时退回分镜上的冗余 projectId。产物要落到"本项目"的目录里，必须拿到它。 */
+  function projectIdOfStoryboard(db, sb) {
+    const ws = (sb && sb.workspaceId) ? PROJ.workspaceOf(db, sb.workspaceId) : null;
+    return (ws && ws.projectId) || (sb && sb.projectId) || null;
+  }
+
   async function downloadResult(db, sb, submitId) {
-    const dir = path.join(OUTPUT_DIR, sb.id);
+    /* 产物下到**本项目自己的目录**（data/projects/<项目>/output/<分镜>/）。
+       项目 id 从分镜推导（workspace.projectId 是权威来源，见 projects.js）；
+       推不出来就不下载 —— 宁可失败也不要写到一个无主的目录里。 */
+    const pj = projectIdOfStoryboard(db, sb);
+    const dir = pj ? PATHS.sbOutputDirOf(pj, sb.id) : null;
+    if (!dir) return { videoUrl: null, coverUrl: null, file: null };
     fs.mkdirSync(dir, { recursive: true });
     const r = await call(['query_result', '--submit_id', submitId, '--download_dir', dir], 120000);
     if (r.kind !== 'ok') return { videoUrl: null, coverUrl: null, file: null };
@@ -673,8 +686,8 @@ function makeDreaminaAdapter(cfg) {
       if (made) cover = outName;
     }
     return {
-      videoUrl: video ? '/files/' + sb.id + '/' + encodeURIComponent(video) : null,
-      coverUrl: cover ? '/files/' + sb.id + '/' + encodeURIComponent(cover) : null,
+      videoUrl: video ? PATHS.outputUrl(pj, sb.id, video) : null,
+      coverUrl: cover ? PATHS.outputUrl(pj, sb.id, cover) : null,
       file: video || null            // 供日志留痕：出问题时能看出到底取了哪个文件
     };
   }

@@ -15,7 +15,8 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { loadConfig, PROJECT_ROOT, OUTPUT_DIR, ASSET_DIR } = require('./config');
+const { loadConfig, PROJECT_ROOT } = require('./config');
+const P = require('./paths');   // 磁盘布局与资源 URL 形状的唯一事实来源
 const { ApiError, ok, fail, sendJson } = require('./util');
 const store = require('./store');
 const S = require('./services');
@@ -167,15 +168,17 @@ const server = http.createServer(async (req, res) => {
       if (!p.startsWith(path.join(PROJECT_ROOT, 'dist'))) { res.writeHead(403); return res.end(); }
       if (serveFile(req, res, p)) return;
     }
-    if (pathname.startsWith('/files/')) {
-      const p = path.normalize(path.join(OUTPUT_DIR, pathname.slice('/files/'.length)));
-      if (!p.startsWith(OUTPUT_DIR)) { res.writeHead(403); return res.end(); }
-      if (serveFile(req, res, p)) return;
-    }
-    if (pathname.startsWith('/media/assets/')) {
-      const p = path.normalize(path.join(ASSET_DIR, decodeURIComponent(pathname.slice('/media/assets/'.length))));
-      if (!p.startsWith(ASSET_DIR)) { res.writeHead(403); return res.end(); }
-      if (serveFile(req, res, p)) return;
+    /* 资源文件（素材图 / 产物视频）：
+       形状解析与路径安全**统一走 paths.resolveServePath** —— 逐段白名单校验
+       （id / 文件名都来自 URL）+ 解析后的目录包含性检查，返回 null 就一律 404，
+       不再"把路径拼出来碰运气"。旧的平铺形状由它内部兜底。
+       ⚠ 原来这里的判定是 `p.startsWith(OUTPUT_DIR)` —— 前缀相同但不同目录
+       （如 output 与 output-bak）会漏过去，是个真实的越界口子。 */
+    if (pathname.startsWith('/files/') || pathname.startsWith('/media/assets/')) {
+      const p = P.resolveServePath(pathname);
+      if (p && serveFile(req, res, p)) return;
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('Not Found');
     }
 
     if (pathname === '/api/v1' || pathname.startsWith('/api/v1/')) {

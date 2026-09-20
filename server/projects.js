@@ -16,9 +16,12 @@
    删除策略：第一版一律**软删除**（deletedAt），不做级联物理销毁（指令 §44/§45）。
    软删的项目/工作区默认不出现在任何查询里，但底层数据完整保留，记录仍可回溯。
    ============================================================ */
+const fs = require('fs');
+const path = require('path');
 const { ERR, ApiError, rid, nowIso } = require('./util');
 const { LEGACY_PROJECT_ID, LEGACY_WORKSPACE_ID } = require('./schema');
 const store = require('./store');
+const PATHS = require('./paths');   // 磁盘布局的唯一事实来源（彻底删除要按项目目录删文件）
 
 /* ⚠ 本文件**所有会改动 db 的函数都必须调用 store.save()**。
    漏掉的后果不是报错，而是"内存里改了、磁盘上没改" —— 接口读得到（同一进程读的是同一个对象），
@@ -272,6 +275,63 @@ function deleteProject(db, id) {
   return { deleted: p.id, softDeleted: true, note: '项目及其工作区/分镜/素材/记录均未被物理删除，仅标记为已删除' };
 }
 
+/* 彻底删除（用户要求的新能力）：**连磁盘文件一起删**，不可恢复。
+   与软删除的区别：软删除只打 deletedAt、什么都留着；这里把项目及其全部子数据
+   （分镜表 / 分镜 / 素材 / 生成记录 / CLI 任务痕迹 / 日志）与磁盘文件一起抹掉。
+
+   ⚠ 顺序是刻意的：**先删磁盘，再删数据**。反过来的话，一旦删盘失败，库里已经没有这个项目了，
+   那些文件就永远失去归属（没人知道它们是谁的），只能人工翻目录。先删盘若失败，数据库保持原样，
+   用户直接重试即可。
+   ⚠ 磁盘能"删一个文件夹就删干净"，正是因为资源文件已按项目分区（见 paths.js 的说明）。
+   ⚠ 允许对**已软删除**的项目执行 —— 用户误点软删除后仍能彻底清掉它（界面上只对未删除的项目
+   露出入口，所以这条主要是接口层的兜底）。 */
+function hardDeleteProject(db, id) {
+  const p = (db.projects || []).find((x) => x && x.id === id);   // 含已软删的
+  if (!p) throw new ApiError(ERR.NOTFOUND, '项目不存在：' + id);
+  const act = hasActiveTasks(db, { projectId: p.id });
+  if (act.active) {
+    throw new ApiError(ERR.CONFLICT,
+      '当前仍有生成任务（' + act.count + ' 个），请先等待任务完成或取消任务', { ids: act.ids });
+  }
+
+  const wsIds = (db.workspaces || []).filter((w) => w && w.projectId === p.id).map((w) => w.id);
+  const sbIds = (db.storyboards || []).filter((s) => s && wsIds.includes(s.workspaceId)).map((s) => s.id);
+  const assetIds = (db.assets || []).filter((a) => a && a.projectId === p.id).map((a) => a.id);
+  const recIds = (db.records || []).filter((r) => r && r.projectId === p.id).map((r) => r.id);
+
+  /* ① 删磁盘（整个项目目录，含 assets/ 与 output/） */
+  const dir = PATHS.projectDir(p.id);
+  let removedFiles = 0;
+  try {
+    if (fs.existsSync(dir)) {
+      const walk = (cur) => fs.readdirSync(cur).forEach((f) => {
+        const q = path.join(cur, f);
+        if (fs.statSync(q).isDirectory()) walk(q); else removedFiles++;
+      });
+      walk(dir);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } catch (e) {
+    throw new ApiError(ERR.INTERNAL,
+      '删除项目目录失败，**未做任何数据改动**（可直接重试）：' + ((e && e.message) || e));
+  }
+
+  /* ② 删数据 */
+  db.projects = (db.projects || []).filter((x) => x.id !== p.id);
+  db.workspaces = (db.workspaces || []).filter((w) => w.projectId !== p.id);
+  db.storyboards = (db.storyboards || []).filter((s) => !sbIds.includes(s.id));
+  db.assets = (db.assets || []).filter((a) => a.projectId !== p.id);
+  db.records = (db.records || []).filter((r) => r.projectId !== p.id);
+  sbIds.forEach((sid) => { delete db.logs[sid]; delete db.cliJobs[sid]; });
+  save();
+  return {
+    deleted: p.id, hard: true, name: p.name,
+    removedFiles: removedFiles, dir: 'data/projects/' + p.id,
+    counts: { workspaces: wsIds.length, storyboards: sbIds.length, assets: assetIds.length, records: recIds.length },
+    note: '项目及其磁盘文件已被彻底删除，不可恢复'
+  };
+}
+
 /* ---------------- 工作区 CRUD ---------------- */
 
 const viewWorkspace = (w) => ({
@@ -381,7 +441,7 @@ module.exports = {
   defaultWorkspaceOf,
   resolveScope, requireWorkspaceScope, hasActiveTasks,
   resolveProjectSettings, resolveProjectDelimiter, countsOf,
-  listProjects, getProject, createProject, patchProject, deleteProject,
+  listProjects, getProject, createProject, patchProject, deleteProject, hardDeleteProject,
   listWorkspaces, getWorkspace, createWorkspace, patchWorkspace, deleteWorkspace,
   touchProject, touchWorkspace,
   viewProject, viewWorkspace

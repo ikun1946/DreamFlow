@@ -195,6 +195,8 @@
     patchProject: (id, body)  => request('PATCH', '/projects/' + id, { body }),
     // 软删除：后端只打 deletedAt，不级联销毁数据
     deleteProject:(id)        => request('DELETE', '/projects/' + id),
+    // 彻底删除：连磁盘文件、分镜、素材、生成记录一起删，**不可恢复**
+    hardDeleteProject:(id)    => request('DELETE', '/projects/' + id, { query: { hard: '1' } }),
     listWorkspaces:(projectId) => request('GET', '/projects/' + projectId + '/workspaces'),
     createWorkspace:(projectId, body) => request('POST', '/projects/' + projectId + '/workspaces', { body }),
     getWorkspace: (id)        => request('GET', '/workspaces/' + id),

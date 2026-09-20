@@ -1945,6 +1945,26 @@
     } catch (e) { fail(e); }
   }
 
+  /* 彻底删除：连磁盘文件一起删，**不可恢复**。
+     因为不可逆，要求用户**把项目名原样打一遍**才执行 —— 比一个"确定吗"的弹窗可靠得多
+     （后者在习惯性确认下几乎拦不住），也与"软删除"在操作成本上拉开了差距。 */
+  async function onHardDeleteProject(id, name) {
+    const typed = await uiPrompt('彻底删除项目（不可恢复）',
+      '这会**永久删除**项目「' + name + '」及其全部分镜表、分镜、素材、生成记录，' +
+      '并删掉磁盘上的 data/projects/' + id + '/ 目录（含所有素材图与已生成的视频）。\n\n' +
+      '此操作**无法撤销**。如果只是想让项目从列表里消失，请改用「删除项目」（软删除）。\n\n' +
+      '确认请原样输入项目名：', '');
+    if (typed === null) return;
+    if (String(typed).trim() !== name) { toast('输入的项目名不一致，已取消（未做任何改动）', 'err'); return; }
+    try {
+      const res = await Api.hardDeleteProject(id);
+      const c = res.counts || {};
+      toast('已彻底删除「' + res.name + '」：' + (res.removedFiles || 0) + ' 个文件、' +
+        (c.storyboards || 0) + ' 个分镜、' + (c.assets || 0) + ' 个素材、' + (c.records || 0) + ' 条记录', 'ok');
+      await enterHome();
+    } catch (e) { fail(e); }
+  }
+
   async function onNewWorkspace() {
     if (!S.cur.projectId) return;
     const name = await uiPrompt('新建分镜表', '分镜表是分镜的容器。同一项目下的分镜表共享素材库，但分镜互相独立。', '');
@@ -2052,6 +2072,7 @@
     on('#projNewWs', () => onNewWorkspace());
     on('#projRename', () => { if (S.cur.project) onRenameProject(S.cur.project.id, S.cur.project.name); });
     on('#projDelete', () => { if (S.cur.project) onDeleteProject(S.cur.project.id, S.cur.project.name); });
+    on('#projHardDelete', () => { if (S.cur.project) onHardDeleteProject(S.cur.project.id, S.cur.project.name); });
     on('#crumbHome', () => enterHome());
     on('#projName', () => { if (S.cur.projectId && S.view !== 'project') enterProject(S.cur.projectId); });
   }
@@ -3807,6 +3828,11 @@
   // （旧「创建/批量导入素材」的文件选择回调已并入「导入资产」弹窗）
 
   /* 设计系统内的确认 / 输入弹层（替代原生 confirm/prompt） */
+  /* 对话框正文只认两个最小标记：**加粗** 与换行。
+     ⚠ 必须先 esc 再替换 —— 顺序反了就等于给正文开了注入口子（正文里可能含用户填的项目名）。
+     以前这里只 esc，于是消息里写的 ** 会原样显示成星号、\n 会塌成一个空格。 */
+  const richText = (s) => esc(String(s)).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
   function uiDialog(opts) {
     return new Promise((resolve) => {
       const mask = document.createElement('div');
@@ -3816,7 +3842,7 @@
           '<div class="modal-head"><h2>' + esc(opts.title) + '</h2><span class="grow"></span>' +
             '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
           '<div class="modal-body">' +
-            (opts.message ? '<div style="font-size:13px;line-height:1.7;color:var(--ink80)">' + esc(opts.message) + '</div>' : '') +
+            (opts.message ? '<div style="font-size:13px;line-height:1.7;color:var(--ink80);white-space:pre-line">' + richText(opts.message) + '</div>' : '') +
             (opts.input ? '<input class="input-sm" id="uiDlgInput" style="width:100%" value="' + esc(opts.value || '') + '" />' : '') +
           '</div>' +
           '<div class="modal-foot">' +

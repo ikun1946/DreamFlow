@@ -19,7 +19,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const { ERR, nowIso } = require('./util');
-const { OUTPUT_DIR } = require('./config');
+const PATHS = require('./paths');   // 磁盘布局与资源 URL 形状的唯一事实来源
 const store = require('./store');
 const models = require('./models');   // 模型注册表：名称归一/能力边界/路由的唯一事实来源
 const TS = require('./task-state');   // 任务状态迁移与写入权限的唯一事实来源
@@ -430,11 +430,15 @@ function makeWorker(cfg, deps) {
     if (!targets.length) return 0;
     let done = 0;
     for (const sb of targets) {
-      const abs = path.join(OUTPUT_DIR, decodeURIComponent(String(sb.videoUrl).replace(/^\/files\//, '')));
+      /* 产物地址现在是 /files/<项目>/<分镜>/<文件>：先解析出项目段，再定位到项目目录。
+         解析不出来就跳过（历史遗留或异常地址），不影响其它条目。 */
+      const parsed = PATHS.parseOutputUrl(sb.videoUrl);
+      if (!parsed) continue;
+      const abs = path.join(PATHS.sbOutputDir(parsed.projectId, parsed.storyboardId), parsed.filename);
       const outName = path.basename(abs).replace(/\.[^.]+$/, '') + '_cover.jpg';
       const made = await D.makeCover(abs, path.join(path.dirname(abs), outName));
       if (!made) continue;
-      sb.coverUrl = '/files/' + sb.id + '/' + encodeURIComponent(outName);
+      sb.coverUrl = PATHS.outputUrl(parsed.projectId, sb.id, outName);
       sb.dirty = true;
       done++;
     }

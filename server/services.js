@@ -15,7 +15,9 @@ const REC = require('./records');     // 生成记录：查询 / 详情 / 删除
 const P = require('./projects');      // 项目/工作区归属与作用域解析的唯一出口
 const fs = require('fs');
 const path = require('path');
-const { ASSET_DIR, loadConfig } = require('./config');
+const { loadConfig } = require('./config');
+const PATHS = require('./paths');    // 磁盘布局与资源 URL 形状的唯一事实来源
+/* ⚠ 注意与上面的 `P`（= ./projects，项目/工作区数据层）区分开：两个 P 会重名。 */
 
 /* 素材上传允许的扩展名（创建/批量导入共用） */
 const ASSET_EXT = {
@@ -629,12 +631,16 @@ function createAsset(db, opts, scope) {
   if (!buf || !buf.length) throw new ApiError(ERR.PARAM, '文件内容为空');
   const id = rid('as_');
   const fname = id + ext;
-  fs.writeFileSync(path.join(ASSET_DIR, fname), buf);
+  /* 落到**本项目自己的目录**（data/projects/<项目>/assets/）——
+     这样"彻底删除项目"只需删一个文件夹，不会牵动别的项目。 */
+  PATHS.ensureProjectDirs(scope.projectId);
+  fs.writeFileSync(path.join(PATHS.assetDir(scope.projectId), fname), buf);
   const base = filename.replace(/\.[^.]+$/, '').trim() || ('素材-' + id.slice(3, 9));
+  const url = PATHS.assetUrl(scope.projectId, fname);
   const asset = {
     id, projectId: scope.projectId, name: base, type,
-    url: '/media/assets/' + fname,
-    thumbUrl: kind === 'audio' ? null : '/media/assets/' + fname,
+    url,
+    thumbUrl: kind === 'audio' ? null : url,
     width: 0, height: 0, size: buf.length, tags: [],
     createdAt: nowIso(), updatedAt: null,
     gradSeedKey: id, origin: 'upload'
@@ -1259,9 +1265,8 @@ function deleteAsset(db, id, scope) {
      所以其它项目不可能引用这个素材。这里仍按工作区收敛一次，避免"万一"改写别处数据。 */
   scopeStoryboards(db, scope).forEach((s) => { s.assets = (s.assets || []).filter((r) => r.assetId !== id); });
   // 删除本地文件（url 形如 /media/assets/as_xxx.png）
-  if (a.url && a.url.startsWith('/media/assets/')) {
-    try { fs.unlinkSync(path.join(ASSET_DIR, a.url.slice('/media/assets/'.length))); } catch (e) { /* 文件可能已不存在 */ }
-  }
+  const file = PATHS.assetFileOf(a);
+  if (file) { try { fs.unlinkSync(file); } catch (e) { /* 文件可能已不存在 */ } }
   store.save();
   return { deleted: id };
 }
@@ -1305,16 +1310,19 @@ function replaceAsset(db, id, opts, scope) {
   }
   const buf = opts.buffer;
   if (!buf || !buf.length) throw new ApiError(ERR.PARAM, '文件内容为空');
-  const oldUrl = a.url;
   /* 文件名 = 素材id + 替换时刻（36进制时间戳）+ 扩展名。
      必须让 url 每次替换都变化：若沿用固定文件名（旧实现 a.id + ext），
      浏览器会命中 <img> 缓存继续显示旧图 —— 表现为"替换后图片没变"。 */
   const fname = a.id + '-' + Date.now().toString(36) + ext;
-  fs.writeFileSync(path.join(ASSET_DIR, fname), buf);
-  if (oldUrl && oldUrl.startsWith('/media/assets/') && oldUrl !== '/media/assets/' + fname) {
-    try { fs.unlinkSync(path.join(ASSET_DIR, oldUrl.slice('/media/assets/'.length))); } catch (e) { /* 旧文件可能已不存在 */ }
+  /* 换文件也落在**本项目自己的目录**里（与 createAsset 同源）。
+     项目 id 取素材记录上的 projectId —— 调用方已用 findScopedAsset 校验过它属于当前项目。 */
+  PATHS.ensureProjectDirs(a.projectId);
+  const oldFile = PATHS.assetFileOf(a);
+  fs.writeFileSync(path.join(PATHS.assetDir(a.projectId), fname), buf);
+  if (oldFile && oldFile !== path.join(PATHS.assetDir(a.projectId), fname)) {
+    try { fs.unlinkSync(oldFile); } catch (e) { /* 旧文件可能已不存在 */ }
   }
-  a.url = '/media/assets/' + fname;
+  a.url = PATHS.assetUrl(a.projectId, fname);
   a.thumbUrl = kind === 'audio' ? null : a.url;
   a.size = buf.length;
   a.updatedAt = nowIso();

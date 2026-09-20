@@ -8,7 +8,7 @@
    ============================================================ */
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR, OUTPUT_DIR, ASSET_DIR, DB_FILE } = require('./config');
+const { DATA_DIR, DB_FILE } = require('./config');
 const { nowIso } = require('./util');
 const schema = require('./schema');   // schema 版本与迁移框架（迁移唯一入口）
 
@@ -74,8 +74,9 @@ function backupBeforeMigration(fromVersion) {
 function load() {
   if (db) return db;
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  fs.mkdirSync(ASSET_DIR, { recursive: true });
+  /* ⚠ 这里以前还会 mkdir data/output 与 data/assets。那两处是旧的扁平布局，
+     现在已经没有代码往里面写东西了；再建出来只会让"彻底删除项目"之后
+     看起来还剩两个空目录，误导人以为没删干净。需要时由 paths.ensureProjectDirs 建项目目录。 */
   if (fs.existsSync(DB_FILE)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));

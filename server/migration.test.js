@@ -66,7 +66,8 @@ test('迁移：v1 → v2，分镜/素材/记录一条不丢，绑定与提示词
 
   assert.equal(res.from, 1);
   assert.equal(res.to, schema.SCHEMA_VERSION);
-  assert.deepEqual(res.ran, ['v1→v2']);
+  /* 迁移链是逐级跑的：v1 的库要依次经过 v2（多项目）与 v3（资源文件按项目分区）。 */
+  assert.deepEqual(res.ran, ['v1→v2', 'v2→v3']);
   assert.equal(db.schemaVersion, schema.SCHEMA_VERSION);
 
   // 数量守恒
