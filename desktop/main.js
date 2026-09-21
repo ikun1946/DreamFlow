@@ -730,7 +730,7 @@ async function checkForUpdatesFromTray() {
     await dialog.showMessageBox(win || null, {
       type: 'warning', title: '检查更新失败', message: '没能取到更新信息',
       detail: r.error + (r.needsToken
-        ? '\n\n提示：本仓库是私有库，需要在设置里填一个只读访问令牌；也可以改用本地目录或自定义 URL 更新源。'
+        ? '\n\n提示：本仓库已公开、正常无需令牌。若读取失败，请检查更新源设置；私有库需填只读访问令牌，也可改用本地目录或自定义 URL 更新源。'
         : ''),
       buttons: ['好']
     });

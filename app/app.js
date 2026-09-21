@@ -4996,7 +4996,7 @@
     } else if (u.error) {
       state = '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
         '<span>' + esc(u.error) +
-        (u.needsToken ? '<span class="hint-sm" style="display:block">本仓库是私有库，匿名读不到 release。在下面的「更新源设置」里填一个只读访问令牌即可；也可以改用本地目录或自定义 URL 更新源。</span>' : '') +
+        (u.needsToken ? '<span class="hint-sm" style="display:block">读取 release 失败（可能需要令牌）。本仓库已公开、正常无需令牌；若你用的是私有库或自建源，请在下面的「更新源设置」里填只读访问令牌，或改用本地目录 / 自定义 URL。</span>' : '') +
         '</span></div>';
     } else if (u.lastCheck && u.lastCheck.ok) {
       state = u.lastCheck.hasUpdate
@@ -5051,7 +5051,7 @@
         '<input id="updRepo" type="text" placeholder="repo" value="' + esc(String(s.repo || '')) + '" style="max-width:190px"></div>' +
         '<div class="srow"><label>访问令牌</label>' +
         '<input id="updToken" type="password" placeholder="' + (s.hasToken ? '已配置（留空则不修改）' : '私有库必填；公有库可留空') + '">' +
-        '<p class="hint-sm">本仓库是私有的，需要令牌才读得到 release。建议用<b>细粒度 PAT</b>：只勾这一个仓库的 <code>Contents: Read</code>。令牌只存在本机配置文件里，不会进安装包。</p></div>';
+        '<p class="hint-sm">本仓库已公开、匿名即可读取 release，一般无需令牌；仅私有库或自建源才需要。建议用<b>细粒度 PAT</b>：只勾这一个仓库的 <code>Contents: Read</code>。令牌只存在本机配置文件里，不会进安装包。</p></div>';
     }
     return '<div class="sblock" style="margin-top:10px">' +
       '<div class="sblock-hd"><b>更新源设置</b></div>' +
