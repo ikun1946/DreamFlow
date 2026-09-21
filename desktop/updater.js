@@ -113,7 +113,7 @@ function request(url, opts, cb) {
     assertHttps(url);
     req = https.request(url, {
       method: o.method || 'GET',
-      headers: Object.assign({ 'User-Agent': 'jimeng-console-updater' }, o.headers || {})
+      headers: Object.assign({ 'User-Agent': 'dreamflow-updater' }, o.headers || {})
     }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
@@ -195,7 +195,7 @@ function downloadTo(url, dest, opts) {
       let req;
       try {
         assertHttps(u);
-        req = https.get(u, { headers: Object.assign({ 'User-Agent': 'jimeng-console-updater' }, headers || o.headers || {}) }, (res) => {
+        req = https.get(u, { headers: Object.assign({ 'User-Agent': 'dreamflow-updater' }, headers || o.headers || {}) }, (res) => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             res.resume();
             if (redirects >= 5) { cleanup(); return done({ ok: false, error: '重定向次数过多' }); }
@@ -258,7 +258,7 @@ function downloadTo(url, dest, opts) {
 const DEFAULT_SOURCE = {
   provider: 'github',
   owner: 'ikun1946',
-  repo: 'jimeng-console',
+  repo: 'DreamFlow',
   token: '',
   url: '',
   dir: ''

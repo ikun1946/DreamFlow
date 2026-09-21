@@ -1,6 +1,6 @@
 # 推送到 Git 私密仓库 · 操作指南
 
-> 适用项目：`jimeng-console/`（即梦批量生成控制台）
+> 适用项目：`DreamFlow/`（即梦批量生成控制台）
 > 目标：把项目推送到 GitHub 上的**私有仓库**，确保只有仓库所有者本人可查看与操作。
 
 ---
@@ -9,7 +9,7 @@
 
 | 步骤 | 状态 | 说明 |
 |---|---|---|
-| ① 本地初始化仓库 | ✅ 已完成 | 仓库根 `jimeng-console/`，分支 `main`，首次提交 `3fcfd9c`，11 个文件 |
+| ① 本地初始化仓库 | ✅ 已完成 | 仓库根 `DreamFlow/`，分支 `main`，首次提交 `3fcfd9c`，11 个文件 |
 | ② 配置 `.gitignore` / `.gitattributes` | ✅ 已完成 | 工作区内部状态、临时产物、密钥不入库；统一 LF 保证构建产物字节稳定 |
 | ③ 创建远端私有仓库 | ⏳ 待执行 | **需要 GitHub 凭据**，见第 2 节 |
 | ④ 关联远端并推送 | ⏳ 待执行 | 同上 |
@@ -18,7 +18,7 @@
 **已完成的具体结果**：
 
 ```bash
-cd jimeng-console
+cd DreamFlow
 git init -b main
 git add -A
 git commit -m "feat: 初始化即梦批量生成控制台前端项目"
@@ -56,7 +56,7 @@ legacy/jimeng-batch-studio.html 历史原型
 任一步失败即中止，不会留下半截状态。
 
 ```bash
-cd jimeng-console
+cd DreamFlow
   export GITHUB_TOKEN=ghp_你的令牌      # 命令前带空格，可避免进入 shell 历史
 bash scripts/push-to-github.sh          # 自定义仓库名：bash scripts/push-to-github.sh my-repo
 ```
@@ -76,15 +76,15 @@ bash scripts/push-to-github.sh          # 自定义仓库名：bash scripts/push
    ```
 
 2. GitHub → **Settings → SSH and GPG keys → New SSH key**，粘贴保存。
-3. GitHub → **New repository**，填 `jimeng-console`，**Private**，
+3. GitHub → **New repository**，填 `DreamFlow`，**Private**，
    **不要**勾选 Add README / .gitignore / license（保持空仓库）。
 4. 告诉我仓库地址，我执行：
 
    ```bash
-   cd jimeng-console
+   cd DreamFlow
    # 顺带修掉本机一条失效配置（指向了不存在的密钥路径）
    git config --global --unset core.sshcommand
-   git remote add origin git@github.com:<你的用户名>/jimeng-console.git
+   git remote add origin git@github.com:<你的用户名>/DreamFlow.git
    git push -u origin main
    ```
 
@@ -116,7 +116,7 @@ ssh -T git@github.com      # 期望输出：Hi <用户名>! You've successfully 
 
 | 项 | 值 |
 |---|---|
-| Repository name | `jimeng-console` |
+| Repository name | `DreamFlow` |
 | **Visibility** | **Private** |
 | Initialize with README / .gitignore / license | **全部不勾选**（留空，避免首次推送冲突） |
 | Owner | 你自己的个人账号（**不要**选组织，除非明确知道组织权限模型） |
@@ -127,7 +127,7 @@ ssh -T git@github.com      # 期望输出：Hi <用户名>! You've successfully 
 curl -X POST https://api.github.com/user/repos \
   -H "Authorization: Bearer $GITHUB_TOKEN" \
   -H "Accept: application/vnd.github+json" \
-  -d '{"name":"jimeng-console","private":true,"auto_init":false,"description":"即梦批量视频生成控制台 · 前端"}'
+  -d '{"name":"DreamFlow","private":true,"auto_init":false,"description":"即梦批量视频生成控制台 · 前端"}'
 ```
 
 > 建库后**立即**用第 4.1 节的命令回读 `private` 字段确认——不要凭"我传了 private:true"就认为生效。
@@ -183,7 +183,7 @@ Classic PAT（旧式，仅作备选）：只勾选 **`repo`**。
 
 ## 4. 如何验证私密性已生效
 
-> 下面全部假设 `OWNER=<你的用户名>`、`REPO=jimeng-console`。
+> 下面全部假设 `OWNER=<你的用户名>`、`REPO=DreamFlow`。
 
 ### 4.1 API 直接读可见性字段（最权威）
 
@@ -253,7 +253,7 @@ Settings → **Audit log**（组织仓库）或账号 Security log，定期检�
 ## 5. 推送后的常规操作
 
 ```bash
-cd jimeng-console
+cd DreamFlow
 
 git status                       # 看改动
 git add -A

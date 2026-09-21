@@ -2,7 +2,7 @@
 /**
  * 构建发布版：把 app/ 下的四个文件 + 应用内图标内联成 dist/ 里的单文件应用。
  *
- *   cd jimeng-console
+ *   cd DreamFlow
  *   node build.js
  *
  * 三个必须遵守的约束（都是踩过坑的）：

@@ -1,4 +1,8 @@
-# 即梦批量生成控制台
+# DreamFlow · 即梦批量生成控制台
+
+> **项目英文名：DreamFlow** —— 它同时是 GitHub 仓库名，所以 `git clone` 下来的文件夹名也是 `DreamFlow/`。
+> 中文产品名仍是「即梦批量生成控制台」：界面标题、托盘、安装包显示的都是这个中文名，
+> 应用身份（`appId` / 可执行文件名 / 数据目录 `JimengConsole`）也保持不变 —— 改它们会让已装的版本变成"另一个应用"、并让数据目录搬家。
 
 面向 AI 短剧 / 分镜视频生产的**前后端完整项目**：前端是分镜批量管理工作台，后端是本地桥接服务，通过即梦官方**创作 CLI（`dreamina`）**完成真实视频生成。**无任何演示/模拟数据**——所有数据来自真实数据流。
 
@@ -9,7 +13,7 @@
 ## 目录规划
 
 ```
-jimeng-console/                      ← 项目根。所有文件都在这一层之下，不外溢
+DreamFlow/                           ← 项目根。所有文件都在这一层之下，不外溢
 │
 ├── README.md                        ← 你在这里。项目总览、路径导航、使用指引
 ├── AGENTS.md                        给 AI agent 的项目约定（红线、常用命令、关键文件地图）
@@ -85,7 +89,7 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 ## 快速开始
 
 ```bash
-cd jimeng-console
+cd DreamFlow
 node server/index.js          # 1. 启动后端（唯一启动步骤，零依赖无需安装）
 ```
 
@@ -295,7 +299,7 @@ bash scripts/push-to-github.sh
 所以**代码靠 git、数据靠这个脚本**，两者互不替代：
 
 ```bash
-bash scripts/backup-data.sh                       # 备份到 $HOME/jimeng-console-backups/<时间戳>/
+bash scripts/backup-data.sh                       # 备份到 $HOME/dreamflow-backups/<时间戳>/
 JC_BACKUP_ROOT=/d/backups bash scripts/backup-data.sh   # 换目标位置（建议放到移动硬盘等另一块盘）
 JC_BACKUP_KEEP=5 bash scripts/backup-data.sh      # 只保留最近 5 份（默认 10）
 ```
@@ -397,7 +401,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.26.0`**
+当前版本：**`0.27.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -410,6 +414,16 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.27.0` — 2026-09-21
+
+**项目更名 DreamFlow：GitHub 仓库改名，clone 下来的文件夹就是 `DreamFlow/`**
+
+- **仓库改名**：`ikun1946/jimeng-console` → **`ikun1946/DreamFlow`**（GitHub 侧已改，旧地址仍会跳转）。因此 `git clone https://github.com/ikun1946/DreamFlow.git` 得到的顶层文件夹就是 `DreamFlow/` —— 这正是「clone 下来整体文件夹名」的唯一决定因素（git 默认用仓库名当目录名）。
+- **代码里的引用全部同步**：`desktop/updater.js` 的默认更新源仓库（`repo: 'DreamFlow'`，**这条不改，应用内更新会直接找不到 Release**）、`scripts/push-to-github.sh` 的默认仓库名、`scripts/backup-data.sh` 的备份目录（`$HOME/dreamflow-backups`）、`server/cli-installer.js` 与 updater 的 User-Agent、`package.json` / `package-lock.json` 的包名（`jimeng-console` → `dreamflow`）、README / AGENTS / docs 里全部路径与 URL。
+- **中文产品名与应用身份不变**：界面标题、托盘、安装包、数据目录仍是「即梦批量生成控制台」/ `JimengConsole`。改 `appId` / `productName` / 可执行文件名会让已装的版本变成「另一个应用」（无法原地升级），改数据目录会让用户的真实数据看起来「消失」—— 所以这次**只改项目名与仓库名**，应用身份另议。
+
+**版本**：`0.26.0 → 0.27.0`（MINOR：项目更名 + 更新源地址变更；无接口变更、无数据结构变更、无迁移）。
 
 #### `0.26.0` — 2026-09-21
 

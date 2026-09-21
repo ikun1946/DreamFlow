@@ -71,7 +71,7 @@ function request(url, opts, cb) {
   try {
     req = https.request(url, {
       method: o.method || 'GET',
-      headers: Object.assign({ 'User-Agent': 'jimeng-console' }, o.headers || {})
+      headers: Object.assign({ 'User-Agent': 'dreamflow' }, o.headers || {})
     }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
@@ -187,7 +187,7 @@ function downloadToFile(url, dest, onProgress) {
     const go = (u, redirects) => {
       let req;
       try {
-        req = https.get(u, { headers: { 'User-Agent': 'jimeng-console' } }, (res) => {
+        req = https.get(u, { headers: { 'User-Agent': 'dreamflow' } }, (res) => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             res.resume();
             if (redirects >= 5) { cleanup(); return done({ ok: false, error: '重定向次数过多' }); }

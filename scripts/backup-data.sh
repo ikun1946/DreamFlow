@@ -14,7 +14,7 @@
 #   JC_BACKUP_ROOT=/d/backups bash scripts/backup-data.sh
 #   JC_BACKUP_KEEP=5 bash scripts/backup-data.sh      # 只保留最近 5 份
 #
-# 默认位置：$HOME/jimeng-console-backups/<时间戳>/
+# 默认位置：$HOME/dreamflow-backups/<时间戳>/
 # 每次运行产生一个独立快照目录，不覆盖历史；超出 KEEP 份数时删最旧的。
 # ============================================================
 set -euo pipefail
@@ -23,7 +23,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR="$PROJECT_ROOT/server/data"
 SNAP_DIR="$PROJECT_ROOT/backup"
 
-BACKUP_ROOT="${JC_BACKUP_ROOT:-$HOME/jimeng-console-backups}"
+BACKUP_ROOT="${JC_BACKUP_ROOT:-$HOME/dreamflow-backups}"
 KEEP="${JC_BACKUP_KEEP:-10}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 DEST="$BACKUP_ROOT/$STAMP"

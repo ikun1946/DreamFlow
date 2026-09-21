@@ -13,7 +13,7 @@
 #
 set -euo pipefail
 
-REPO_NAME="${1:-jimeng-console}"
+REPO_NAME="${1:-DreamFlow}"
 REPO_DESC="即梦批量视频生成控制台 · 前端应用（文档 / 开发版 / 发布版 / 归档）"
 
 # ── 定位仓库根：脚本所在目录的上一级 ────────────────────────────
