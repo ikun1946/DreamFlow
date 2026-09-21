@@ -37,9 +37,29 @@
     51002: '积分不足，无法生成该分镜',
     51003: '内容未通过审核，建议调整提示词后重试',
     51004: '生成超时，可稍后重试',
-    51005: '生成被中断，可重试'
+    51005: '生成被中断，可重试',
+    /* 外部工具状态（2026-09-21，与 server/util.js 的 511xx 对齐）。
+       后端在这类错误上会带**更具体**的 message，所以 errText 优先用 message；
+       这几条只是"没有 message 时的兜底"，以及给"去处理"按钮提供文案锚点。 */
+    51101: '未检测到创作 CLI（dreamina），无法生成视频',
+    51102: '创作 CLI 已安装但未登录，请先登录即梦账号',
+    51103: '即梦侧拒绝了本次提交（会员或权限不足，重试无效）',
+    51104: '未检测到 ffmpeg，视频可正常生成但不会生成封面图',
+    51105: '未检测到 ffprobe，无法读取音频时长，绑定音频会被拒绝'
   };
   const errText = (e) => (e && e.message) || ERR_TEXT[e && e.code] || '操作失败，请稍后重试';
+
+  /* 工具类错误的「可执行解决动作」文案（2026-09-21）。
+     后端在 511xx 错误的 data.action 里给出动作标识，这里映射成按钮文字。
+     为什么放在前端：动作是**界面行为**（跳设置页 / 打开 CLI 安装），
+     后端只该声明"该做什么"，不该知道界面长什么样。 */
+  const TOOL_ACTION_TEXT = {
+    'install-cli': '去安装创作 CLI',
+    'cli-login': '去登录即梦账号',
+    'install-ffmpeg': '去配置 ffmpeg / ffprobe',
+    'upgrade-or-switch-model': '切换可用模型'
+  };
+  const toolActionText = (a) => (a && TOOL_ACTION_TEXT[a]) || null;
 
   /* ---------------------------------------------------------- 图标
      ⚠ v0.21.0（B 阶段）：内联 SVG 一律改用 `currentColor` 描边/填充，颜色交由**承载它的
@@ -1133,6 +1153,17 @@
   ];
 
   const fmtElapsed = (ms) => (ms == null ? '—' : (ms / 1000).toFixed(1) + 's');
+
+  /* 人类可读的字节数（2026-09-21）。硬删除确认弹窗要用它显示"将要释放的磁盘占用" ——
+     直接给 "1234567890 字节" 在那个场景下没有意义。
+     阈值用 1024 进制（与文件系统的显示口径一致），保留一位小数。 */
+  function fmtBytes(n) {
+    const v = Number(n) || 0;
+    if (v < 1024) return v + ' B';
+    if (v < 1048576) return (v / 1024).toFixed(1) + ' KB';
+    if (v < 1073741824) return (v / 1048576).toFixed(1) + ' MB';
+    return (v / 1073741824).toFixed(2) + ' GB';
+  }
   function fmtAt(iso) {
     const d = new Date(iso);
     if (isNaN(d.getTime())) return { d: '—', t: '' };
@@ -2172,13 +2203,42 @@
 
   /* 彻底删除：连磁盘文件一起删，**不可恢复**。
      因为不可逆，要求用户**把项目名原样打一遍**才执行 —— 比一个"确定吗"的弹窗可靠得多
-     （后者在习惯性确认下几乎拦不住），也与"软删除"在操作成本上拉开了差距。 */
+     （后者在习惯性确认下几乎拦不住），也与"软删除"在操作成本上拉开了差距。
+
+     ★ 2026-09-21 补（清单 §13）：确认前先**展示要删掉什么**。
+       原先弹窗只写"项目名 + ID"，用户根本不知道这次要删掉多少分镜、多少素材、
+       多少个视频、占多少磁盘 —— 而这是唯一没有任何回退路径的操作。
+       现在先调 hard-delete-preview 拿到真实统计并逐项列出：
+         · 统计拿不到（网络/接口失败）时不阻断流程，退回原提示文案 ——
+           一个统计接口的抖动不该让用户连删都删不了；
+         · 有活动任务时预览里会带 activeTasks，直接拦在前面并说明，
+           省掉一次"输入名字 → 被拒绝"的无谓往返。 */
   async function onHardDeleteProject(id, name) {
-    const typed = await uiPrompt('彻底删除项目（不可恢复）',
-      '这会**永久删除**项目「' + name + '」及其全部分镜表、分镜、素材、生成记录，' +
-      '并删掉磁盘上的 data/projects/' + id + '/ 目录（含所有素材图与已生成的视频）。\n\n' +
-      '此操作**无法撤销**。如果只是想让项目从列表里消失，请改用「删除项目」（软删除）。\n\n' +
-      '确认请原样输入项目名：', '');
+    let pv = null;
+    try { pv = await Api.hardDeletePreview(id); }
+    catch (e) { pv = null; }
+
+    if (pv && pv.activeTasks) {
+      toast('该项目还有 ' + pv.activeTasks.count + ' 个生成任务在跑，请先等待完成或取消任务', 'err');
+      return;
+    }
+
+    let body = '这会**永久删除**项目「' + name + '」及其全部分镜表、分镜、素材、生成记录，' +
+      '并删掉磁盘上的 data/projects/' + id + '/ 目录（含所有素材图与已生成的视频）。\n\n';
+    if (pv) {
+      const c = pv.counts || {}, d = pv.disk || {};
+      body += '将要删除：\n'
+        + '  · 分镜表 ' + (c.workspaces || 0) + ' 张 · 分镜 ' + (c.storyboards || 0) + ' 个\n'
+        + '  · 素材 ' + (c.assets || 0) + ' 个 · 生成记录 ' + (c.records || 0) + ' 条\n'
+        + '  · 磁盘文件 ' + (d.files || 0) + ' 个（视频 ' + (d.videos || 0)
+        + ' · 封面 ' + (d.covers || 0) + ' · 图片 ' + (d.images || 0) + '），'
+        + '共约 ' + fmtBytes(d.bytes || 0) + '\n\n'
+        + '删除前会自动把该项目归档到 data/backup/hard-delete/（仅作留底，界面上无法恢复）。\n\n';
+    }
+    body += '此操作**无法撤销**。如果只是想让项目从列表里消失，请改用「删除项目」（软删除）。\n\n'
+      + '确认请原样输入项目名：';
+
+    const typed = await uiPrompt('彻底删除项目（不可恢复）', body, '');
     if (typed === null) return;
     if (String(typed).trim() !== name) { toast('输入的项目名不一致，已取消（未做任何改动）', 'err'); return; }
     try {
@@ -2186,6 +2246,17 @@
       const c = res.counts || {};
       toast('已彻底删除「' + res.name + '」：' + (res.removedFiles || 0) + ' 个文件、' +
         (c.storyboards || 0) + ' 个分镜、' + (c.assets || 0) + ' 个素材、' + (c.records || 0) + ' 条记录', 'ok');
+      /* 归档位置要说出来：这是唯一能找回被删内容的途径。
+         后端返回的 backupDir 是**相对数据根**的路径（如 backup/hard-delete/<id>-<时间>），
+         直接拼在提示里，用户才知道去哪里翻。 */
+      if (res.backupDir) {
+        toast('删除前已归档到 data/' + res.backupDir + '（可手工找回）', 'ok');
+      }
+      /* 目录没删干净时必须说出来 —— 界面显示"已删除"但磁盘上还有残留，
+         是最容易让人错过的那种问题。 */
+      if (res.residualDir) {
+        toast('注意：项目目录未能完全删除（可能有文件被占用），请手工检查 data/projects/' + id + '/', 'err');
+      }
       await enterHome();
     } catch (e) { fail(e); }
   }

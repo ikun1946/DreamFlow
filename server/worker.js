@@ -323,6 +323,10 @@ function makeWorker(cfg, deps) {
       videoUrl: sb.videoUrl, coverUrl: sb.coverUrl
     }));
     store.pushLog(sb.id, 'info', '生成完成（创作 CLI）' + (dl.videoUrl ? '，产物已下载' : '（未取到下载文件，任务列表可见 submit_id）'));
+    /* 封面缺失要**说清原因**（2026-09-21）：原先"没有封面"是个无解释的现象，
+       用户分不清"没装 ffmpeg"还是"这个视频抽不出帧"。注意 level=warn 而非 error ——
+       任务整体是成功的，只是少了缩略图。 */
+    if (dl.coverNotice) store.pushLog(sb.id, 'warn', dl.coverNotice);
     store.save();
     onDirty();
   }

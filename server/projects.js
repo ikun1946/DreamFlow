@@ -22,6 +22,12 @@ const { ERR, ApiError, rid, nowIso } = require('./util');
 const { LEGACY_PROJECT_ID, LEGACY_WORKSPACE_ID } = require('./schema');
 const store = require('./store');
 const PATHS = require('./paths');   // 磁盘布局的唯一事实来源（彻底删除要按项目目录删文件）
+/* 硬删除归档要落在数据根下的 backup/。
+   ⚠ 用 require('./config') 的 DATA_DIR 而非 PATHS：DATA_DIR 是"数据根"（桌面版会指到用户目录），
+     且它是个 **getter 式的函数**（见 config.js 顶部注释），必须现取、不能解构快照 ——
+     解构会把值固定在 require 那一刻，桌面版换根后归档就写错地方了。 */
+const configMod = require('./config');
+const rootOfData = () => path.resolve(configMod.DATA_DIR);
 
 /* ⚠ 本文件**所有会改动 db 的函数都必须调用 store.save()**。
    漏掉的后果不是报错，而是"内存里改了、磁盘上没改" —— 接口读得到（同一进程读的是同一个对象），
@@ -284,36 +290,117 @@ function deleteProject(db, id) {
    用户直接重试即可。
    ⚠ 磁盘能"删一个文件夹就删干净"，正是因为资源文件已按项目分区（见 paths.js 的说明）。
    ⚠ 允许对**已软删除**的项目执行 —— 用户误点软删除后仍能彻底清掉它（界面上只对未删除的项目
-   露出入口，所以这条主要是接口层的兜底）。 */
-function hardDeleteProject(db, id) {
+   露出入口，所以这条主要是接口层的兜底）。
+
+   ★ 2026-09-21 补四层二次保护（清单 §13）：
+     ① **删前统计**（preview）：原先统计只在删除**成功后的返回值**里，
+        前端弹窗拿不到，用户是在"看不到要删什么"的情况下确认的。
+        现在拆出 hardDeletePreview() 供界面先展示，再执行。
+     ② **不可覆盖备份**：删掉磁盘文件后，用户**没有任何**恢复手段
+        （与软删除不同，这是设计目标）。所以删前把项目目录整份复制到
+        `data/backup/hard-delete/<项目id>-<时间>/` —— 名字带时间戳、不会被轮转挤掉。
+        ⚠ 备份失败即**中止删除**：没有回退点就不做不可逆操作（同 store.backupBeforeMigration 的口径）。
+     ③ **删后复核**：删完必须确认目录真的不在了。`rmSync` 在 Windows 上可能因
+        文件被占用而"部分成功"——不复核就会留下一个"以为删干净了、其实还有残留"的项目目录。
+     ④ **审计留痕**：写 db.logs（项目级一条）与控制台日志，记录 id / 名称 / 时间 / 各项数量。
+        原先只在一次性响应里返回，关掉页面就查不到了。 */
+const HARD_DELETE_BACKUP_DIR = 'hard-delete';
+
+/* 统计一个项目的全部子项与磁盘占用（不修改任何东西）。
+   抽出来是为了让"删前确认"与"删除执行"用**同一套口径** ——
+   两处各算一遍必然漂移，而漂移的后果是弹窗里显示的数字与实际删掉的不一致。 */
+function hardDeletePreview(db, id) {
   const p = (db.projects || []).find((x) => x && x.id === id);   // 含已软删的
   if (!p) throw new ApiError(ERR.NOTFOUND, '项目不存在：' + id);
-  const act = hasActiveTasks(db, { projectId: p.id });
-  if (act.active) {
-    throw new ApiError(ERR.CONFLICT,
-      '当前仍有生成任务（' + act.count + ' 个），请先等待任务完成或取消任务', { ids: act.ids });
-  }
 
   const wsIds = (db.workspaces || []).filter((w) => w && w.projectId === p.id).map((w) => w.id);
   const sbIds = (db.storyboards || []).filter((s) => s && wsIds.includes(s.workspaceId)).map((s) => s.id);
   const assetIds = (db.assets || []).filter((a) => a && a.projectId === p.id).map((a) => a.id);
   const recIds = (db.records || []).filter((r) => r && r.projectId === p.id).map((r) => r.id);
 
-  /* ① 删磁盘（整个项目目录，含 assets/ 与 output/） */
+  /* 磁盘：文件数 + 字节数 + 视频/封面各自的个数。
+     为什么要分开数视频：用户最在意的就是"我的成片"，
+     一个总数盖不住"这次要删掉 12 个视频"这个信息。 */
   const dir = PATHS.projectDir(p.id);
-  let removedFiles = 0;
-  try {
-    if (fs.existsSync(dir)) {
-      const walk = (cur) => fs.readdirSync(cur).forEach((f) => {
-        const q = path.join(cur, f);
-        if (fs.statSync(q).isDirectory()) walk(q); else removedFiles++;
-      });
-      walk(dir);
-      fs.rmSync(dir, { recursive: true, force: true });
+  let files = 0, bytes = 0, videos = 0, covers = 0, images = 0;
+  const walk = (cur) => {
+    let items = [];
+    try { items = fs.readdirSync(cur); } catch (e) { return; }
+    items.forEach((f) => {
+      const q = path.join(cur, f);
+      let st = null;
+      try { st = fs.statSync(q); } catch (e) { return; }
+      if (st.isDirectory()) return walk(q);
+      files++; bytes += st.size;
+      if (/\.(mp4|mov|webm)$/i.test(f)) videos++;
+      else if (/_cover\.(jpg|jpeg|png)$/i.test(f)) covers++;
+      else if (/\.(jpg|jpeg|png|webp|gif)$/i.test(f)) images++;
+    });
+  };
+  let dirExists = false;
+  try { dirExists = fs.existsSync(dir); } catch (e) { dirExists = false; }
+  if (dirExists) walk(dir);
+
+  const act = hasActiveTasks(db, { projectId: p.id });
+  return {
+    id: p.id, name: p.name, dir: 'data/projects/' + p.id, dirAbs: dir, dirExists,
+    softDeleted: !!p.deletedAt,
+    counts: { workspaces: wsIds.length, storyboards: sbIds.length, assets: assetIds.length, records: recIds.length },
+    disk: { files, bytes, videos, covers, images },
+    activeTasks: act.active ? { count: act.count, ids: act.ids } : null
+  };
+}
+
+function hardDeleteProject(db, id) {
+  const pv = hardDeletePreview(db, id);
+  const p = (db.projects || []).find((x) => x && x.id === id);
+  /* 仍有任务在跑 → 拒绝（与硬删除的不可逆性匹配：删除会连任务跟踪一起抹掉） */
+  if (pv.activeTasks) {
+    throw new ApiError(ERR.CONFLICT,
+      '当前仍有生成任务（' + pv.activeTasks.count + ' 个），请先等待任务完成或取消任务',
+      { ids: pv.activeTasks.ids });
+  }
+
+  const wsIds = (db.workspaces || []).filter((w) => w && w.projectId === p.id).map((w) => w.id);
+  const sbIds = (db.storyboards || []).filter((s) => s && wsIds.includes(s.workspaceId)).map((s) => s.id);
+
+  /* ① 删磁盘（整个项目目录，含 assets/ 与 output/）。
+     ⚠ 删之前先留一份**不可覆盖**的归档（清单 §13 的"删除前自动创建备份"）。
+       理由：硬删除是唯一没有任何回退路径的操作，而备份的成本只是磁盘空间。
+       ⚠ 备份失败 → 中止删除。宁可让用户重试，也不能在没有回退点的情况下执行不可逆操作。 */
+  const dir = PATHS.projectDir(p.id);
+  let backupDir = null;
+  if (pv.dirExists) {
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      backupDir = path.join(configMod.DATA_DIR, 'backup', HARD_DELETE_BACKUP_DIR,
+        String(p.id) + '-' + stamp);
+      fs.mkdirSync(backupDir, { recursive: true });
+      fs.cpSync(dir, backupDir, { recursive: true });
+      console.log('[projects] 硬删除前已归档：' + path.relative(rootOfData(), backupDir));
+    } catch (e) {
+      throw new ApiError(ERR.INTERNAL,
+        '删除前归档失败，**未做任何数据改动**（可直接重试）：' + ((e && e.message) || e));
     }
+  }
+
+  let removedFiles = pv.disk.files;
+  try {
+    if (pv.dirExists) fs.rmSync(dir, { recursive: true, force: true });
   } catch (e) {
     throw new ApiError(ERR.INTERNAL,
       '删除项目目录失败，**未做任何数据改动**（可直接重试）：' + ((e && e.message) || e));
+  }
+
+  /* ③ 删后复核：确认目录真的没了。Windows 上文件被占用时 rmSync 可能"部分成功"，
+     不查就会留下残留目录 + 一个"已删除"的项目记录，之后谁也不知道它属于谁。 */
+  let stillThere = false;
+  try { stillThere = fs.existsSync(dir); } catch (e) { stillThere = false; }
+  if (stillThere) {
+    /* 复核失败属于**严重**情况：磁盘上还剩文件，但库里已经没有这个项目了。
+       不抛错（数据部分已删，抛错会让调用方以为全没动、从而重试造成重复归档），
+       改为在返回值里明确标出 + 记进审计日志，让用户去手工处理。 */
+    console.error('[projects] 硬删除后目录仍存在（可能有文件被占用）：' + dir);
   }
 
   /* ② 删数据 */
@@ -323,13 +410,47 @@ function hardDeleteProject(db, id) {
   db.assets = (db.assets || []).filter((a) => a.projectId !== p.id);
   db.records = (db.records || []).filter((r) => r.projectId !== p.id);
   sbIds.forEach((sid) => { delete db.logs[sid]; delete db.cliJobs[sid]; });
+
+  /* ④ 审计留痕。为什么用 logs 而不是 records：
+     records 是"生成记录"，删掉项目时它自己也该被删（上面刚删了），
+     把审计写进去等于写完立刻被删。logs 是按分镜组织的，但项目的删除
+     发生在所有分镜都消失之后 —— 所以用一个专门的项目级 key，不会被上面的清理误伤。 */
+  const auditKey = '__project__:' + p.id;
+  db.logs[auditKey] = db.logs[auditKey] || [];
+  db.logs[auditKey].push({
+    level: 'warn',
+    msg: '项目被彻底删除：' + p.name + '（' + p.id + '）'
+      + '；分镜表 ' + pv.counts.workspaces + ' / 分镜 ' + pv.counts.storyboards
+      + ' / 素材 ' + pv.counts.assets + ' / 记录 ' + pv.counts.records
+      + '；磁盘 ' + removedFiles + ' 个文件（视频 ' + pv.disk.videos
+      + '、封面 ' + pv.disk.covers + '、图片 ' + pv.disk.images + '）'
+      + (backupDir ? '；已归档到 ' + path.relative(rootOfData(), backupDir).split(path.sep).join('/') : '')
+      + (stillThere ? '；⚠ 目录未能完全删除，仍有残留' : ''),
+    ts: nowIso()
+  });
   save();
+
   return {
     deleted: p.id, hard: true, name: p.name,
     removedFiles: removedFiles, dir: 'data/projects/' + p.id,
-    counts: { workspaces: wsIds.length, storyboards: sbIds.length, assets: assetIds.length, records: recIds.length },
-    note: '项目及其磁盘文件已被彻底删除，不可恢复'
+    /* ⚠ 归档目录要返回**两样都**：
+       `backupName` 是目录名（给审计日志/界面短文案用），
+       `backupDir` 是**相对数据根的路径**（如 `backup/hard-delete/<id>-<时间>`）——
+       只返回目录名的话，调用方无从得知它到底在哪，等于"归档了但找不回来"
+       （2026-09-21 补：此前只返回 basename，前端与用户都无法定位）。 */
+    backupDir: backupDir ? path.relative(rootOfData(), backupDir).split(path.sep).join('/') : null,
+    backupName: backupDir ? path.basename(backupDir) : null,
+    residualDir: stillThere,               // true = 还有残留，需要用户手工处理
+    counts: pv.counts,
+    disk: pv.disk,
+    note: residualDirNote(stillThere)
   };
+}
+
+function residualDirNote(stillThere) {
+  return stillThere
+    ? '项目数据已删除，但磁盘目录仍存在（可能有文件被其它程序占用），请手工检查 data/projects/ 下对应目录'
+    : '项目及其磁盘文件已被彻底删除；删除前已归档到 data/backup/hard-delete/，不可通过界面恢复';
 }
 
 /* ---------------- 工作区 CRUD ---------------- */
@@ -441,7 +562,8 @@ module.exports = {
   defaultWorkspaceOf,
   resolveScope, requireWorkspaceScope, hasActiveTasks,
   resolveProjectSettings, resolveProjectDelimiter, countsOf,
-  listProjects, getProject, createProject, patchProject, deleteProject, hardDeleteProject,
+  listProjects, getProject, createProject, patchProject, deleteProject,
+  hardDeleteProject, hardDeletePreview,
   listWorkspaces, getWorkspace, createWorkspace, patchWorkspace, deleteWorkspace,
   touchProject, touchWorkspace,
   viewProject, viewWorkspace

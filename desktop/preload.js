@@ -20,12 +20,22 @@ const api = {
   showItemInFolder: (p) => ipcRenderer.invoke('shell:showItem', p),
   openExternal: (u) => ipcRenderer.invoke('shell:openExternal', u),
   /* 应用自更新。同样是具名动作：页面不能借它做别的事。
-     ⚠ setUpdateSource 的入参在主进程侧走白名单，这里不做信任假设。 */
+     ⚠ setUpdateSource 的入参在主进程侧走白名单，这里不做信任假设。
+     ⚠ onUpdateState 透出的只有主进程**主动推送的状态快照**（见 main.js
+       broadcastUpdateState）。刻意不暴露任意 channel 的订阅 —— 那等于把
+       ipcRenderer.on 交出去。回调只用第一个参数（主进程给的对象），
+       不给 renderer 任何 event 句柄。 */
   updateStatus: () => ipcRenderer.invoke('update:status'),
   updateCheck: () => ipcRenderer.invoke('update:check'),
   updateDownload: () => ipcRenderer.invoke('update:download'),
   updateInstall: () => ipcRenderer.invoke('update:install'),
-  updateSetSource: (patch) => ipcRenderer.invoke('update:setSource', patch)
+  updateSetSource: (patch) => ipcRenderer.invoke('update:setSource', patch),
+  onUpdateState: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const h = (_e, payload) => { try { cb(payload); } catch (e) { /* 页面回调异常不该影响主进程 */ } };
+    ipcRenderer.on('update:state', h);
+    return () => { try { ipcRenderer.removeListener('update:state', h); } catch (e) { /* 忽略 */ } };
+  }
 };
 
 contextBridge.exposeInMainWorld('JCDesktop', api);

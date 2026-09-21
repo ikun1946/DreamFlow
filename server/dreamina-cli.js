@@ -47,20 +47,60 @@ function normResolution(v) {
    ⚠ 与 makeCover 同样的取舍：**可选依赖，失败一律静默返回 null**。
    时长读不出来不是错误状态（素材照样能存、能看），只是"未知"；
    而"未知"会在绑定时被 services.checkAudioBudget 明确拦下并说明原因，
-   不会静默放宽「音频总时长 ≤ 15 秒」这条约束。 */
+   不会静默放宽「音频总时长 ≤ 15 秒」这条约束。
+
+   ⚠ 2026-09-21 补：**返回 null 时还要能说清为什么**。原先只有一个 null，
+   于是"ffprobe 没装"和"这个文件真读不出时长"在调用侧完全同形，
+   用户拿到的提示只能笼统说"没有可用的时长信息"。
+   现在多导出一个 lastProbeState()，让上层能区分：
+     · missing  —— 可执行文件都找不到（FFPROBE_NOT_FOUND）
+     · failed   —— 找到了但读不出来（文件损坏/格式不支持 → 仍按"未知"处理）
+   探测状态是**纯查询**，不改变上面"静默返回 null"的行为契约。 */
+const ffprobeState = { at: 0, lastPath: null, lastResult: null, missing: false, error: null };
+
 function probeAudioDuration(absPath) {
   const cfg = loadConfig();
   return new Promise((resolve) => {
     try { if (!fs.existsSync(absPath)) return resolve(null); } catch (e) { return resolve(null); }
-    execFile(cfg.ffprobePath || 'ffprobe',
+    const bin = cfg.ffprobePath || 'ffprobe';
+    execFile(bin,
       ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', absPath],
       { timeout: 15000, windowsHide: true },
       (err, stdout) => {
-        if (err) return resolve(null);
+        ffprobeState.at = Date.now();
+        ffprobeState.lastPath = absPath;
+        ffprobeState.error = err ? (err.message || String(err)) : null;
+        /* ENOENT = 可执行文件不在。这是"环境问题"（FFPROBE_NOT_FOUND），
+           与"文件读不出时长"（数据问题）必须分开 —— 前者用户可以装工具解决。 */
+        ffprobeState.missing = !!(err && (err.code === 'ENOENT' || /ENOENT|not found|找不到/i.test(ffprobeState.error || '')));
+        if (err) { ffprobeState.lastResult = null; return resolve(null); }
         const sec = Number(String(stdout || '').trim());
-        resolve(Number.isFinite(sec) && sec > 0 ? sec : null);
+        ffprobeState.lastResult = Number.isFinite(sec) && sec > 0 ? sec : null;
+        resolve(ffprobeState.lastResult);
       });
   });
+}
+
+/* 给上层判断"上次读时长失败是不是因为没装 ffprobe" */
+function ffprobeStatus() {
+  return {
+    missing: ffprobeState.missing,
+    lastError: ffprobeState.error,
+    code: ffprobeState.missing ? ERR.FFPROBE_NOT_FOUND : null
+  };
+}
+
+/* ffmpeg 侧的状态（封面抽取）。与 ffprobeState 同构，理由见 makeCover 注释。
+   ⚠ 缺 ffmpeg 的后果比缺 ffprobe 轻：只是没有封面，视频照常生成，
+     所以这里的 missing 只用于**提示**，不用于阻断任何流程。 */
+const ffmpegState = { at: 0, missing: false, error: null };
+
+function ffmpegStatus() {
+  return {
+    missing: ffmpegState.missing,
+    lastError: ffmpegState.error,
+    code: ffmpegState.missing ? ERR.FFMPEG_NOT_FOUND : null
+  };
 }
 
 /* ---------------- 子进程登记表（2026-09-20 桌面化） ----------------
@@ -156,6 +196,22 @@ function makeDreaminaAdapter(cfg) {
     return { kind: 'error', code: 'exit_' + r.code, message: (r.stderr || r.stdout || '').slice(0, 300) || ('退出码 ' + r.code), json };
   }
 
+  /* 策略拒绝识别（2026-09-21）。
+     实测（2026-09-18，画布 CLI 时代沿用至今）：`model list --type video` 被
+     **会员闸门**拒绝时，错误信封走 stderr、退出码 12，正文形如
+     `{"error":{"code":"access_denied",...}}`。
+     这类失败的关键性质是「**不可重试**」—— 重试多少次都是同一个结果，
+     所以必须与"网络抖动"区分开，否则队列会自动重试 N 次白扣时间。
+     CLI_PERMISSION_DENIED 就是给它的稳定码。 */
+  const DENY_RE = /access_denied|permission.denied|not.?authorized|会员|权限不足|需要开通|vip.?required|no.?permission/i;
+  function isPolicyDenied(r) {
+    if (!r || (r.kind !== 'error' && r.kind !== 'timeout')) return false;
+    const text = [r.message, r.stderr, r.stdout].filter(Boolean).join('\n');
+    const code = r.json && r.json.error && r.json.error.code;
+    if (code && /access_denied/i.test(String(code))) return true;
+    return DENY_RE.test(text);
+  }
+
   /* ---------------- 探测（登录态 + 积分余额，60s 缓存） ---------------- */
   /* 探测缓存 TTL。为什么默认 5 分钟（原 60s）：
      单次 `dreamina user_credit` 实测 **8.4–9.5 秒**（真实网络调用），而积分是低频变化指标。
@@ -209,10 +265,18 @@ function makeDreaminaAdapter(cfg) {
       const available = installed && loggedIn;
 
       let message;
+      /* toolError：把"哪种环境问题"给成稳定错误码（2026-09-21 新增，见 util.js ERR）。
+         为什么要有：message 是给人看的自由文本，前端/测试不该靠字符串匹配来判断
+         "是没装、还是没登录"—— 那既脆弱又没法写断言。
+         注意只给**根因**：installed=false 优先判 CLI_NOT_FOUND，
+         只有"装是装了"才可能落到 CLI_NOT_LOGGED_IN。 */
+      let toolError = null;
       if (!installed) {
         message = '未检测到创作 CLI（' + binPath() + '）';
+        toolError = { code: ERR.CLI_NOT_FOUND, action: 'install-cli' };
       } else if (!loggedIn) {
         message = '创作 CLI 已安装但未登录（dreamina login）';
+        toolError = { code: ERR.CLI_NOT_LOGGED_IN, action: 'cli-login' };
       } else {
         message = '即梦创作 CLI 已就绪（积分 ' + creditData.total_credit + '）';
       }
@@ -222,6 +286,7 @@ function makeDreaminaAdapter(cfg) {
         available,
         installed,
         loggedIn,
+        toolError,
         /* version 字段：exe 自报的是 commit 形状（如 ec1b9fa-dirty），**不是**语义版本。
            语义版本（1.4.18）只存在于官方 version.json 里，它描述的是"官方当前发布版"，
            跟本机这个 exe 无关 —— 两者不要混用（官方版本的获取见 cli-installer.status()）。 */
@@ -251,6 +316,7 @@ function makeDreaminaAdapter(cfg) {
        否则界面拿不到 installed / loggedIn，只能继续靠 available 猜。 */
     return {
       at: c.at, available: c.available, installed: c.installed, loggedIn: c.loggedIn,
+      toolError: c.toolError || null,
       version: c.version, commit: c.commit, buildTime: c.buildTime,
       credit: c.credit, account: c.account, message: c.message
     };
@@ -266,6 +332,7 @@ function makeDreaminaAdapter(cfg) {
     if (!c) return null;
     return {
       at: c.at, available: c.available, installed: c.installed, loggedIn: c.loggedIn,
+      toolError: c.toolError || null,
       version: c.version, commit: c.commit, buildTime: c.buildTime,
       credit: c.credit, account: c.account, message: c.message,
       stale: (Date.now() - c.at) >= PROBE_TTL_MS
@@ -635,6 +702,14 @@ function makeDreaminaAdapter(cfg) {
     };
     let r = await call(built.args, Math.max(120000, (built.durationSec + 60) * 1000));
     if (r.kind === 'cli_down') return { ok: false, code: String(ERR.CLI_DOWN), message: '创作 CLI 不可用：' + r.reason, meta };
+    /* 策略拒绝（会员闸门）：明确标成不可重试，别让队列白重试 */
+    if (isPolicyDenied(r)) {
+      return {
+        ok: false, code: String(ERR.CLI_PERMISSION_DENIED), retryable: false,
+        message: '即梦侧拒绝了本次提交（会员/权限不足，重试无效）：' + (r.message || ''),
+        action: 'upgrade-or-switch-model', meta
+      };
+    }
     const pick = (obj) => (obj && (obj.submit_id || (obj.data && obj.data.submit_id))) || null;
     const pickStatus = (obj) => (obj && (obj.gen_status || (obj.data && obj.data.gen_status))) || null;
     let submitId = pick(r.data || r.json);
@@ -726,15 +801,30 @@ function makeDreaminaAdapter(cfg) {
      现在改为 `min(1280, iw)`：**上限 1280 且绝不放大源**（480p 的源不会被拉大）。
      代价：文件从 ~15 KB 涨到 ~54 KB —— 对一次性的缓存资源可忽略。
      幂等：目标文件已存在就直接复用。ffmpeg 缺失或失败一律静默返回 null ——
-     封面是锦上添花，绝不能因此让任务收尾失败。 */
+     封面是锦上添花，绝不能因此让任务收尾失败。
+
+     ⚠ 2026-09-21 补：**ffmpeg 缺失不再"静默"**。
+     原先失败一律返回 null、调用方也不区分原因，用户只看到"没有封面"，
+     不知道是"没装 ffmpeg"（可自行安装解决）还是"这个视频抽不出帧"。
+     现在把两种原因记进 ffmpegState，由上层在任务收尾时**明确提示封面缺失及原因**
+     （错误码 FFMPEG_NOT_FOUND）。行为契约不变：封面失败**绝不**让任务收尾失败。 */
   function makeCover(videoAbs, outAbs) {
     return new Promise((resolve) => {
-      try { if (fs.statSync(outAbs).size > 0) return resolve(outAbs); } catch (e) { /* 还没有，继续生成 */ }
+      try {
+        if (fs.statSync(outAbs).size > 0) { ffmpegState.missing = false; return resolve(outAbs); }
+      } catch (e) { /* 还没有，继续生成 */ }
       execFile(cfg.ffmpegPath || 'ffmpeg',
         ['-y', '-ss', '1', '-i', videoAbs, '-frames:v', '1', '-update', '1', '-q:v', '3', '-vf', 'scale=min(1280\\,iw):-2', outAbs],
         { timeout: 30000, windowsHide: true },
         (err) => {
-          if (err) return resolve(null);
+          ffmpegState.at = Date.now();
+          if (err) {
+            ffmpegState.error = err.message || String(err);
+            ffmpegState.missing = !!(err.code === 'ENOENT' || /ENOENT|not found|找不到/i.test(ffmpegState.error));
+            return resolve(null);
+          }
+          ffmpegState.error = null;
+          ffmpegState.missing = false;
           try { resolve(fs.statSync(outAbs).size > 0 ? outAbs : null); } catch (e) { resolve(null); }
         });
     });
@@ -810,15 +900,26 @@ function makeDreaminaAdapter(cfg) {
     const video = pickArtifact(dir, all, submitId, isVideo);
     let cover = pickCover(all, video, submitId);
     /* CLI 没给封面就自己抽一帧 —— 见 makeCover 的说明 */
+    let coverNotice = null;
     if (!cover && video) {
       const outName = video.replace(/\.[^.]+$/, '') + '_cover.jpg';
       const made = await makeCover(path.join(dir, video), path.join(dir, outName));
       if (made) cover = outName;
+      else {
+        /* 2026-09-21：封面确实没做成时**给出原因**，不再让"没有封面"变成一个无解释的现象。
+           注意这**不是**失败状态：视频已经下好了，任务整体是成功的。
+           notice 由上层写进任务日志（level=warn）并推给界面。 */
+        const fstat = ffmpegStatus();
+        coverNotice = fstat.missing
+          ? '未生成封面：本机未检测到 ffmpeg，无法从视频抽帧（视频本身已正常生成）。'
+          : '未生成封面：ffmpeg 抽帧失败（' + (fstat.lastError || '未知原因') + '），视频本身已正常生成。';
+      }
     }
     return {
       videoUrl: video ? PATHS.outputUrl(pj, sb.id, video) : null,
       coverUrl: cover ? PATHS.outputUrl(pj, sb.id, cover) : null,
-      file: video || null            // 供日志留痕：出问题时能看出到底取了哪个文件
+      file: video || null,           // 供日志留痕：出问题时能看出到底取了哪个文件
+      coverNotice                    // null = 封面正常（或本来就没视频）
     };
   }
 
@@ -841,4 +942,7 @@ function makeDreaminaAdapter(cfg) {
   return { probe, peek, lastProbe, credit, invalidate, authLoginFlow, switchAccount, pending, parseChallenge, buildSubmitArgs, runVideo, downloadResult, makeCover, recoverSubmitId, pickArtifact, pickCover, state, normResolution, shutdown };
 }
 
-module.exports = { makeDreaminaAdapter, DREAMINA_MODELS, normResolution, probeAudioDuration };
+module.exports = {
+  makeDreaminaAdapter, DREAMINA_MODELS, normResolution, probeAudioDuration,
+  ffprobeStatus, ffmpegStatus
+};

@@ -496,16 +496,32 @@ function batchSubmit(db, b, adapter, cfg, scope) {
      真实可用性由 worker 在派发前再确认一遍 —— 不可用时任务留在队列，不会丢也不会误扣。 */
   const known = (typeof D.peek === 'function' ? D.peek() : null) ||
     (typeof D.lastProbe === 'function' ? D.lastProbe() : null);
-  if (known && !known.available) {
-    return Promise.reject(new ApiError(ERR.CLI_DOWN, known.message || '创作 CLI 未连接，无法提交'));
-  }
+  if (known && !known.available) return Promise.reject(cliUnavailableError(known));
   const gate = known
     ? Promise.resolve(known)
     : withTimeout(D.probe(), 2500, null).then((p) => {
-      if (!p || !p.available) throw new ApiError(ERR.CLI_DOWN, (p && p.message) || '创作 CLI 未连接，无法提交');
+      if (!p || !p.available) throw cliUnavailableError(p);
       return p;
     });
   return gate.then(() => doSubmit(db, b, scope));
+}
+
+/* 创作 CLI 不可用时该抛什么错（2026-09-21）。
+   原先一律 CLI_DOWN（"CLI 未连接"），把两种**完全不同**的情况混成了一条：
+     · 没装（installed=false）→ 用户要装，动作是 install-cli
+     · 装了没登录（loggedIn=false）→ 用户要登录，动作是 cli-login
+   两者的解决动作不同，界面该给的入口也不同，所以必须分开。
+   ⚠ 适配器没提供 installed/loggedIn（老 cache 形状）时退回 CLI_DOWN，
+     保持向后兼容 —— 不能因为拿不到细分信息就报一个错的码。 */
+function cliUnavailableError(p) {
+  const msg = (p && p.message) || '创作 CLI 未连接，无法提交';
+  if (p && p.installed === false) {
+    return new ApiError(ERR.CLI_NOT_FOUND, msg, { action: 'install-cli' });
+  }
+  if (p && p.installed === true && p.loggedIn === false) {
+    return new ApiError(ERR.CLI_NOT_LOGGED_IN, msg, { action: 'cli-login' });
+  }
+  return new ApiError(ERR.CLI_DOWN, msg);
 }
 
 function doSubmit(db, b, scope) {
@@ -819,10 +835,22 @@ function checkAudioBudget(s, db, incoming) {
   const state = audioBudgetOf(s, db);
   /* 已绑里有时长未知的：总时长这个数本身就不可信，先把它挑明，否则约束会被悄悄放宽 */
   if (state.unknown.length) {
+    /* 2026-09-21：把"为什么读不出时长"一并带上（稳定错误码）。
+       缺 ffprobe 是**环境问题**，用户装一下就好；文件本身读不出来是数据问题。
+       原先两种情况提示完全一样，用户只能猜。 */
+    const fp = (() => { try { return require('./dreamina-cli').ffprobeStatus(); } catch (e) { return null; } })();
+    const missingTool = !!(fp && fp.missing);
     return {
       ok: false, reason: 'unknown-duration',
+      code: missingTool ? ERR.FFPROBE_NOT_FOUND : ERR.PARAM,
+      codeName: missingTool ? 'FFPROBE_NOT_FOUND' : null,
+      action: missingTool ? 'install-ffmpeg' : null,
       message: '该分镜已绑的音频「' + state.unknown.join('、') + '」没有可用的时长信息，' +
-        '无法核算总时长上限。请先在素材详情里重新选择一次文件，或先解绑它。'
+        '无法核算总时长上限。' +
+        (missingTool
+          ? '本机未检测到 ffprobe（未安装 ffmpeg？），因此任何音频都读不出时长 —— ' +
+            '装上 ffmpeg 后重试即可。'
+          : '请先在素材详情里重新选择一次文件，或先解绑它。')
     };
   }
   const maxSec = loadConfig().audioTotalSecMax;
@@ -2000,6 +2028,11 @@ async function adapterStatus(db, adapter, fast) {
          用户看到"未就绪"却不知道该装还是该登录 —— 这是本次要修的核心体验问题。 */
       installed: dp.installed !== false,
       loggedIn: dp.loggedIn === true,
+      /* 稳定错误码 + 解决动作（2026-09-21）：与 message 并存 ——
+         message 给人看，code/action 给界面做判断（该显示"去安装"还是"去登录"）。 */
+      toolError: dp.toolError || null,
+      code: dp.toolError ? dp.toolError.code : 0,
+      action: dp.toolError ? dp.toolError.action : null,
       commit: dp.commit || null,
       buildTime: dp.buildTime || null,
       creditAt: dp.at ? new Date(dp.at).toISOString() : null,   // 积分读取时刻，界面据此说明新鲜度
@@ -2018,6 +2051,24 @@ async function adapterStatus(db, adapter, fast) {
        "还在读" 和 "确实没有"，否则读取中会闪一下"未安装"的误导提示。 */
     cliInstalled: dp ? dp.installed !== false : null,
     cliLoggedIn: dp ? dp.loggedIn === true : null,
+    /* 创作 CLI 的稳定错误码（0 = 没问题）。见 util.js 的 511xx 段。 */
+    cliCode: (dp && dp.toolError && dp.toolError.code) || 0,
+    cliAction: (dp && dp.toolError && dp.toolError.action) || null,
+    /* ffmpeg / ffprobe 的实测状态（封面 / 音频时长）。
+       ⚠ 与创作 CLI 不同，这两个**不是**可用性闸：缺了也不阻止生成，
+         只是"没有封面"或"绑不了音频"。所以单独给一节，语义上别混进去。 */
+    mediaTools: (() => {
+      try {
+        const cli = require('./dreamina-cli');
+        return { ffmpeg: cli.ffmpegStatus(), ffprobe: cli.ffprobeStatus() };
+      } catch (e) { return null; }
+    })(),
+    /* 数据库是否刚从备份恢复过（2026-09-21，见 store.load 的恢复链）。
+       ⚠ 这一节**必须**透出：自动恢复如果无声无息，用户会以为"数据一直都是好的"，
+         从而错过"磁盘出问题了"这个真正的信号。非空时界面要给明确提示。 */
+    dataRecovery: (() => {
+      try { return store.recoveryInfo(); } catch (e) { return null; }
+    })(),
     dreaminaProbing,                  // 尚未探到 → 界面显示"读取中…"
     checkedAt: new Date((dp && dp.at) || Date.now()).toISOString(),
     message: dpMsg + (!dpAvail && db.settings.adapter.dreaminaAuthUrl

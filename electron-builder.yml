@@ -23,6 +23,8 @@ files:
   - app/**/*
   - server/**/*
   - desktop/**/*
+  - LICENSE
+  - THIRD-PARTY-NOTICES.md
   - '!server/data/**'
   - '!server/**/*.md'
   - '!**/*.map'
@@ -50,6 +52,53 @@ win:
   requestedExecutionLevel: asInvoker
   # 可执行文件名（开始菜单/任务管理器里显示的名字）
   executableName: JimengConsole
+
+# ============================================================
+# 代码签名（P0-5）
+#
+# 目标：消除 SmartScreen「未知发布者」警告，让用户在 Windows 10/11 上
+#       双击安装包不会看到红色警告。
+#
+# 凭据来源**只能**是环境变量，证书文件**绝不入库**：
+#   CSC_LINK          签名证书的路径或 base64 data URL
+#                     （.pfx/.p12；也支持 https:// 链接，因含私钥仍需保密）
+#   CSC_KEY_PASSWORD  证书私钥口令
+#
+# 用法（本机 PowerShell，凭据只活在当前会话）：
+#   $env:CSC_LINK="C:\secrets\dreamflow-codesign.pfx"
+#   $env:CSC_KEY_PASSWORD="******"
+#   npm run dist
+#
+# 若不想让口令出现在环境变量里，electron-builder 也支持
+#   $env:CSC_LINK="base64:<证书的 base64>"
+# 但仍建议只在本机 / CI 的 secret 里设置。
+#
+# ⚠ 若 CSC_LINK 未设置：electron-builder 不会签名，构建仍会**成功**，
+#   只在日志里给一行提示。这是刻意留的「开发机构建」通路 ——
+#   日常 `npm run pack` 不该被签名凭据卡住。
+#   想强制要求签名（正式发布）请用：
+#     .\scripts\check-signing.js --require
+#   或设置  $env:CSC_REQUIRE="1"  后再执行 npm run dist。
+#
+# 时间戳（timestamping）必须开：否则证书过期后已分发安装包的签名会失效，
+# 用户会重新看到警告。这里锁 RFC3161 服务，并允许回退。
+# ============================================================
+# 说明：electron-builder 通过 win.signtoolOptions 暴露统一签名配置；
+# 若你的 electron-builder 版本较旧（< 26），会自动回落到顶层强制读取
+# CSC_LINK / CSC_KEY_PASSWORD，无需改动本文件。
+signAndEditExecutable: true
+
+signtoolOptions:
+  # 只签安装器与主程序（+ 卸载器），不签每个 dll —— 减少签名次数与耗时
+  signingHashAlgorithms:
+    - sha256
+  # 发布者名称。与证书 Subject 的 CN 一致即可；留空则由证书决定。
+  # 若填了但与证书不符，signtool 会报错，属于有意为之的护栏。
+  publisherName: ikun1946
+  # RFC3161 时间戳服务。列表按顺序尝试；全失败则构建报警告但不中断，
+  # 便于内网 / 离线环境也能出包。
+  rfc3161TimeStampServer: http://timestamp.digicert.com
+  timeStampServer: http://timestamp.digicert.com
 
 nsis:
   # 非一键安装：让用户能看到装到哪、能改路径

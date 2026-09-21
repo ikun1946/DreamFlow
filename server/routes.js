@@ -123,6 +123,12 @@ function makeRouter(cfg, adapter) {
     ['POST', /^\/projects$/, async (ctx) => ok(ctx.res, P.createProject(ctx.db, ctx.body))],
     ['GET', /^\/projects\/([^/]+)\/workspaces$/, async (ctx) => ok(ctx.res, P.listWorkspaces(ctx.db, ctx.params[0]))],
     ['POST', /^\/projects\/([^/]+)\/workspaces$/, async (ctx) => ok(ctx.res, P.createWorkspace(ctx.db, ctx.params[0], ctx.body))],
+    /* 彻底删除的**预检**（2026-09-21，清单 §13）：只统计、不修改任何东西。
+       为什么单独给一个 GET：硬删除的确认弹窗必须展示"要删掉什么"
+       （分镜表/分镜/素材/记录数、视频数、磁盘占用），而那些数字原先只在
+       删除**成功后的返回值**里 —— 用户是在看不到后果的情况下按确认的。
+       幂等、只读，所以用 GET；不影响任何既有路由（带子路径，排在 /projects/:id 之前）。 */
+    ['GET', /^\/projects\/([^/]+)\/hard-delete-preview$/, async (ctx) => ok(ctx.res, P.hardDeletePreview(ctx.db, ctx.params[0]))],
     ['GET', /^\/projects\/([^/]+)$/, async (ctx) => ok(ctx.res, P.getProject(ctx.db, ctx.params[0]))],
     ['PATCH', /^\/projects\/([^/]+)$/, async (ctx) => ok(ctx.res, P.patchProject(ctx.db, ctx.params[0], ctx.body))],
     /* 删除项目。默认**软删除**（指令 §44/§45：只标 deletedAt，不做级联物理销毁）；

@@ -86,10 +86,68 @@ function detect(cfg, bundledDir) {
   };
 }
 
-/* 给设置页/启动提示用的一句话摘要 */
+/* ---------------- 稳定错误码与解决动作（2026-09-21） ----------------
+   给"缺哪个工具"一个可编程的表达，而不是让上层靠 summary 的自由文本做判断。
+   表格与 docs/项目审查与改进清单.md §10 的三个等级严格对应：
+     dreamina 缺失 → 无法生成视频     → 阻止提交
+     ffmpeg   缺失 → 无法生成封面     → 允许生成，但明确提示封面缺失
+     ffprobe  缺失 → 无法读取音频时长 → 禁止绑定无法确认时长的音频
+   action 是给界面用的**可执行解决动作**标识（前端据此决定显示"去安装"/"去登录"）。 */
+const TOOL_SPEC = {
+  dreamina: { code: 'CLI_NOT_FOUND', blocks: 'submit', action: 'install-cli' },
+  ffmpeg: { code: 'FFMPEG_NOT_FOUND', blocks: null, action: 'install-ffmpeg' },
+  ffprobe: { code: 'FFPROBE_NOT_FOUND', blocks: 'audio-bind', action: 'install-ffmpeg' }
+};
+
+/* 把 detect() 的结果转成"四件套"报告：后端响应 / 前端提示 / 日志文本 / 解决动作。
+   ⚠ code 用**数字**（与 server/util.js 的 ERR 对齐），字符串名留在 name 里 ——
+      字符串名给人看与写日志，数字码给程序判断，两者都需要。 */
+const TOOL_CODES = {
+  dreamina: { CLI_NOT_FOUND: 51101, CLI_NOT_LOGGED_IN: 51102, CLI_PERMISSION_DENIED: 51103 },
+  ffmpeg: { FFMPEG_NOT_FOUND: 51104 },
+  ffprobe: { FFPROBE_NOT_FOUND: 51105 }
+};
+
+function toolStatus(found) {
+  const out = {};
+  Object.keys(TOOL_SPEC).forEach((k) => {
+    const t = (found && found[k]) || { path: null, source: 'missing' };
+    const miss = !t.path;
+    const spec = TOOL_SPEC[k];
+    out[k] = {
+      name: k,
+      path: t.path || null,
+      source: t.source || 'missing',
+      ok: !miss,
+      code: miss ? TOOL_CODES[k][spec.code] : 0,
+      codeName: miss ? spec.code : null,
+      blocks: miss ? spec.blocks : null,
+      action: miss ? spec.action : null,
+      message: miss ? missingMessage(k) : null
+    };
+  });
+  return out;
+}
+
+function missingMessage(name) {
+  if (name === 'dreamina') {
+    return '未检测到创作 CLI（dreamina）：无法生成视频。请在设置页安装或指定路径，然后登录。';
+  }
+  if (name === 'ffmpeg') {
+    return '未检测到 ffmpeg：视频可以正常生成，但**不会生成封面图**（列表缩略图与播放器 poster 会缺失）。';
+  }
+  return '未检测到 ffprobe：无法读取音频时长，绑定音频时会被拒绝。请安装 ffmpeg（ffprobe 随它一起分发）。';
+}
+
+/* 给设置页/启动提示用的一句话摘要。
+   ⚠ 2026-09-21 起顺序固定为 dreamina → ffmpeg → ffprobe（与 TOOL_SPEC 同序），
+      且缺失项带 `[缺失]` 前缀 —— 启动日志里 grep 得到。 */
 function summarize(found) {
-  const line = (t) => t.name + '：' + (t.path ? t.path + '（' + t.source + '）' : '未找到');
+  const line = (t) => t.name + '：' + (t.path ? t.path + '（' + t.source + '）' : '**[缺失]**');
   return [line(found.dreamina), line(found.ffmpeg), line(found.ffprobe)].join('\n');
 }
 
-module.exports = { detect, locate, summarize, fromPath, exists };
+module.exports = {
+  detect, locate, summarize, fromPath, exists,
+  toolStatus, missingMessage, TOOL_SPEC, TOOL_CODES
+};

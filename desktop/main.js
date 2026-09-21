@@ -139,6 +139,19 @@ async function performImport(srcDir) {
   if (res.report.missing.length) {
     res.report.missing.slice(0, 20).forEach((m) => console.warn('[desktop] 缺失：' + m.label + ' → ' + m.path));
   }
+  /* 导入报告**落盘**（2026-09-21，清单 §11 的"导入报告保存到日志或数据目录"）。
+     为什么必须落盘：导入是一次性动作，对话框关掉之后：
+       · 控制台日志在桌面版里用户看不到（打包后没有终端）
+       · 缺失引用清单可能很长，对话框里只显示前几条
+     出问题时（"我的素材导入后少了几个"）需要一份可回查的档案。
+     落到**数据目录下的 backup/**（而不是 logs/）：它属于"数据历史"，
+     用户换盘 / 迁移数据时会跟着一起走；logs 是运行日志，容易被清。 */
+  try {
+    const reportPath = legacyMod.writeReport(paths.dataDir, res);
+    if (reportPath) console.log('[desktop] 导入报告已写入：' + reportPath);
+  } catch (e) {
+    console.warn('[desktop] 导入报告写入失败（不影响导入结果）：' + ((e && e.message) || e));
+  }
   await dialog.showMessageBox(win || null, {
     type: res.ok ? 'info' : 'warning',
     title: '导入完成',
@@ -172,7 +185,12 @@ async function importLegacyOnce() {
       + '项目 ' + c.projects + ' 个 · 分镜表 ' + c.workspaces + ' 张 · 分镜 ' + c.storyboards + ' 个\n'
       + '素材 ' + c.assets + ' 个 · 生成记录 ' + c.records + ' 条\n\n'
       + '导入是复制，不是搬家：旧目录会原样保留，不会删除任何东西。',
-    buttons: ['导入', '以后再说'],
+    /* ⚠ 按钮文案必须写清"以后还能再导"（2026-09-21，清单 §11）。
+       原本文案只有「以后再说」，而选了之后 `legacyImportChecked: true` 会**永久**
+       关掉自动询问 —— 用户以为"下次启动还会问"，实际不会，于是旧数据再也没被导入。
+       这不是改行为（那个标记仍然写，避免每次启动都打扰），而是让文案与行为一致：
+       把唯一的补救路径（托盘菜单）直接说给用户听。 */
+    buttons: ['导入', '以后再说（可从托盘菜单重新导入）'],
     defaultId: 0, cancelId: 1
   });
   /* 无论选哪边都记一笔：不记的话每次启动都要问一遍。 */
@@ -532,6 +550,20 @@ async function boot() {
     configPath: paths.configPath
   });
 
+  /* 更新临时目录的过期残骸清理（2026-09-21）。
+     下载中断留下的 `*-Setup.exe.part-<pid>` 每个可能 100+ MB，被强杀时
+     cleanup() 没机会跑。放在这里是因为此刻还没有任何下载可能在进行，
+     删起来最安全；只删 24h 以上、且名字符合安装包前缀的文件。 */
+  try {
+    const upTmp = path.join(app.getPath('temp'), 'jimeng-update');
+    const cl = updaterMod.cleanupStaleTemp(upTmp);
+    if (cl.removed && cl.removed.length) {
+      console.log('[desktop] 清理过期更新临时文件 ' + cl.removed.length + ' 个：' + cl.removed.join(', '));
+    }
+  } catch (e) {
+    console.warn('[desktop] 清理更新临时文件失败（不影响启动）：' + ((e && e.message) || e));
+  }
+
   const { loadConfig } = require('../server/config');
   const { createServer } = require('../server/server');
   cfg = loadConfig({
@@ -580,63 +612,120 @@ function createTray() {
 
 /* ---------------- 应用自更新 ----------------
    实现全在 updater.js（取元数据 → 下载 → 校验 → 调安装器）；这里只负责
-   "拿配置、把结果接到界面和托盘"。 */
-let pendingInstaller = null;   // 已下载待安装的安装包路径（下载与安装是两步）
-let lastCheck = null;
+   "拿配置、把结果接到界面和托盘"。
 
-function updateSource() {
-  const c = (paths && paths.config && paths.config.updates) || {};
-  return updaterMod.resolveSource(c);
+   ⚠ 2026-09-21 补：**互斥状态机**。
+   更新有两个入口 —— 设置页（IPC `update:*`）和托盘菜单（checkForUpdatesFromTray）。
+   修复前两条路都能随时开跑，后果：
+     · 连点两次"检查更新" → 两次并发请求，结果互相覆盖（lastCheck 是单变量）
+     · 检查/下载期间又点安装 → 拿到半截文件或没校验完的路径
+     · 重复下载 → 两个流程写同一个 `*-Setup.exe.part-<pid>`
+   状态只有 5 个，但**每个都必须拦**。所有更新入口统一走 withUpdateLock()，
+   拿不到锁的直接返回 { ok:false, busy:true }，由界面提示"请等当前操作完成"。 */
+const UPDATE_STATES = ['idle', 'checking', 'downloading', 'ready', 'installing'];
+let updateState = 'idle';
+
+/* 哪些状态下允许发起什么 —— 这是互斥规则**唯一**的落点，改规则只改这里。
+   允许的转移：
+     idle        → checking | downloading        （常规入口）
+     ready       → downloading（重下）/ installing（安装已下好的包）
+     checking/downloading/installing → 一律拒绝（有流程在跑） */
+function canStartUpdate(action) {
+  if (updateState === 'idle') return true;
+  if (updateState === 'ready' && (action === 'download' || action === 'install')) return true;
+  return false;
 }
 
-function setUpdateSource(patch) {
-  if (!paths) return null;                     // 还没 boot 完就调用：直接忽略，别抛
-  const cur = (paths.config && paths.config.updates) || {};
-  const next = Object.assign({}, cur, patch || {});
-  rpaths.saveConfig(paths, { updates: next });
-  if (paths.config) paths.config.updates = next;
-  return next;
+/* 状态机 + 异常兜底。为什么用 try/finally 而不是靠各分支自己复位：
+   fetchManifest/download 里任何一处抛未捕获异常，状态会永久卡在 downloading，
+   之后**再也无法更新**（要重启应用）—— 这类"卡死型"故障比原 bug 更难排查。 */
+async function withUpdateLock(action, fn) {
+  if (!canStartUpdate(action)) {
+    const msg = updateState === 'installing'
+      ? '正在安装更新，请等待应用自动重启'
+      : '已有更新操作正在进行中（' + updateState + '），请稍候';
+    console.warn('[desktop] 更新互斥：拒绝 ' + action + '（当前 ' + updateState + '）');
+    return { ok: false, busy: true, state: updateState, error: msg };
+  }
+  const prev = updateState;
+  updateState = (action === 'check') ? 'checking' : (action === 'download' ? 'downloading' : 'installing');
+  broadcastUpdateState();
+  try {
+    return await fn();
+  } finally {
+    /* installing 成功时进程即将退出，不需要复位（复位反而会给"并发安装"留窗口） */
+    if (updateState !== 'idle') {
+      if (updateState === 'installing' && prev !== 'installing') {
+        /* 安装失败 → 退回 ready（安装包还在，用户可以重试）；成功则进程已退出 */
+        updateState = pendingInstaller ? 'ready' : 'idle';
+      } else {
+        updateState = 'idle';
+      }
+      broadcastUpdateState();
+    }
+  }
 }
 
-/* 给渲染进程看的更新源：**不含令牌本身**，只说"配没配"。
-   界面需要让用户能设置令牌，但没必要把已存的密钥回传给页面。 */
-function publicSource() {
-  const s = updateSource();
+/* 状态变化主动推给界面：渲染进程平时靠轮询，但"被拒绝"这件事需要立刻可见 */
+function broadcastUpdateState() {
+  try {
+    if (win && !win.isDestroyed()) win.webContents.send('update:state', updateStatusPayload());
+  } catch (e) { /* 窗口还没建好/已销毁：忽略，界面下次轮询会拿到 */ }
+}
+
+function updateStatusPayload() {
   return {
-    provider: s.provider, owner: s.owner, repo: s.repo,
-    url: s.url, dir: s.dir, hasToken: !!s.token
+    version: app.getVersion(),
+    source: publicSource(),
+    progress: updaterMod.progressOf(),
+    lastCheck,
+    state: updateState,
+    busy: updateState !== 'idle' && updateState !== 'ready',
+    hasPendingInstaller: !!pendingInstaller
   };
 }
 
 async function doCheckUpdates() {
-  lastCheck = await updaterMod.check(app.getVersion(), updateSource());
-  console.log('[desktop] 检查更新：' + JSON.stringify({
-    ok: lastCheck.ok, latest: lastCheck.latestVersion, hasUpdate: lastCheck.hasUpdate, error: lastCheck.error
-  }));
-  return lastCheck;
+  return withUpdateLock('check', async () => {
+    lastCheck = await updaterMod.check(app.getVersion(), updateSource());
+    console.log('[desktop] 检查更新：' + JSON.stringify({
+      ok: lastCheck.ok, latest: lastCheck.latestVersion, hasUpdate: lastCheck.hasUpdate, error: lastCheck.error
+    }));
+    /* 有新版本且还没下载过 → 进入 ready，让"安装"入口可用 */
+    if (lastCheck.ok && lastCheck.hasUpdate && pendingInstaller) updateState = 'ready';
+    return lastCheck;
+  });
 }
 
 async function doDownloadUpdate() {
-  const dir = path.join(app.getPath('temp'), 'jimeng-update');
-  const r = await updaterMod.download(app.getVersion(), updateSource(), dir);
-  if (r.ok) pendingInstaller = r.path;
-  console.log('[desktop] 下载更新：' + JSON.stringify({ ok: r.ok, path: r.path, error: r.error }));
-  return r;
+  return withUpdateLock('download', async () => {
+    const dir = path.join(app.getPath('temp'), 'jimeng-update');
+    const r = await updaterMod.download(app.getVersion(), updateSource(), dir);
+    if (r.ok) { pendingInstaller = r.path; updateState = 'ready'; }
+    console.log('[desktop] 下载更新：' + JSON.stringify({ ok: r.ok, path: r.path, error: r.error }));
+    return r;
+  });
 }
 
 async function doInstallUpdate() {
-  if (!pendingInstaller) return { ok: false, error: '还没有下载好更新包' };
-  const r = await updaterMod.install(pendingInstaller);
-  if (!r.ok) return r;
-  /* ⚠ 安装器是 detached 拉起的，立刻 app.quit() 有时会让它还没站稳就被回收。
-     留 800ms 让它起来，再退出 —— 安装器会等本进程退出后替换文件。 */
-  setTimeout(() => { quitting = true; app.quit(); }, 800);
-  return { ok: true, path: pendingInstaller };
+  return withUpdateLock('install', async () => {
+    if (!pendingInstaller) return { ok: false, error: '还没有下载好更新包' };
+    const r = await updaterMod.install(pendingInstaller);
+    if (!r.ok) return r;
+    /* ⚠ 安装器是 detached 拉起的，立刻 app.quit() 有时会让它还没站稳就被回收。
+       留 800ms 让它起来，再退出 —— 安装器会等本进程退出后替换文件。
+       这段时间保持 state='installing'，任何并发更新请求都会被拒（见 canStartUpdate）。 */
+    setTimeout(() => { quitting = true; app.quit(); }, 800);
+    return { ok: true, path: pendingInstaller };
+  });
 }
 
-/* 托盘入口：检查完用对话框把结果说清楚，并支持"下载并安装" */
+/* 托盘入口：检查完用对话框把结果说清楚，并支持"下载并安装"。
+   ⚠ 被互斥拒掉时**不弹错误对话框** —— 那是用户自己重复点击造成的，
+   弹一个"失败"只会让人以为真出了问题。改为静默跳过（状态已在托盘/界面体现）。 */
 async function checkForUpdatesFromTray() {
   const r = await doCheckUpdates();
+  if (r && r.busy) return;
   if (!r.ok) {
     await dialog.showMessageBox(win || null, {
       type: 'warning', title: '检查更新失败', message: '没能取到更新信息',
@@ -664,13 +753,23 @@ async function checkForUpdatesFromTray() {
   if (pick.response !== 0) return;
 
   const d = await doDownloadUpdate();
+  if (d && d.busy) return;
   if (!d.ok) {
     await dialog.showMessageBox(win || null, {
       type: 'error', title: '下载失败', message: '没能下载更新包', detail: d.error, buttons: ['好']
     });
     return;
   }
-  await doInstallUpdate();
+  const ins = await doInstallUpdate();
+  /* 安装本身失败必须让用户知道（否则窗口关了、什么都没发生；这正是 P0-2 的表现） */
+  if (ins && !ins.ok && !ins.busy) {
+    await dialog.showMessageBox(win || null, {
+      type: 'error', title: '安装失败',
+      message: '没能启动安装器，当前应用将继续运行（未做任何改动）',
+      detail: (ins.error || '未知原因') + '\n\n安装包已下载好，可从设置页重试。',
+      buttons: ['好']
+    });
+  }
 }
 
 /* ---------------- IPC（preload 暴露的最小面） ---------------- */
@@ -705,13 +804,7 @@ ipcMain.handle('shell:openExternal', (e, u) => { openExternalSafely(u); return t
 /* 应用自更新。⚠ 令牌**只进不出**：update:setSource 接受它，
    但 update:status / setSource 的返回值都只给 hasToken 布尔值，
    不把已存的令牌回传给页面。 */
-ipcMain.handle('update:status', () => ({
-  version: app.getVersion(),
-  source: publicSource(),
-  progress: updaterMod.progressOf(),
-  lastCheck,
-  hasPendingInstaller: !!pendingInstaller
-}));
+ipcMain.handle('update:status', () => updateStatusPayload());
 ipcMain.handle('update:check', () => doCheckUpdates());
 ipcMain.handle('update:download', () => doDownloadUpdate());
 ipcMain.handle('update:install', () => doInstallUpdate());

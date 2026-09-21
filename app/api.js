@@ -63,8 +63,20 @@
     OK: 0,
     PARAM: 40001, UNAUTH: 40100, FORBIDDEN: 40300, NOTFOUND: 40400,
     CONFLICT: 40900, RATELIMIT: 42900, INTERNAL: 50000,
-    CLI_DOWN: 51001, NO_CREDIT: 51002, AUDIT: 51003, UPSTREAM_TIMEOUT: 51004, INTERRUPTED: 51005
+    CLI_DOWN: 51001, NO_CREDIT: 51002, AUDIT: 51003, UPSTREAM_TIMEOUT: 51004, INTERRUPTED: 51005,
+    /* 外部工具状态（2026-09-21，与 server/util.js 严格对齐）。取值 511xx：
+       与 510xx（CLI 运行期失败）区分开 —— 这一组表达的是"环境没装好"，
+       是可以由用户安装/登录来解决的，界面据此显示"去处理"入口而非"重试"。 */
+    CLI_NOT_FOUND: 51101, CLI_NOT_LOGGED_IN: 51102, CLI_PERMISSION_DENIED: 51103,
+    FFMPEG_NOT_FOUND: 51104, FFPROBE_NOT_FOUND: 51105
   };
+
+  /* 外部工具类码的判别集合 —— 前端不写散落的数字比较 */
+  const TOOL_ERROR_CODES = [
+    ERR.CLI_NOT_FOUND, ERR.CLI_NOT_LOGGED_IN, ERR.CLI_PERMISSION_DENIED,
+    ERR.FFMPEG_NOT_FOUND, ERR.FFPROBE_NOT_FOUND
+  ];
+  const isToolError = (code) => TOOL_ERROR_CODES.indexOf(Number(code)) >= 0;
 
   class ApiError extends Error {
     constructor(code, message, data, traceId) {
@@ -182,7 +194,7 @@
 
   /* ---------------------------------------------------------- 对外 API */
   const api = {
-    CFG, META, ERR, ApiError,
+    CFG, META, ERR, ApiError, TOOL_ERROR_CODES, isToolError,
     grad, setScope, scopeQuery,
 
     getOptions:   ()          => request('GET', '/meta/options', { query: scopeQuery() }),
@@ -207,6 +219,8 @@
     deleteProject:(id)        => request('DELETE', '/projects/' + id),
     // 彻底删除：连磁盘文件、分镜、素材、生成记录一起删，**不可恢复**
     hardDeleteProject:(id)    => request('DELETE', '/projects/' + id, { query: { hard: '1' } }),
+    // 彻底删除的预检：只统计（子项数量 / 文件数 / 磁盘占用 / 是否有任务在跑），不修改任何东西
+    hardDeletePreview:(id)    => request('GET', '/projects/' + id + '/hard-delete-preview'),
     listWorkspaces:(projectId) => request('GET', '/projects/' + projectId + '/workspaces'),
     createWorkspace:(projectId, body) => request('POST', '/projects/' + projectId + '/workspaces', { body }),
     getWorkspace: (id)        => request('GET', '/workspaces/' + id),

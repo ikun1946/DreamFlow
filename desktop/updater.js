@@ -14,7 +14,7 @@
    本仓库坚持零运行时依赖（服务端只用 Node 内置模块）。为一个已经具备的能力
    再引一个运行时依赖不划算，所以这里只做：取元数据 → 下载 → 校验 → 调安装器。
 
-   ⚠ 四条硬约束，改之前请先读完：
+   ⚠ 五条硬约束，改之前请先读完：
    1. **安装前必须校验 sha512**。latest.yml 里带着 electron-builder 生成的哈希；
       不校验就直接执行下载来的 exe，等于把"任意代码执行"交给网络中间人。
    2. **网络更新源只接受 https**（本地目录模式除外）。更新源是配置项，
@@ -23,6 +23,15 @@
       --force-run 让装完自动重启，用户不用再手动点一次图标。
    4. **下载与校验都在临时目录完成**，校验通过才允许被执行 —— 半截文件、
       被替换的文件都不该有机会运行。
+   5. **更新文件名必须先过 safeArtifactName()**（2026-09-21 补）。
+      原先直接 `path.join(destDir, m.file)`，而 `m.file` 来自 latest.yml。
+      曾经以为"结构由打包工具保证，不是用户输入"—— 这个假设是错的：
+        · local 模式：latest.yml 是**文件系统上任意一个文件**
+        · url  模式：latest.yml 是**用户可配服务器的任意响应**
+        · github 模式：虽限定为 release 附件名，但文件名同样直接进 path.join
+      实测 `path.join('C:\\x\\tmp', 'a/../../evil.exe')` → `C:\x\evil.exe`，
+      即带 `../` 的文件名能逃出目标目录、把文件写到任意位置（下载物随后会被执行）。
+      所以解析完清单**立刻**净化，且 local 读取前、下载前各再校一次。
    ============================================================ */
 const fs = require('fs');
 const path = require('path');
@@ -91,6 +100,61 @@ function parseLatestYml(text) {
     if (key === 'path' && !out.file) { out.file = val; continue; }
   }
   return out;
+}
+
+/* ---------------- 更新文件名安全校验（2026-09-21） ----------------
+   为什么必须有这一层：`m.file` 会直接进 `path.join(destDir, m.file)`，
+   而 path.join 不做"限制在 destDir 内"这件事 —— 它只做字符串拼接 + normalize。
+   于是 `../../evil.exe`、`a/../../../evil.exe` 都能往上逃逸。
+
+   三层校验（方案 C：白名单正则 + 版本一致性）：
+     ① 硬性拒绝：空值 / 绝对路径 / `..` / 路径分隔符 / NUL
+     ② 白名单正则：只认 electron-builder 的产物名形状
+        （依据 electron-builder.yml:68 `artifactName: JimengConsole-${version}-x64-Setup.${ext}`）
+     ③ 版本一致性：文件名里的版本号必须与 latest.yml 的 version 一致。
+        这一条是"白名单正则"之外的额外保险 —— 万一有人把 0.1.0 的安装包
+        配上 9.9.9 的 version 字段，正则放得过，版本校验能拦住。
+
+   ⚠ 改打包配置（artifactName / productName / executableName）时，
+     ARTIFACT_RE 必须同步改 —— 否则更新会把合法安装包也拒掉。
+     回归测试在 test/updater.test.js 里。 */
+const ARTIFACT_PREFIX = 'JimengConsole-';
+const ARTIFACT_RE = /^JimengConsole-\d+\.\d+\.\d+-x64-Setup\.exe$/;
+
+function safeArtifactName(name, expectVersion) {
+  const value = String(name == null ? '' : name);
+  if (!value) throw new Error('更新文件名为空');
+
+  /* ① 硬性拒绝。注意顺序：先做 basename 比较，绝对路径与 `../` 都会在这里露馅。 */
+  if (value.includes('\0')) throw new Error('更新文件名含 NUL 字符：' + JSON.stringify(value));
+  if (value !== path.basename(value)) throw new Error('更新文件名不得包含路径结构：' + value);
+  if (value.includes('/') || value.includes('\\')) throw new Error('更新文件名不得包含路径分隔符：' + value);
+  if (value === '.' || value === '..') throw new Error('更新文件名非法：' + value);
+
+  /* ② 白名单正则 */
+  if (!ARTIFACT_RE.test(value)) {
+    throw new Error('更新文件名不符合本项目安装包命名（应为 '
+      + ARTIFACT_PREFIX + '<version>-x64-Setup.exe）：' + value);
+  }
+
+  /* ③ 版本一致性（可选：调用方拿不到 version 时跳过，但仍已过 ①②） */
+  if (expectVersion) {
+    const inName = /^JimengConsole-(\d+\.\d+\.\d+)-x64-Setup\.exe$/.exec(value);
+    if (!inName) throw new Error('更新文件名里读不出版本号：' + value);
+    if (inName[1] !== String(expectVersion).trim()) {
+      throw new Error('更新文件名里的版本（' + inName[1] + '）与清单版本（'
+        + expectVersion + '）不一致，已拒绝');
+    }
+  }
+  return value;
+}
+
+/* 校验并回写 m.file。约定：只有 latest.yml 确实带了 file 时才校；
+   file 缺失由调用方按"清单不完整"处理。 */
+function assertManifestFile(m) {
+  if (!m || !m.file) return m;
+  m.file = safeArtifactName(m.file, m.version);
+  return m;
 }
 
 /* ---------------- HTTP 小工具 ---------------- */
@@ -285,6 +349,10 @@ async function fetchManifest(source) {
     catch (e) { return { ok: false, error: '读不到 ' + yml + '：' + e.message }; }
     const m = parseLatestYml(text);
     if (!m.version || !m.file) return { ok: false, error: 'latest.yml 里没有 version / file 字段' };
+    /* ★ 校验点①：解析完清单立刻净化。local 模式的 latest.yml 是磁盘上任意文件，
+       不校验的话 `m.file='../../../Windows/System32/x.exe'` 会直接参与拼路径。 */
+    try { assertManifestFile(m); }
+    catch (e) { return { ok: false, error: '更新清单被拒绝：' + e.message }; }
     const localPath = path.join(source.dir, m.file);
     if (!fs.existsSync(localPath)) return { ok: false, error: '目录里没有安装包：' + m.file };
     return {
@@ -300,6 +368,9 @@ async function fetchManifest(source) {
     if (!r.ok) return { ok: false, error: '取 latest.yml 失败：' + r.error };
     const m = parseLatestYml(r.text);
     if (!m.version || !m.file) return { ok: false, error: 'latest.yml 里没有 version / file 字段' };
+    /* ★ 校验点②：url 模式的 latest.yml 来自任意可配服务器，同样在拼 URL 前净化 */
+    try { assertManifestFile(m); }
+    catch (e) { return { ok: false, error: '更新清单被拒绝：' + e.message }; }
     return {
       ok: true, version: m.version, file: m.file, sha512: m.sha512, size: m.size,
       notes: '', releaseUrl: null,
@@ -325,6 +396,9 @@ async function fetchManifest(source) {
   if (!yr.ok) return { ok: false, error: '取 latest.yml 内容失败：' + yr.error };
   const m = parseLatestYml(yr.text);
   if (!m.version || !m.file) return { ok: false, error: 'latest.yml 里没有 version / file 字段' };
+  /* ★ 校验点③：github 模式的附件名同样来自远端内容，净化后再用于挑选附件 */
+  try { assertManifestFile(m); }
+  catch (e) { return { ok: false, error: '更新清单被拒绝：' + e.message }; }
 
   const exeAsset = assets.find((a) => a && a.name === m.file);
   if (!exeAsset) return { ok: false, error: '这个 release 里没有安装包附件：' + m.file };
@@ -405,42 +479,96 @@ function copyAndVerify(src, dest, expectSha512, expectSize, onProgress) {
 
 /* ---------------- 下载安装包 ----------------
    产物落在系统临时目录（不是 userData）—— 100+ MB 的安装包是**一次性**的，
-   没必要进会被漫游/备份的目录。 */
+   没必要进会被漫游/备份的目录。
+
+   ⚠ 2026-09-21 补：进入本函数即处于 updateBusy 状态（由 main.js 的状态机保证），
+   这里的 `inflight` 是**模块级**的第二道保险 —— 即便调用方漏了状态机，
+   同一进程也不可能并发两次下载（并发下载会互相覆盖同一个 .part-<pid> 文件）。 */
+let inflight = null;
+
 async function download(currentVersion, rawSource, destDir) {
-  const source = resolveSource(rawSource);
-  const m = await fetchManifest(source);
-  if (!m.ok) return { ok: false, error: m.error, needsToken: m.needsToken === true };
-  if (!isNewer(m.version, currentVersion)) {
-    return { ok: false, error: '当前已是最新版（' + currentVersion + '）' };
-  }
-
-  const dest = path.join(destDir, m.file);
-  progress = { active: true, phase: 'download', got: 0, total: m.size || 0, version: m.version, file: m.file };
-  const report = (got, total) => { if (progress) { progress.got = got; if (total) progress.total = total; } };
-
-  try {
-    const r = m.localPath
-      ? await copyAndVerify(m.localPath, dest, m.sha512, m.size, report)
-      : await downloadTo(m.downloadUrl, dest, {
-          headers: m.headers, expectSha512: m.sha512, expectSize: m.size, onProgress: report
-        });
-    if (!r.ok) { progress.phase = 'failed'; return { ok: false, error: r.error }; }
-
-    /* 校验通过才改名到最终路径 —— 执行的就是被验过的那一份 */
-    progress.phase = 'ready';
-    try {
-      if (fs.existsSync(dest)) fs.unlinkSync(dest);
-      fs.renameSync(r.tmp, dest);
-    } catch (e) {
-      try { fs.unlinkSync(r.tmp); } catch (e2) { /* 尽力而为 */ }
-      progress.phase = 'failed';
-      return { ok: false, error: '落盘失败：' + e.message };
+  if (inflight) return { ok: false, error: '已有下载在进行中，请等待完成', busy: true };
+  inflight = (async () => {
+    const source = resolveSource(rawSource);
+    const m = await fetchManifest(source);
+    if (!m.ok) return { ok: false, error: m.error, needsToken: m.needsToken === true };
+    if (!isNewer(m.version, currentVersion)) {
+      return { ok: false, error: '当前已是最新版（' + currentVersion + '）' };
     }
-    progress.phase = 'done';
-    return { ok: true, path: dest, version: m.version, bytes: r.bytes };
-  } finally {
-    if (progress) progress.active = false;
+
+    /* ★ 校验点④：fetchManifest 已净化过，这里再校一次 —— 从"清单可用"到"真正拼路径"
+       之间还有一次 return/await，任何中间环节都不该有机会把未净化值送进来。
+       destDir 本身也解析一次，便于下面断言最终路径确实在 destDir 之内。 */
+    let fileName;
+    try { fileName = safeArtifactName(m.file, m.version); }
+    catch (e) { return { ok: false, error: '更新文件名被拒绝：' + e.message }; }
+
+    const baseDir = path.resolve(destDir);
+    const dest = path.resolve(baseDir, fileName);
+    /* 兜底断言：normalize 之后必须仍在 destDir 之内（防正则被绕过）。 */
+    if (dest !== path.join(baseDir, fileName) || path.dirname(dest) !== baseDir) {
+      return { ok: false, error: '更新文件路径逃出临时目录，已拒绝：' + fileName };
+    }
+
+    progress = { active: true, phase: 'download', got: 0, total: m.size || 0, version: m.version, file: fileName };
+    const report = (got, total) => { if (progress) { progress.got = got; if (total) progress.total = total; } };
+
+    try {
+      const r = m.localPath
+        ? await copyAndVerify(m.localPath, dest, m.sha512, m.size, report)
+        : await downloadTo(m.downloadUrl, dest, {
+            headers: m.headers, expectSha512: m.sha512, expectSize: m.size, onProgress: report
+          });
+      if (!r.ok) { progress.phase = 'failed'; return { ok: false, error: r.error }; }
+
+      /* 校验通过才改名到最终路径 —— 执行的就是被验过的那一份 */
+      progress.phase = 'ready';
+      try {
+        if (fs.existsSync(dest)) fs.unlinkSync(dest);
+        fs.renameSync(r.tmp, dest);
+      } catch (e) {
+        try { fs.unlinkSync(r.tmp); } catch (e2) { /* 尽力而为 */ }
+        progress.phase = 'failed';
+        return { ok: false, error: '落盘失败：' + e.message };
+      }
+      progress.phase = 'done';
+      return { ok: true, path: dest, version: m.version, file: fileName, bytes: r.bytes };
+    } finally {
+      if (progress) progress.active = false;
+    }
+  })();
+  try { return await inflight; }
+  finally { inflight = null; }
+}
+
+const isDownloading = () => !!inflight;
+
+/* ---------------- 临时文件治理 ----------------
+   下载中断会留下 `*.part-<pid>`：进程被强杀时 `cleanup()` 没机会跑。
+   这些文件每个都可能有 100+ MB，长期不清理会把用户临时盘吃满。
+   所以在启动时扫一遍更新临时目录，删掉**过期的**（默认 24h）part 文件。
+   ⚠ 只删 `-Setup.exe.part-*`，不动任何其它东西 —— 临时目录是多进程共用的。 */
+function cleanupStaleTemp(destDir, maxAgeMs) {
+  const age = Number.isFinite(maxAgeMs) ? maxAgeMs : 24 * 60 * 60 * 1000;
+  const removed = [];
+  try {
+    if (!fs.existsSync(destDir)) return { ok: true, removed };
+    const now = Date.now();
+    fs.readdirSync(destDir).forEach((n) => {
+      if (n.indexOf('.part-') < 0 || n.indexOf(ARTIFACT_PREFIX) !== 0) return;
+      const p = path.join(destDir, n);
+      try {
+        const st = fs.statSync(p);
+        if (!st.isFile()) return;
+        if (now - st.mtimeMs < age) return;          // 还新鲜，可能是别的进程正在下
+        fs.unlinkSync(p);
+        removed.push(n);
+      } catch (e) { /* 尽力而为：删不掉不影响启动 */ }
+    });
+  } catch (e) {
+    return { ok: false, error: e.message, removed };
   }
+  return { ok: true, removed };
 }
 
 /* ---------------- 调起安装器 ----------------
@@ -449,26 +577,68 @@ async function download(currentVersion, rawSource, destDir) {
         --updated    标记为升级 —— installUtil.nsh 明确用它保证**用户数据不被删**
         --force-run  装完自动重启应用（辅助式安装器只在 Silent + isForceRun 时才重启）
    本函数只负责"把安装器拉起来"；调用方随后必须 app.quit()，
-   安装器会等本进程退出后再替换文件。 */
+   安装器会等本进程退出后再替换文件。
+
+   ⚠ 2026-09-21 修一个真实的竞态（原实现是在 spawn 之后**同 tick** 就 resolve 成功）：
+       child.on('error', (e) => resolve({ ok: false, ... }));
+       child.unref();
+       resolve({ ok: true });      // ← Promise 首次 resolve 即定型，上面那个回调永远无效
+   `spawn()` 的失败（ENOENT / EACCES / 文件损坏）是**异步**通过 'error' 事件报的，
+   同 tick resolve 等于把"启动失败"一律报成"成功"。后果是调用方拿到 ok:true 就
+   app.quit()，应用退出了、安装器却没起来 —— 用户看到窗口消失，然后什么都没有。
+
+   修法：让 Promise 一直悬着，等到以下三种情况之一才定型 ——
+     · 'error' 事件           → 失败（确定性失败，立即定型）
+     · 'spawn' 事件           → 成功（Node ≥15 在子进程真正 spawn 出来后发）
+     · SETTLE_GRACE_MS 超时   → 按乐观成功定型（退化为旧行为，但已排除确定性失败）
+   为什么还要超时兜底：安装器是 detached 的，某些环境（老 Node / 特殊打包）不发
+   'spawn'。不能因为收不到事件就永远卡住 —— 8 秒后按成功放行，与修复前的体验一致，
+   只是确定性失败这下拦得住。
+   ⚠ 用一次性 finish() 防重复 resolve（'error' 与超时理论上可能都到）。 */
+const SETTLE_GRACE_MS = 8 * 1000;
+
 function install(installerPath) {
   return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = (r) => {
+      if (settled) return;
+      settled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      resolve(r);
+    };
+
     if (!installerPath || !fs.existsSync(installerPath)) {
-      return resolve({ ok: false, error: '安装包不存在：' + installerPath });
+      return finish({ ok: false, error: '安装包不存在：' + installerPath });
     }
+    /* ★ 安装前再确认一次文件名合规 —— 校验与实际执行之间不能留时间窗。
+       调用方传进来的路径若是 `.../JimengConsole-0.27.0-x64-Setup.exe` 就过；
+       任何其它形状（含路径穿越残留）在这里被最后一道拦住。 */
+    try { safeArtifactName(path.basename(installerPath)); }
+    catch (e) { return finish({ ok: false, error: '拒绝执行安装包：' + e.message }); }
+
     let child;
     try {
       child = spawn(installerPath, ['/S', '--updated', '--force-run'], {
         detached: true, stdio: 'ignore', windowsHide: true
       });
-    } catch (e) { return resolve({ ok: false, error: '调起安装器失败：' + e.message }); }
-    child.on('error', (e) => resolve({ ok: false, error: '调起安装器失败：' + e.message }));
+    } catch (e) { return finish({ ok: false, error: '调起安装器失败：' + e.message }); }
+
+    /* 确定性失败：进程根本没起来 */
+    child.on('error', (e) => finish({ ok: false, error: '调起安装器失败：' + e.message }));
+    /* Node ≥15：子进程真的 spawn 出来了 */
+    child.on('spawn', () => finish({ ok: true }));
+    /* 超时兜底（见上） */
+    timer = setTimeout(() => finish({ ok: true }), SETTLE_GRACE_MS);
+    if (timer.unref) timer.unref();
     child.unref();
-    resolve({ ok: true });
   });
 }
 
 module.exports = {
   parseVersion, isNewer, parseLatestYml, fetchText, downloadTo,
   resolveSource, fetchManifest, DEFAULT_SOURCE,
-  progressOf, check, download, install
+  safeArtifactName, assertManifestFile, ARTIFACT_RE, ARTIFACT_PREFIX,
+  progressOf, check, download, install,
+  isDownloading, cleanupStaleTemp
 };

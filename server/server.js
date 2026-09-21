@@ -19,6 +19,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { loadConfig, PROJECT_ROOT } = require('./config');
+const runtimeMod = require('./runtime');   // 只为启动横幅标注"数据根是否来自 JC_DATA_DIR"
 const P = require('./paths');   // 磁盘布局与资源 URL 形状的唯一事实来源
 const { ApiError, ok, fail, sendJson } = require('./util');
 const store = require('./store');
@@ -292,7 +293,8 @@ function createServer(opts) {
         console.log('  API      http://' + cfg.host + ':' + port + '/api/v1');
         console.log('  应用首页 http://' + cfg.host + ':' + port + '/          （前端直连本服务）');
         console.log('  创作 CLI ' + cfg.dreaminaCliPath + '（唯一引擎；画布 CLI 已移除）');
-        console.log('  数据目录 ' + cfg.dataDir);
+        console.log('  数据目录 ' + cfg.dataDir
+          + (runtimeMod.dataDirFromEnv() ? '   ← 来自环境变量 JC_DATA_DIR（隔离模式）' : ''));
         console.log('  积分提醒 余额低于 ' + cfg.creditWarnBelow + ' 时在提交前提醒');
         if (cfg.token) console.log('  本地 API 已启用一次性 Token 校验');
         /* 旧配置里若还留着画布 CLI 时代的项，明确提示它们已经失效 ——

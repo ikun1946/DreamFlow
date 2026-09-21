@@ -283,9 +283,61 @@ function summarize(r, maxMissing) {
   return lines.join('\n');
 }
 
+/* 把导入报告写成磁盘上的一份档案（2026-09-21，清单 §11）。
+   为什么要落盘而不是只打日志：
+     · 打包后的桌面版**没有终端**，console.log 用户根本看不到；
+     · 缺失引用清单可能几十上百条，对话框只显示前 10 条；
+     · 出问题时（"我导入后素材少了"）需要一份**导入当时**的可回查记录 ——
+       而库本身已经被导入覆盖，无法从中反推"当时缺了什么"。
+   落点：<数据目录>/backup/import-report-<时间>.txt
+     选 backup/ 而非 logs/：它属于"数据历史"，用户换盘/迁移时会跟着走；
+     logs/ 是运行日志，容易被清理，也不该混入用户数据。
+   返回写入路径；失败返回 null（调用方只记警告 —— 报告写不出来不该影响导入结果）。 */
+function writeReport(targetDir, res) {
+  if (!targetDir || !res) return null;
+  const dir = path.join(String(targetDir), 'backup');
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = path.join(dir, 'import-report-' + stamp + '.txt');
+  const c = (res.report && res.report.counts) || {};
+  const f = (res.report && res.report.files) || {};
+  const missing = (res.report && res.report.missing) || [];
+  const head = [
+    '旧数据导入报告',
+    '时间：' + new Date().toISOString(),
+    '结果：' + (res.ok ? '成功（引用全部找到）' : '完成，但有缺失引用'),
+    '',
+    '源目录：' + res.src,
+    '目标目录：' + res.dst,
+    res.backupDir ? '导入前备份：' + res.backupDir : '导入前备份：（目标原本没有库，无需备份）',
+    '',
+    '—— 库内容 ——',
+    '项目 ' + (c.projects || 0) + ' 个 · 分镜表 ' + (c.workspaces || 0) + ' 张 · 分镜 ' + (c.storyboards || 0) + ' 个',
+    '素材 ' + (c.assets || 0) + ' 个 · 生成记录 ' + (c.records || 0) + ' 条 · 视频文件 ' + (f.videos || 0) + ' 个',
+    '',
+    '—— 复制 ——',
+    '复制文件 ' + (res.copied.files || 0) + ' 个（' + mb(res.copied.bytes) + '）'
+      + (res.copied.skipped ? '，跳过已存在 ' + res.copied.skipped + ' 个' : ''),
+    '',
+    '—— 缺失引用（' + missing.length + ' 处）——'
+  ];
+  /* 报告里不给缺失清单设上限 —— 这正是落盘的意义所在（对话框那边才需要截断）。 */
+  const body = missing.length
+    ? missing.map((m) => '  ' + (m.label || '') + '  →  ' + (m.path || ''))
+    : ['  （无）'];
+  const tail = [
+    '',
+    '说明：导入是复制而非搬家，源目录未被改动，确认无误后可自行删除。',
+    '若存在缺失引用：库本身是完整的，但对应素材/产物在界面上会显示为空；',
+    '可按上面的路径去源目录找回文件，再从界面重新上传。'
+  ];
+  fs.writeFileSync(file, head.concat(body, tail).join('\n') + '\n', 'utf8');
+  return file;
+}
+
 module.exports = {
   DB_FILE, BACKUP_PREFIX,
   detectCandidates, looksLikeLegacy,
   resolveAssetFile, resolveOutputFile,
-  countFiles, inspect, importInto, summarize
+  countFiles, inspect, importInto, summarize, writeReport
 };
