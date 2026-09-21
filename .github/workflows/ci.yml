@@ -2,7 +2,7 @@
 # ci.yml —— 持续集成
 #
 # 两个 job，理由见 docs/项目审查与改进清单.md §8：
-#   · check   （Linux / Node 20）—— 代码质量门禁：项目检查 → 测试 → 构建
+#   · check   （Linux / Node 20）—— 代码质量门禁：项目检查 → 静态检查 → 测试 → 构建
 #   · package （Windows / Node 20）—— 真实目标平台的打包验证
 #
 # ⚠ 为什么**必须**有 Windows job：本项目的目标平台是 Windows x64，
@@ -51,6 +51,9 @@ jobs:
 
       - name: 项目检查
         run: npm run check
+
+      - name: 静态检查（lint）
+        run: npm run lint
 
       - name: 自动化测试
         run: npm test

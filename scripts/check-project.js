@@ -94,7 +94,7 @@ if (!PKG) {
   } else {
     const m = /当前版本[：:]\s*\*\*`?(\d+\.\d+\.\d+)`?\*\*/.exec(readme);
     if (!m) {
-      fail('README 里找不到「当前版本：**x.y.z**」声明', '格式须为「当前版本：**`0.27.0`**」（脚本按此正则解析）');
+      fail('README 里找不到「当前版本：**x.y.z**」声明', '格式须为「当前版本：**`' + V + '`**」（脚本按此正则解析）');
     } else if (m[1] !== V) {
       fail('README 当前版本（' + m[1] + '）与 package.json（' + V + '）不一致',
         'README.md 里搜「当前版本」改掉');
@@ -396,13 +396,16 @@ if (yml) {
 head('[9] 工程门禁');
 
 if (PKG && PKG.scripts) {
-  const need = ['test', 'check', 'verify', 'build:web'];
+  const need = ['test', 'check', 'lint', 'verify', 'build:web'];
   const miss = need.filter((k) => !PKG.scripts[k]);
   if (miss.length) fail('package.json 缺少脚本：' + miss.join('、'));
   else ok('npm scripts 齐备：' + need.join(' / '));
 
   if (PKG.scripts.verify && !/npm run check/.test(PKG.scripts.verify)) {
     warn('verify 脚本未包含 check');
+  }
+  if (PKG.scripts.verify && !/npm run lint/.test(PKG.scripts.verify)) {
+    warn('verify 脚本未包含 lint（静态检查）');
   }
   if (PKG.scripts.verify && !/npm test/.test(PKG.scripts.verify)) {
     warn('verify 脚本未包含 test');
@@ -481,6 +484,193 @@ if (legacyHits.length) {
     'P2-14：应改为 DreamFlow');
 } else {
   ok('无旧仓库根名残留');
+}
+
+// ════════════════════════════════════════════════════════════════
+// 11. 事实一致性：过期表述（P0-2）
+// ════════════════════════════════════════════════════════════════
+head('[11] 过期表述（"没有自动化测试"）');
+
+/* 为什么有这一项（2026-09-21）：恢复测试后，代码注释与文档里仍有多处声称
+   "本仓库没有自动化测试" —— 它会把后续 agent/人**反向指导**成跳过 npm test，
+   把刚建好的门禁重新荒废。这类矛盾不会被版本号检查拦住，必须专门盯。
+   两个豁免：① 历史记录类文件（变更日志、审查报告）本就会引用旧说法；
+   ② 其余文件里若确属历史叙述，须在**同一行**写明「此前 / 已作废」等标记。 */
+const OUTDATED_RE = /没有自动化测试|已不保留自动化测试|自动化测试已删除/;
+const HISTORICAL_MARK_RE = /已作废|此前|历史|曾经|当时|删除过|已恢复|\d+\s*个用例/;
+/* 豁免：① 历史记录类文件（变更日志、审查报告）本就会引用旧说法；
+   ② 本脚本自身 —— 它为了描述规则必然写出这些词（自指陷阱，与 lint.js 同一处理）。 */
+const OUTDATED_EXEMPT = ['docs/更改文档.md', 'docs/项目全面审查与改进流程.md', 'scripts/check-project.js'];
+const outdatedHits = [];
+for (const f of walk(ROOT, [], NPM_SKIP)) {
+  if (!/\.(js|md)$/.test(f)) continue;
+  const r = rel(f);
+  if (OUTDATED_EXEMPT.includes(r)) continue;
+  const t = read(r);
+  if (t === null) continue;
+  t.split('\n').forEach((line, i) => {
+    if (!OUTDATED_RE.test(line)) return;
+    if (HISTORICAL_MARK_RE.test(line)) return;
+    outdatedHits.push(r + ':' + (i + 1));
+  });
+}
+if (outdatedHits.length) {
+  fail('仍有过期表述（本仓库已有 test/ 下的自动化测试）：' + outdatedHits.join('、'),
+    '改为事实描述并指向 test/ 目录；确属历史叙述请在同一行写明「此前 / 已作废」等标记');
+} else {
+  ok('无"没有自动化测试"类过期表述（历史记录类文件已豁免）');
+}
+
+// ════════════════════════════════════════════════════════════════
+// 12. 收尾清单一致性（AGENTS.md ↔ docs/项目文档.md §9，P0-3）
+// ════════════════════════════════════════════════════════════════
+head('[12] 收尾清单一致性');
+
+/* 抽取"完成一项工作后的固定动作"下的有序列表，比较：条目数 + 每条首句
+   （粗体引导语）+ 关键命令是否两处都在。
+   为什么只比到这一层：两处文档的引用风格不同（「」 vs ""），逐字比较会因
+   标点误报；而"条目漏了一条、命令只写在一处"才是真正让读者走错路的漂移。 */
+function dodItems(md) {
+  if (!md) return null;
+  const lines = md.split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#{2,3}\s*.*完成一项工作后的固定动作/.test(lines[i])) { start = i; break; }
+  }
+  if (start < 0) return null;
+  const items = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^#{1,3}\s/.test(line)) break;   // 下一个标题 = 清单结束
+    const m = /^\s*(\d+)\.\s+\*\*(.+?)\*\*/.exec(line);
+    if (m) items.push({ no: Number(m[1]), lead: m[2].trim(), text: line });
+  }
+  return items;
+}
+const dodAgents = dodItems(read('AGENTS.md'));
+const dodDoc = dodItems(read('docs/项目文档.md'));
+if (!dodAgents || !dodAgents.length) {
+  fail('AGENTS.md 里找不到「完成一项工作后的固定动作」的有序列表');
+} else if (!dodDoc || !dodDoc.length) {
+  fail('docs/项目文档.md 里找不到 §9 收尾清单的有序列表');
+} else {
+  const norm = (s) => s.replace(/[「」“”"]/g, '"').replace(/\s+/g, '');
+  const diffs = [];
+  if (dodAgents.length !== dodDoc.length) {
+    diffs.push('条目数不同：AGENTS.md ' + dodAgents.length + ' 条 / 项目文档 ' + dodDoc.length + ' 条');
+  }
+  const n = Math.min(dodAgents.length, dodDoc.length);
+  for (let i = 0; i < n; i++) {
+    if (norm(dodAgents[i].lead) !== norm(dodDoc[i].lead)) {
+      diffs.push('第 ' + (i + 1) + ' 条首句不同：AGENTS「' + dodAgents[i].lead + '」/ 文档「' + dodDoc[i].lead + '」');
+    }
+  }
+  const KEY_CMDS = ['node build.js', 'npm run verify', 'git push origin main'];
+  for (const cmd of KEY_CMDS) {
+    const inA = dodAgents.some((x) => x.text.includes(cmd));
+    const inD = dodDoc.some((x) => x.text.includes(cmd));
+    if (inA !== inD) diffs.push('关键命令只出现在一处：`' + cmd + '`');
+  }
+  if (diffs.length) {
+    fail('收尾清单两处不一致：' + diffs.join('；'),
+      '以 AGENTS.md 为准同步 docs/项目文档.md §9（见 AGENTS.md 第 5 步）');
+  } else {
+    ok('AGENTS.md 与 docs/项目文档.md §9 一致（' + dodAgents.length + ' 条）');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 13. docs/ 状态标记（P2-4）
+// ════════════════════════════════════════════════════════════════
+head('[13] docs/ 状态标记');
+
+/* 每份 docs/*.md 头部必须有 `> 状态：现行` 或 `> 状态：历史（写于 vX.Y）`，
+   让读者 1 分钟内能判断这份文档是现行契约还是历史设计 —— 历史上这里
+   并存过两份互相重叠、各自落后的"项目说明"。 */
+const docDir = path.join(ROOT, 'docs');
+const docFiles = fs.existsSync(docDir)
+  ? fs.readdirSync(docDir).filter((f) => /\.md$/.test(f))
+  : [];
+const noStatus = [];
+for (const f of docFiles) {
+  const t = read('docs/' + f) || '';
+  if (!/^>\s*状态：/m.test(t)) noStatus.push(f);
+}
+if (!docFiles.length) {
+  fail('docs/ 下没有任何 .md');
+} else if (noStatus.length) {
+  fail('docs/ 下缺少「状态：」标记：' + noStatus.join('、'),
+    '每份文档头部加一行 `> 状态：现行` 或 `> 状态：历史（写于 vX.Y）`；文档地图见 docs/项目文档.md §12');
+} else {
+  ok('docs/ 下 ' + docFiles.length + ' 份文档均有状态标记');
+}
+
+// ════════════════════════════════════════════════════════════════
+// 14. 路由计数一致性（P3-2）
+// ════════════════════════════════════════════════════════════════
+head('[14] 路由计数（server/routes.js ↔ docs/项目文档.md）');
+
+/* 口径：**一个路由表项（一个正则）= 1 条**。文档里若给出"路径 + 方法"的
+   另一口径（同一行含「组合」字样），按已写明口径豁免。
+   为什么值得机器校验：文档里的"53 条"曾经与代码的 54 条并存了很久 ——
+   "看起来精确的数字"最容易骗人，因为它让人以为有人核对过。 */
+const routesSrc = read('server/routes.js') || '';
+const routeCount = (routesSrc.match(/^\s*\['/gm) || []).length;
+const docMd = read('docs/项目文档.md') || '';
+const declared = /路由表实测\s*(\d+)\s*条/.exec(docMd);
+if (!routeCount) {
+  fail('server/routes.js 里数不到路由表项（形状变了？）');
+} else if (!declared) {
+  fail('docs/项目文档.md 里找不到「路由表实测 N 条」声明',
+    '补一句形如「**路由表实测 ' + routeCount + ' 条**（`server/routes.js`）」');
+} else {
+  const mism = [];
+  if (Number(declared[1]) !== routeCount) {
+    mism.push('「路由表实测」写的是 ' + declared[1] + '，代码是 ' + routeCount);
+  }
+  docMd.split('\n').forEach((line, i) => {
+    if (!/路由|接口数量/.test(line)) return;
+    const m = /(\d+)\s*条/.exec(line);
+    if (!m) return;
+    if (Number(m[1]) === routeCount) return;
+    if (/组合/.test(line)) return;   // 另一口径（路径 + 方法），文档里已写明
+    mism.push('第 ' + (i + 1) + ' 行写的是 ' + m[1] + ' 条');
+  });
+  if (mism.length) {
+    fail('路由计数与代码不一致：' + mism.join('；'),
+      '口径：一个路由表项（一个正则）= 1 条；当前代码 = ' + routeCount + ' 条');
+  } else {
+    ok('路由计数与代码一致（' + routeCount + ' 条）');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 15. git remote 与仓库声明一致（P3-1）
+// ════════════════════════════════════════════════════════════════
+head('[15] git remote 与仓库声明');
+
+/* 2026-09-21：GitHub 仓库已改名为 DreamFlow，本地 remote 还指向旧名
+   jimeng-console（靠 GitHub 的 301 重定向工作）。这一项把"声明"与"实际"
+   钉在一起，避免文档说 DreamFlow、clone 下来却是 jimeng-console。 */
+let remoteUrl = '';
+try {
+  remoteUrl = require('child_process')
+    .execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: ROOT, encoding: 'utf8' })
+    .trim();
+} catch (e) { /* 下面按空值报错 */ }
+if (!remoteUrl) {
+  fail('读不到 git remote origin（不在 git 仓库里？）');
+} else {
+  const m = /github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteUrl);
+  if (!m) {
+    fail('origin 不是 GitHub 地址：' + remoteUrl);
+  } else if (m[1] !== 'ikun1946' || m[2] !== 'DreamFlow') {
+    fail('origin 指向 ' + m[1] + '/' + m[2] + '，与声明（ikun1946/DreamFlow）不一致',
+      '方案 A（推荐）：git remote set-url origin https://github.com/ikun1946/DreamFlow.git；'
+      + '方案 B：改文档承认旧仓库名 —— 二选一，别让两者继续漂移');
+  } else {
+    ok('origin 与声明一致：' + m[1] + '/' + m[2]);
+  }
 }
 
 // ── 汇总 ────────────────────────────────────────────────────────

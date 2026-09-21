@@ -36,7 +36,8 @@ const https = require('https');
    （https://jimeng.jianying.com/cli）里的写死常量，不是猜的。
    ⚠ 路径里的 dreamina_cli_beta 说明这是 **beta 分发通道** —— 接口和行为没有
    稳定性承诺，CLI 哪天改了参数，本应用可能出现"能装上但跑不通"，
-   而本仓库没有自动化测试兜底。升级前请留意。 */
+   而 test/ 下的 89 个用例只覆盖本地逻辑、覆盖不到官方 CDN 的接口变化。
+   升级前请留意。 */
 const CDN_BASE = 'https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp';
 const VERSION_URL = CDN_BASE + '/version.json';
 const BINARY_URL = CDN_BASE + '/dreamina_cli_beta/dreamina_cli_windows_amd64.exe';

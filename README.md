@@ -16,15 +16,15 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.27.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.28.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
 | 运行时依赖 | **零 npm 依赖**：后端只用 Node 内置模块，前端是原生 HTML/CSS/JS；`electron` / `electron-builder` 只在打包期用到 |
-| 自动化测试 | **85 个用例**（`npm test`，Node 内置 test runner）：数据安全 22 / 任务逻辑 20 / 构建发布 43 |
-| 统一检查 | `npm run check`（`scripts/check-project.js`，10 节 35 项一致性检查） |
+| 自动化测试 | **89 个用例**（`npm test`，Node 内置 test runner）：数据安全 26 / 任务逻辑 20 / 构建发布 43 |
+| 统一检查 | `npm run check`（`scripts/check-project.js`，15 节 40 项一致性检查）+ `npm run lint`（静态检查：语法 / debugger / 前端调试输出 / require 目标 / 插值告警） |
 | 端到端验收 | 网页版 `npm run smoke:web`（连通性）；业务流 `npm run e2e`（53 项断言）；桌面版 `JC_DESKTOP_SMOKE=1`（见「自检」）；CI 双 job 已就位（`.github/workflows/ci.yml`） |
-| 一键回归 | `npm run verify` = `check` + `test` + `build:web` |
+| 一键回归 | `npm run verify` = `check` + `lint` + `test` + `build:web` |
 
 **当前已知限制**
 
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.27.0`**
+当前版本：**`0.28.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -444,11 +444,23 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（85 用例）、`npm run check`（35 项一致性检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，53 项断言），以及 `npm run verify` 一键串起。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
+⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（89 用例）、`npm run check`（40 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，53 项断言），以及 `npm run verify` 一键串起。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
 
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.28.0` — 2026-09-21（门禁与事实一致性：lint 门禁 + 5 类新检查 + 静态路由加固）
+
+**执行《项目全面审查与改进流程》阶段 0 + 阶段 1 的成果**（流程原文见 `docs/项目全面审查与改进流程.md`）。
+
+- **P1-1 静态路由前缀校验加固**（`server/server.js` + `server/paths.js`）：原先 `/app/` 与 `/dist/` 各写一遍 `startsWith(PROJECT_ROOT + 'app')` —— 兄弟目录（`app-old/`、`dist-backup/`）会被误判成"在范围内"，一旦有人建这类备份目录就能读到仓库内任意文件。现在收敛为 `paths.resolveStaticPath()`（静态根白名单 `['app','dist']` + `contained()` 包含性检查），与 `/files`、`/media/assets` 共用**同一套**边界实现。新增 4 条回归用例，其中 1 条是 **HTTP 级**：真起服务、真造 `app-old/` 兄弟目录、断言越界请求 404 且响应体不含标记内容 —— 有人把接线改回裸 `startsWith` 时它会红。
+- **P1-6 lint 门禁**（`scripts/lint.js`，零依赖）：语法（全量 `vm.Script` 编译）、`debugger` 语句、`app/` 下调试输出、相对 `require` 目标存在性；另有 `innerHTML` 模板插值未转义与 TODO/FIXME 两个告警项。已接入 `npm run verify` 与 CI 的 Linux job（首次接入基线为 0 告警，故意插一行 `debugger` 实测能让它红）。
+- **新增 5 类一致性检查**（`scripts/check-project.js`，35 → 40 项）：过期表述（"没有自动化测试"类，历史记录类文件豁免）、收尾清单一致性（`AGENTS.md` ↔ `docs/项目文档.md` §9）、`docs/` 状态标记、路由计数（与 `routes.js` 实测比对）、git remote 与声明一致。
+- **P0-2 / P0-3 事实一致性清理**：`server/paths.js`、`server/cli-installer.js`、`docs/项目文档.md` §9 三处过期表述改为事实描述；`AGENTS.md` 与 `docs/项目文档.md` §9 的收尾清单逐条对齐；`docs/项目审查与改进清单.md` 加历史横幅 + 15 条逐项状态表（含证据），不再扮演"待办清单"。
+- **P3-2 路由计数口径**：文档从 53 条改为 **54 条**，并写明口径（一个路由表项 = 1 条；按"路径 + 方法"组合计为 56 条）。这个数字以前"看起来精确"，实际与代码漂移了很久 —— 现在由检查项钉住。
+- **P3-1 仓库命名收口**：`git remote` 更新为 `https://github.com/ikun1946/DreamFlow.git`（GitHub 端仓库已改名，旧地址只剩 301 重定向），并新增检查项防止再次漂移。
+- **文档状态标记**（P2-4 的第一步）：`docs/` 下 12 份文档全部加上 `状态：现行 / 历史（写于 vX.Y）` 的头三行 —— 读者 1 分钟内能判断某份文档是现行契约还是历史设计；机器校验保证新文档不再漏标。
 
 #### `0.27.0` — 2026-09-21（项目审查整改：P0–P2 全量修复 + 测试与 CI 恢复）
 
