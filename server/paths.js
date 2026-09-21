@@ -37,9 +37,9 @@ const runtime = require('./runtime');
    读 roots，而不是在 require 时定死。这样"把根指到别处"是一个显式动作（setRoots），
    而不是靠覆盖一个常量（那是改不动的：2026-09-20 实测踩到，有段代码以为重定向了根，
    其实一路写进了真实的 data/projects/）。
-   ⚠ 生产代码不要调用 setRoots —— 目前**没有任何调用方**（仓库已不保留自动化测试，
-   见 README「版本」一节）。留着它是为了将来需要沙箱时有个明确的入口，
-   而不是让人去覆盖常量。 */
+   ⚠ 生产代码不要调用 setRoots —— 目前**没有任何调用方**（测试沙箱走的是
+   runtime.configure → runtime.onChange(resetRoots) 这条路，见 test/helpers.js）。
+   留着它是为了给"把根指到别处"一个明确的入口，而不是让人去覆盖常量。 */
 /* 派生根的默认值**每次现算**：数据根可以被桌面版重定向（见 runtime.js），
    而这三个目录必须跟着走，否则会出现"库在用户目录、素材还在安装目录"的撕裂状态。 */
 function defaultRoots() {
@@ -172,6 +172,23 @@ function contained(base, target) {
   return t.startsWith(b + path.sep) ? t : null;
 }
 
+/* ---------------- 服务端静态路由（/app、/dist）：URL 路径 → 仓库内绝对路径 ----------------
+   返回 null 表示"这个路径不该被服务"（形状不合法或越界）。
+
+   ⚠ 为什么收进这里（2026-09-21，P1-1）：原先 server.js 对 /app/ 与 /dist/ 各写了一遍
+   `p.startsWith(path.join(PROJECT_ROOT, 'app'))` —— 与 contained() 的教训正好相反：
+   `app-old/`、`dist-backup/` 这类兄弟目录会被误判成"在范围内"。当前仓库没有这类目录，
+   但一旦有人建一个（备份旧版前端是常见动作），越界就能读到仓库内任意文件。
+   现在静态根收敛为**白名单常量**，边界判断只有 contained() 一个实现。 */
+const STATIC_ROOTS = ['app', 'dist'];
+function resolveStaticPath(pathname) {
+  const p = String(pathname || '');
+  const m = /^\/([^/]+)\/(.+)$/.exec(p);
+  if (!m || !STATIC_ROOTS.includes(m[1])) return null;
+  const base = path.join(configMod.PROJECT_ROOT, m[1]);
+  return contained(base, path.join(configMod.PROJECT_ROOT, p));
+}
+
 /* 确保项目目录就位（上传素材 / 下载产物前调用） */
 function ensureProjectDirs(projectId) {
   const pj = safeId(projectId);
@@ -192,5 +209,6 @@ module.exports = {
   projectDir, assetDir, outputDir, sbOutputDir,
   assetUrl, outputUrl, parseAssetUrl, parseOutputUrl,
   assetFileOf, sbOutputDirOf, legacyOutputFile,
-  resolveServePath, contained, ensureProjectDirs
+  resolveServePath, contained, ensureProjectDirs,
+  STATIC_ROOTS, resolveStaticPath
 };

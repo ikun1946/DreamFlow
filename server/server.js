@@ -207,15 +207,15 @@ function createServer(opts) {
         });
         return res.end(buildIndexHtml(cfg));
       }
-      if (pathname.startsWith('/app/')) {
-        const p = path.normalize(path.join(PROJECT_ROOT, pathname));
-        if (!p.startsWith(path.join(PROJECT_ROOT, 'app'))) { res.writeHead(403); return res.end(); }
-        if (serveFile(req, res, p)) return;
-      }
-      if (pathname.startsWith('/dist/')) {
-        const p = path.normalize(path.join(PROJECT_ROOT, pathname));
-        if (!p.startsWith(path.join(PROJECT_ROOT, 'dist'))) { res.writeHead(403); return res.end(); }
-        if (serveFile(req, res, p)) return;
+      /* 前端源码与构建产物（/app/、/dist/）：形状解析与路径安全**统一走
+         paths.resolveStaticPath** —— 静态根白名单 + contained() 包含性检查。
+         ⚠ 原先是各写一遍的裸 startsWith(PROJECT_ROOT + 'app'/'dist')：
+         兄弟目录（app-old/、dist-backup/）会被误判为在范围内（2026-09-21，P1-1）。 */
+      if (pathname.startsWith('/app/') || pathname.startsWith('/dist/')) {
+        const p = P.resolveStaticPath(pathname);
+        if (p && serveFile(req, res, p)) return;
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Not Found');
       }
       /* 资源文件（素材图 / 产物视频）：
          形状解析与路径安全**统一走 paths.resolveServePath** —— 逐段白名单校验

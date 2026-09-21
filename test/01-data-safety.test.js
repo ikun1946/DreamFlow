@@ -108,6 +108,44 @@ describe('paths —— 白名单与目录包含性（路径穿越防护）', () 
   });
 });
 
+describe('paths —— 静态路由（/app、/dist）路径安全（P1-1 回归）', () => {
+  /* 2026-09-21：server.js 原先对 /app/ 与 /dist/ 各写一遍
+     `p.startsWith(path.join(PROJECT_ROOT, 'app'))` —— 兄弟目录（app-old/、
+     dist-backup/）会被误判为"在范围内"。现在统一走 paths.resolveStaticPath
+     （静态根白名单 + contained() 包含性检查）。 */
+
+  test('合法静态路径被解析到仓库内对应文件', () => {
+    const p = paths.resolveStaticPath('/app/app.js');
+    assert.ok(p, '合法路径应被解析');
+    assert.equal(p, path.resolve(H.REPO_ROOT, 'app', 'app.js'));
+
+    const d = paths.resolveStaticPath('/dist/x.html');
+    assert.ok(d && d.startsWith(path.resolve(H.REPO_ROOT, 'dist') + path.sep), 'dist 产物应被解析');
+  });
+
+  test('★ 兄弟目录穿越必须被拒绝（前缀相同 ≠ 在范围内）', () => {
+    // server.js 传给本函数的是**已解码**的 pathname（`..%2f` → `../`）
+    assert.equal(paths.resolveStaticPath('/app/../app-old/secret.txt'), null,
+      'app-old 是 app 的兄弟目录，不得被当作 app 内文件');
+    assert.equal(paths.resolveStaticPath('/dist/../dist-backup/x.js'), null);
+    assert.equal(paths.resolveStaticPath('/app/../../secret.txt'), null, '向上穿越应拒绝');
+    /* 未解码的 `%2f` 形式：函数按"字面文件名"处理，不做二次解码（二次解码本身
+       是反模式）——结果要么 null、要么仍在 app/ 内，绝不能逃出去。 */
+    const raw = paths.resolveStaticPath('/app/..%2fapp-old/secret.txt');
+    assert.ok(raw === null || raw.startsWith(path.resolve(H.REPO_ROOT, 'app') + path.sep),
+      '编码形式不得逃出 app/');
+  });
+
+  test('白名单之外的根与形状一律拒绝', () => {
+    assert.equal(paths.resolveStaticPath('/etc/passwd'), null);
+    assert.equal(paths.resolveStaticPath('/server/config.js'), null, '静态根只有 app/dist');
+    assert.equal(paths.resolveStaticPath('/app/'), null, '空段应拒绝');
+    assert.equal(paths.resolveStaticPath('/app'), null, '无子路径应拒绝');
+    assert.equal(paths.resolveStaticPath('/'), null);
+    assert.deepEqual(paths.STATIC_ROOTS, ['app', 'dist'], '静态根白名单');
+  });
+});
+
 describe('paths —— 项目磁盘隔离（目录分区）', () => {
   test('项目目录位于 <数据根>/projects/<id>/ 之下', () => {
     const a = path.resolve(paths.assetDir('pj_iso1'));
@@ -378,6 +416,47 @@ describe('schema —— 版本读取与迁移回滚', () => {
     const res = schema.runMigrations(db);
     assert.equal(res.skipped, true);
     assert.deepEqual(res.ran, []);
+  });
+});
+
+/* ============================================================
+   HTTP 级回归（P1-1）：真的起一个服务，验证 /app/ 的越界请求拿不到仓库内其它文件。
+   单元测试只测 resolveStaticPath；这一条测的是 **server.js 的接线** ——
+   有人把接线改回裸 startsWith 时，它会红（这正是 P1-1 的验收要求）。
+   ============================================================ */
+describe('server 静态路由 —— HTTP 级越界回归（P1-1）', () => {
+  test('★ /app/..%2fapp-old/... 必须 404，且正例 /app/api.js 仍 200', async () => {
+    /* 触发条件：仓库根下必须真的存在一个 app 的兄弟目录（app-old/）。
+       造它、放一份标记文件，测完在 finally 里删掉。 */
+    const sibling = path.join(H.REPO_ROOT, 'app-old');
+    const marker = 'TOP-SECRET-MARKER-' + Date.now();
+    fs.mkdirSync(sibling, { recursive: true });
+    fs.writeFileSync(path.join(sibling, 'secret.txt'), marker, 'utf8');
+
+    const { createServer } = require('../server/server');
+    const srv = createServer({ configOverrides: { port: 0, token: '' } });
+    try {
+      const { port } = await srv.start();
+      const base = 'http://127.0.0.1:' + port;
+
+      const evil = await fetch(base + '/app/..%2fapp-old/secret.txt');
+      const evilBody = await evil.text();
+      assert.equal(evil.status, 404, '越界请求必须 404');
+      assert.ok(!evilBody.includes(marker), '★ 不得泄露兄弟目录内容');
+
+      const okRes = await fetch(base + '/app/api.js');
+      const okBody = await okRes.text();
+      assert.equal(okRes.status, 200, '正常静态资源必须保住 200');
+      assert.ok(okBody.length > 100, '返回的是真实脚本内容');
+    } finally {
+      await srv.stop();
+      H.rmrf(sibling);
+      /* ⚠ start() 里有两个**未被 stop() 跟踪**的启动期定时器（CLI 预热 300ms、
+         封面补齐 1200ms）。不等它们落地就结束用例的话，它们会在沙箱删除之后
+         才碰 store —— 留下重新生成的空目录（测试残留）。这里等一下，
+         让它们在沙箱还在的时候跑完。 */
+      await new Promise((r) => setTimeout(r, 1400));
+    }
   });
 });
 
