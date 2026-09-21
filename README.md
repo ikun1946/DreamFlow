@@ -10,6 +10,41 @@
 
 ---
 
+## 当前状态
+
+> 先看这一段，再看目录和文档。这里是"此刻能不能用、能不能发"的唯一入口。
+
+| 项 | 值 |
+| --- | --- |
+| 当前版本 | `0.27.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
+| 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
+| 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
+| 运行时依赖 | **零 npm 依赖**：后端只用 Node 内置模块，前端是原生 HTML/CSS/JS；`electron` / `electron-builder` 只在打包期用到 |
+| 自动化测试 | **85 个用例**（`npm test`，Node 内置 test runner）：数据安全 22 / 任务逻辑 20 / 构建发布 43 |
+| 统一检查 | `npm run check`（`scripts/check-project.js`，10 节 35 项一致性检查） |
+| 端到端验收 | 网页版 `npm run smoke:web`（连通性）；业务流 `npm run e2e`（53 项断言）；桌面版 `JC_DESKTOP_SMOKE=1`（见「自检」）；CI 双 job 已就位（`.github/workflows/ci.yml`） |
+| 一键回归 | `npm run verify` = `check` + `test` + `build:web` |
+
+**当前已知限制**
+
+- 素材图号表、生成记录快照、积分余额提醒均为**本地单机**语义，不涉及多用户并发与远端同步。
+- 提醒式的积分保护：`creditWarnBelow` 只在**提交前**提醒，不阻断；不保证余额充足。
+- 长时间批量生成依赖本地 `dreamina` 登录态；登录失效需要重新登录后手动续跑。
+- 网页版**没有鉴权**，默认只监听 `127.0.0.1`；`--token` 只在需要给同机其它程序访问时开启。
+
+**发布阻塞项（对外公开分发前必须处理，尚未解决）**
+
+> 完整表述与背景见 `AGENTS.md`「已知发布阻塞项」一节；这里复述为**清单**，避免只藏在文档深处。
+
+1. ~~仓库没有 `LICENSE`~~ → **已补**（`LICENSE` + `THIRD-PARTY-NOTICES.md`，并已写入 `electron-builder.yml` 的 `files` 白名单，随包分发）。
+2. **`dreamina.exe` 未签名、未确认允许再分发** → 因此**不内置**，改为运行时从官方 CDN 下载；"官方是否允许再分发"这一问题**仍未答复**，公开发布前需先确认。
+3. **FFmpeg 是 GPL 构建且单个约 212 MB** → 同样**不内置**，走运行时下载；发布前需确认分发合规路径（当前策略是"只调用、不分发"，边界在进程边界上）。
+4. ~~安装包无代码签名~~ → **已配置**（`electron-builder.yml` 的 `signtoolOptions` + `scripts/check-signing.js` 三模式），但**证书与密码尚未配置**，未配置时构建仍会成功、只是产物无签名；**正式发布必须** `node scripts/check-signing.js --require` 通过。
+5. **干净 Windows 环境验收**：安装包在无 Node、无缓存的干净机器上的**首次安装 / 首启 / 升级 / 卸载**四步，尚未在真实干净环境完整跑过。
+
+---
+
 ## 目录规划
 
 ```
@@ -409,11 +444,45 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-⚠ **本项目不保留自动化测试**（2026-09-20 按用户要求删除，见下方 `0.17.1`）。历史版本里各条变更记录中写的「`node --test server/*.test.js` → N/N 通过」是**当时的真实记录**，不是现在还能跑的命令 —— 那些文件已经不在仓库里了。回归验证现在靠手工验收。
+⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（85 用例）、`npm run check`（35 项一致性检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，53 项断言），以及 `npm run verify` 一键串起。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
 
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.27.0` — 2026-09-21（项目审查整改：P0–P2 全量修复 + 测试与 CI 恢复）
+
+**一次性修复《项目审查与改进清单》列出的全部 16 项问题 + 2 项附加项。** 分五批落地，每批均已实测。
+
+**P0（安全 / 稳定性）**
+
+- **P0-1 更新器文件名路径穿越**（`desktop/updater.js`）：`path.join` 只做字符串拼接、**不做目录约束**，构造出的 `artifactName` 可含 `../` 逃出下载目录。**采用方案 C**：白名单正则 `ARTIFACT_RE`（与 `electron-builder.yml` 的 `artifactName` 同形状）+ 版本一致性校验（文件名里的版本必须等于期望版本），NUL、白名单外命名、版本不符一律拒绝。回归测试含"`path.join` 逃逸实测证据"。
+- **P0-2 安装器启动状态竞争**：Promise **首次 resolve 即定型**，而 `'error'` / `'spawn'` / 超时三条路都可能 resolve，谁先到谁说了算。改为 `finish()` 一次性定型 + `'error'`/`'spawn'`/8 秒超时三路显式收敛。
+- **P0-3 更新流程缺互斥锁**：拆出五态状态机 + `canStartUpdate` + `withUpdateLock`（try/finally 保证释放）+ `inflight` 标记 + `cleanupStaleTemp`（只清本项目超龄 `.part-`，不误删他程序与正式产物）。
+- **P0-4 缺 LICENSE 与第三方声明**：新增 `LICENSE`（专用协议，明确禁止再分发）+ `THIRD-PARTY-NOTICES.md`（六节，边界写清"**只调用、不分发**"，合规依据在**进程边界**而非代码边界）；`package.json` 的 `license` 改为 `SEE LICENSE IN LICENSE`；两者写进 `electron-builder.yml` 的 `files` 随包分发。
+- **P0-5 安装包无代码签名**：`electron-builder.yml` 加 `signAndEditExecutable` + `signtoolOptions`（sha256 / publisherName / RFC3161 时间戳）；新增 `scripts/check-signing.js` 三模式（自检 / `--verify` 逐文件验签 / `--require` 发布卡点）。**证书与密码只走环境变量** `CSC_LINK` + `CSC_KEY_PASSWORD`，绝不入库；未配置时构建仍成功（开发机通路），正式发布必须 `--require` 卡住。
+
+**P1（工程能力）**
+
+- **P1-6 恢复自动化测试**：`test/` 三组共 **85 用例** —— 数据安全 22（路径白名单、项目磁盘隔离、原子写、**`saveNow` 未 load 拒绝写盘**、损坏恢复、迁移幂等）、任务逻辑 20（时长钳制、音频预算、名称分组键、511xx 码表、硬删除全链）、构建发布 43（**P0-1 路径穿越回归**、版本比较、临时文件治理、更新器状态机、外部工具码表、LICENSE 覆盖）。
+- **P1-7 统一检查脚本**：`scripts/check-project.js` 十节 **35 项**（版本一致性、`app/`↔`dist/` 同步、图标、yml 引用、不该入库的文件、更新器配置、画布 CLI 残留、许可声明、工程门禁、旧仓库名残留），`--quiet` 与 exit 1 语义。
+- **P1-8 CI**：`.github/workflows/ci.yml` 双 job —— `check`（Linux/Node 20：check → test → build → **smoke:web** → **e2e**）与 `package`（Windows/Node 20：check → test → `npm run pack` → **桌面版 smoke**，断言退出码 0 且日志含 `[smoke] OK`）。
+- **P1-9 网页版/桌面版验收分离**：新增 `scripts/smoke-web.js`（六节：启动与数据隔离 → 首页 → 接口 → 鉴权 → 边界 → 关停与残留），与桌面版 smoke 各自独立。
+- **P1-10 外部工具缺失行为与错误码**：新增 **511xx 段**（`CLI_NOT_FOUND:51101` / `CLI_NOT_LOGGED_IN:51102` / `CLI_PERMISSION_DENIED:51103` / `FFMPEG_NOT_FOUND:51104` / `FFPROBE_NOT_FOUND:51105`）；`desktop/external-tools.js` 的 `TOOL_CODES` 按工具分组，`toolStatus(found)` 统一四件套（name/path/source/ok/code/action/message）；前后端码表一致性有测试钉住。
+
+**P2（健壮性）**
+
+- **P2-11 旧数据导入**：`writeReport` 落 `backup/import-report-*.txt`，缺失路径完整不截断，文案强调"复制而非搬家"。
+- **P2-12 数据库损坏恢复与 fsync**：原子写补 `fsyncSync`（文件 + 目录）；损坏库**自动从备份恢复**并标记 `recovered=true`；空壳备份不"假成功"；`listBackups` 过滤 `.corrupt-`。
+- **P2-13 彻底删除二次保护**：`hardDeletePreview`（**只读**，确认弹窗能先"看见后果"）→ 归档到 `backup/hard-delete/<id>-<时间>`（**归档失败即中止删除**）→ 删盘 → **删后复核** → 审计留痕。**并修复真实缺陷**：`backupDir` 原先只返回目录名（调用方无从定位，等于"归档了但找不回"），现改为**相对数据根的可定位路径**并新增 `backupName`，前端 toast 与审计日志同步。
+- **P2-14 旧仓库名与版本漂移**：清理旧仓库名残留；`.gitignore` 补 `.test-tmp/`；`docs/项目文档.md` 的版本号由 `0.25.1` 修正为 `0.27.0`。
+- **P2-15 README 顶部当前状态摘要**：新增「当前状态」区块（版本 / 平台 / 运行方式 / 引擎 / 测试与 CI 状态 / 已知限制 / **发布阻塞项**），把原本只藏在 `AGENTS.md` 后面的发布阻塞项提到前部。
+
+**附加项**：附加-1（网页版 `JC_DATA_DIR` 不生效）已修，且 smoke 与 e2e 都有隔离回归断言；附加-2（版本漂移）同 P2-14。
+
+**新增交付物**：`LICENSE`、`THIRD-PARTY-NOTICES.md`、`.github/workflows/ci.yml`、`test/`（helpers + 3 组用例）、`scripts/check-project.js`、`scripts/check-signing.js`、`scripts/smoke-web.js`、`scripts/e2e-flow.js`。
+
+**版本**：仍为 `0.27.0`（本次为审查整改，未新增对外能力、无接口/数据结构变更、无迁移；按"不发版也要登记"的纪律，改动已于本条目留痕）。
 
 #### `0.27.0` — 2026-09-21
 
