@@ -88,6 +88,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 | `desktop/main.js` | Electron 主进程（单实例、窗口、托盘、优雅退出） |
 | `desktop/runtime-paths.js` | 桌面版目录布局唯一事实来源 |
 | `desktop/legacy-import.js` | 旧版数据导入 + 完整性体检 |
+| `desktop/updater.js` | 应用自更新：检查 / 下载 / 校验 / 静默安装 / 自动重启 |
 | `electron-builder.yml` | 安装包配置 |
 
 ## 数据放在哪（桌面版）
@@ -113,6 +114,23 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 
 - **"装没装"要看 spawn 能不能起来**，不能看某个文件在不在。曾经读 `~/.dreamina_cli/version.json` 判断，结果 exe 不存在时照样报"已安装但未登录"，把用户引去查登录问题。
 - **版本号有两个来源，不要混用**：exe 自己报的是 commit（`dreamina version` → `ec1b9fa`），官方 `version.json` 报的是语义版本（`1.4.18`）。前者是"本机在跑的构建"，后者是"官方当前发布版"。
+
+## 应用内更新（改动前必读）
+
+桌面版能在应用内完成更新：**检查 → 下载 → 校验 → 静默安装 → 自动重启**。实现在 `desktop/updater.js`；界面在设置抽屉的「应用更新」卡片，另有托盘菜单入口。
+
+**为什么不用 electron-updater**：自更新需要的只有"知道最新版、下载、调安装器"三件事，而 electron-builder 的 NSIS 安装器**本来就支持**这三个开关（依据：`NsisTarget.js` 里的 `flags(["updated","force-run",...])`）。本仓库坚持零运行时依赖，不为此再引一个。
+
+**四条不能破的约束**：
+
+1. **只接受 https**（本地目录模式除外）。更新源是用户可配的；允许 http 就等于让链路上任何人替换"最新版是什么" —— 而那个结果是**会被执行的 exe**。
+2. **下载后必须校验 sha512**。`latest.yml` 里带着 electron-builder 生成的哈希，边下边算（不额外读一遍磁盘）；校验不过就丢弃，**绝不交给安装器**。
+3. **安装器必须用 `/S --updated --force-run` 调起**，三个都不能少：少 `--updated` 可能删掉用户数据（安装脚本明确依赖它）；少 `--force-run` 用户装完看不到任何变化（辅助式安装器只在"静默 + force-run"时才重启）；少 `/S` 会弹安装界面。
+4. **令牌只进不出**。`update:setSource` 接受令牌，但 `update:status` 只回传 `hasToken` 布尔值 —— 不把已存的密钥回传给页面；跨域重定向时丢掉 `Authorization` 头（GitHub 附件下载会 302 到对象存储）。
+
+**更新源三种模式**：`github`（默认，**私有库必须配令牌**）/ `url`（公开 CDN 或自建静态站）/ `local`（离线、内网、开发机自测）。local 模式也要走"复制 + 校验"，不能直接执行源文件 —— 校验与实际执行之间不能留时间窗。
+
+**自动化测试真实应用时的坑**（2026-09-21 踩到）：必须先让 `desktop-config.json` 里 `legacyImportChecked: true`，否则首次启动会弹**旧数据导入对话框**并阻塞窗口创建。表现是调试端口 `/json` 一直返回 0 个目标、应用日志停在"外部工具"那一行 —— 看起来像"应用起不来"，实际是在等用户点按钮。
 
 ## 已知发布阻塞项（**尚未解决**）
 

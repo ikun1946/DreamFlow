@@ -162,6 +162,10 @@
     /* 创作 CLI 的安装/更新状态（来自 GET /system/cli，见 server/cli-installer.js）。
        null = 还没拉到；拉失败也保持 null，界面退回"不显示安装向导"而不是报错。 */
     cliInfo: null,
+    /* 桌面版的应用更新状态（来自 window.JCDesktop.updateStatus）。
+       网页版没有这个区块 —— 网页版的"更新"是在项目目录 git pull 后重启服务，
+       不是应用内安装。 */
+    appUpdate: null,
     settingsDirty: false,   // 抽屉本次打开期间用户是否已改动过设置（"先显示后刷新"的守卫）
     cliHint: null,          // 后端给的"下一步怎么做"提示（如手工执行 dreamina relogin）
     dCliUrl: null, dCliCode: null,   // 创作 CLI（dreamina）的授权链接与设备码，独立存放
@@ -4550,6 +4554,14 @@
       ]);
       if (ad) S.adapter = ad;
       if (ci) S.cliInfo = ci;
+      /* 应用更新状态（只有桌面版有）。和上面几项一样单独失败即可 ——
+         任何一项取不到都不该让整个设置抽屉打不开。
+         合并时保留本地 UI 状态（showCfg / busy / error），只覆盖主进程给的字段。 */
+      const J = window.JCDesktop;
+      if (J && J.updateStatus) {
+        const us = await J.updateStatus().catch(() => null);
+        if (us) S.appUpdate = Object.assign({ showCfg: false }, S.appUpdate || {}, us);
+      }
       /* 抽屉这时已经可交互了：如果用户在等待期间改过任何设置项，就别拿服务端的旧值盖回去，
          否则他的修改会当场回退（"先显示、后刷新"必须配这个守卫）。 */
       if (st && !S.settingsDirty) S.settings = st;
@@ -4672,6 +4684,101 @@
       (info.updateNote ? esc(info.updateNote) + '。' : '') +
       '点「更新创作 CLI」即可就地替换，旧版会自动备份保留。' +
       '</span></span></div>';
+  }
+
+  /* ---------------- 应用更新（仅桌面版） ----------------
+     桌面版能在应用内完成更新：检查 → 下载 → 校验 → 静默安装 → 自动重启。
+     网页版不渲染这个区块（网页版的"更新"是在项目目录 git pull 后重启服务，
+     不是应用内安装 —— 别把两件事混在一起说）。
+     真正的实现在 desktop/updater.js；这里只负责渲染与派发。 */
+  function appUpdateHTML() {
+    if (!(window.JCDesktop && window.JCDesktop.updateStatus)) return '';
+    const u = S.appUpdate || {};
+    const busy = u.busy || null;
+    const dis = busy ? ' disabled' : '';
+    const src = u.source || {};
+    const provName = { github: 'GitHub Releases', url: '自定义 URL', local: '本地目录' }[src.provider] || src.provider || '—';
+    const p = u.progress;
+
+    let state = '';
+    if (u.installing) {
+      state = '<div class="statecard" style="background:var(--primary-bg);color:var(--ink80)">' + I.warn +
+        '<span>正在安装更新，应用即将自动重启…<span class="hint-sm" style="display:block">安装器已经拉起，本窗口马上会关闭。重启后就是新版本。</span></span></div>';
+    } else if (p && p.active) {
+      const pct = p.total ? Math.floor(p.got / p.total * 100) : 0;
+      state = '<div class="statecard" style="background:var(--primary-bg);color:var(--ink80)">' + I.warn +
+        '<span>正在下载 ' + esc(String(p.version || '')) + '　<b>' + pct + '%</b>（' + (p.got / 1048576).toFixed(1) + ' MB' +
+        (p.total ? ' / ' + (p.total / 1048576).toFixed(1) + ' MB' : '') + '）' +
+        '<span class="hint-sm" style="display:block">下载完会自动校验 sha512、静默安装并重启。请勿关闭窗口。</span></span></div>';
+    } else if (u.error) {
+      state = '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
+        '<span>' + esc(u.error) +
+        (u.needsToken ? '<span class="hint-sm" style="display:block">本仓库是私有库，匿名读不到 release。在下面的「更新源设置」里填一个只读访问令牌即可；也可以改用本地目录或自定义 URL 更新源。</span>' : '') +
+        '</span></div>';
+    } else if (u.lastCheck && u.lastCheck.ok) {
+      state = u.lastCheck.hasUpdate
+        ? '<div class="statecard" style="background:var(--primary-bg);color:var(--ink80)">' + I.warn +
+          '<span>发现新版本 <b>' + esc(String(u.lastCheck.latestVersion)) + '</b>' +
+          '<span class="hint-sm" style="display:block">当前 ' + esc(String(u.lastCheck.currentVersion)) + ' → 新版本 ' +
+          esc(String(u.lastCheck.latestVersion)) + '。点「下载并安装」会自动完成：下载 → 校验 → 静默安装 → 重启应用。' +
+          '你的数据都在安装目录之外，不受影响。</span></span></div>'
+        : '<div class="statecard ok">' + I.check + '<span>已是最新版（' + esc(String(u.lastCheck.currentVersion)) + '）</span></div>';
+    }
+
+    const canInstall = !!(u.lastCheck && u.lastCheck.ok && u.lastCheck.hasUpdate) && !busy && !u.installing;
+    const btns = canInstall
+      ? '<button class="btn-mini btn-mini-cta" data-updact="install">下载并安装 ' + esc(String(u.lastCheck.latestVersion)) + '</button>'
+      : '<button class="btn-mini" data-updact="check"' + dis + '>' + (busy === 'check' ? '检查中…' : '检查更新') + '</button>';
+
+    return '<section class="scard">' +
+      '<div class="scard-hd"><div class="scard-hd-t"><h3>应用更新</h3>' +
+      '<p>桌面版可在应用内完成更新：下载 → 校验 → 静默安装 → 自动重启</p></div></div>' +
+      '<div class="scard-bd">' +
+        '<div class="statecard">' + I.check +
+          '<span>当前版本 <b>' + esc(String(u.version || '?')) + '</b>　·　更新源 ' + esc(provName) +
+          (src.provider === 'github'
+            ? '（<code>' + esc(String(src.owner || '') + '/' + String(src.repo || '')) + '</code>' + (src.hasToken ? '，已配置令牌' : '，<b>未配置令牌</b>') + '）'
+            : '') +
+          '</span></div>' +
+        state +
+        '<div class="cli-actions">' + btns +
+          '<button class="btn-mini" data-updact="togglecfg">' + (u.showCfg ? '收起更新源设置' : '更新源设置…') + '</button>' +
+        '</div>' +
+        (u.showCfg ? appUpdateCfgHTML(src) : '') +
+      '</div></section>';
+  }
+
+  /* 更新源设置。⚠ 令牌输入框**永远不回填已存的值**：主进程只回传 hasToken，
+     所以这里只提示"已配置/未配置"，用户想换就重新粘一个 —— 不把密钥在页面上再写一遍。 */
+  function appUpdateCfgHTML(src) {
+    const s = src || {};
+    const opt = (v, label) => '<option value="' + v + '"' + (s.provider === v ? ' selected' : '') + '>' + label + '</option>';
+    let fields = '';
+    if (s.provider === 'url') {
+      fields = '<div class="srow"><label>更新源地址</label>' +
+        '<input id="updUrl" type="text" placeholder="https://example.com/updates" value="' + esc(String(s.url || '')) + '">' +
+        '<p class="hint-sm">该地址下要有 <code>latest.yml</code> 和安装包（就是 <code>npm run dist</code> 在 <code>release/</code> 里产出的那两个文件）。必须是 https。</p></div>';
+    } else if (s.provider === 'local') {
+      fields = '<div class="srow"><label>本地目录</label>' +
+        '<input id="updDir" type="text" placeholder="D:\\jimeng-release" value="' + esc(String(s.dir || '')) + '">' +
+        '<p class="hint-sm">指向一个含 <code>latest.yml</code> 和安装包的目录 —— 适合离线/内网，或者"我刚打完包，让装好的应用直接升级"。</p></div>';
+    } else {
+      fields = '<div class="srow"><label>仓库</label>' +
+        '<input id="updOwner" type="text" placeholder="owner" value="' + esc(String(s.owner || '')) + '" style="max-width:150px">' +
+        '<input id="updRepo" type="text" placeholder="repo" value="' + esc(String(s.repo || '')) + '" style="max-width:190px"></div>' +
+        '<div class="srow"><label>访问令牌</label>' +
+        '<input id="updToken" type="password" placeholder="' + (s.hasToken ? '已配置（留空则不修改）' : '私有库必填；公有库可留空') + '">' +
+        '<p class="hint-sm">本仓库是私有的，需要令牌才读得到 release。建议用<b>细粒度 PAT</b>：只勾这一个仓库的 <code>Contents: Read</code>。令牌只存在本机配置文件里，不会进安装包。</p></div>';
+    }
+    return '<div class="sblock" style="margin-top:10px">' +
+      '<div class="sblock-hd"><b>更新源设置</b></div>' +
+      '<div class="srow"><label>更新源</label><select id="updProvider">' +
+        opt('github', 'GitHub Releases') + opt('url', '自定义 URL') + opt('local', '本地目录') +
+      '</select></div>' +
+      fields +
+      '<div class="cli-actions"><button class="btn-mini" data-updact="savecfg">保存更新源</button>' +
+      '<button class="btn-mini" data-updact="recheck">保存并检查更新</button></div>' +
+      '</div>';
   }
 
   /* 按钮：按"当前该做什么"决定给哪几个 —— 没装就只给安装，别拿登录按钮干扰 */
@@ -4814,6 +4921,87 @@
     S.cliBusy = null;
     renderSettings();
   }
+  /* ---------------- 应用更新的动作派发 ----------------
+     桌面版走 IPC（window.JCDesktop）；网页版没有这个能力，函数会直接返回。 */
+  async function runUpdateAction(kind) {
+    const J = window.JCDesktop;
+    if (!J || !J.updateCheck) return;
+    const u = () => (S.appUpdate = S.appUpdate || {});
+
+    if (kind === 'togglecfg') { u().showCfg = !u().showCfg; renderSettings(); return; }
+
+    /* 保存更新源。⚠ 令牌留空 = **不修改**（不是清空）—— 界面不回填已存的密钥，
+       用户不重新粘贴就应当保持原样。要清空得显式删掉配置文件里那一项。 */
+    if (kind === 'savecfg' || kind === 'recheck') {
+      const prov = ($('#updProvider') && $('#updProvider').value) || 'github';
+      const patch = { provider: prov };
+      if (prov === 'github') {
+        if ($('#updOwner')) patch.owner = $('#updOwner').value.trim();
+        if ($('#updRepo')) patch.repo = $('#updRepo').value.trim();
+        const tk = $('#updToken') && $('#updToken').value.trim();
+        if (tk) patch.token = tk;
+      } else if (prov === 'url') {
+        if ($('#updUrl')) patch.url = $('#updUrl').value.trim();
+      } else {
+        if ($('#updDir')) patch.dir = $('#updDir').value.trim();
+      }
+      try {
+        const src = await J.updateSetSource(patch);
+        if (src) u().source = src;
+        u().error = null;
+        toast('更新源已保存', 'ok');
+      } catch (e) { u().error = errText(e); }
+      renderSettings();
+      if (kind === 'recheck') return runUpdateAction('check');
+      return;
+    }
+
+    if (kind === 'check') {
+      u().busy = 'check'; u().error = null; u().lastCheck = null; renderSettings();
+      try {
+        const r = await J.updateCheck();
+        u().lastCheck = r;
+        u().needsToken = !!(r && r.needsToken);
+        if (r && !r.ok) u().error = r.error;
+      } catch (e) { u().error = errText(e); }
+      u().busy = null;
+      renderSettings();
+      return;
+    }
+
+    if (kind === 'install') {
+      u().busy = 'download'; u().error = null; renderSettings();
+      /* 下载是长请求（100+ MB），另开轮询显示百分比。只改按钮文案，不整块重绘 ——
+         整块重绘会把用户正在看的内容刷掉。 */
+      const timer = setInterval(async () => {
+        try {
+          const st = await J.updateStatus();
+          S.appUpdate.progress = st.progress;
+          const el = document.querySelector('[data-updact="install"]');
+          if (el && st.progress && st.progress.active) {
+            const pct = st.progress.total ? Math.floor(st.progress.got / st.progress.total * 100) : 0;
+            el.textContent = '下载中 ' + pct + '%（' + (st.progress.got / 1048576).toFixed(1) + ' MB）…';
+          }
+        } catch (e) { /* 进度查询失败不影响下载本身 */ }
+      }, 800);
+      try {
+        const d = await J.updateDownload();
+        clearInterval(timer);
+        if (!d.ok) {
+          u().error = d.error; u().busy = null; u().needsToken = !!d.needsToken; renderSettings(); return;
+        }
+        /* 下载并校验通过 → 拉起安装器。应用会在约 800ms 后自行退出，
+           安装器接手替换文件并重启，所以这里之后不需要再更新界面。 */
+        u().installing = true; u().busy = null; renderSettings();
+        await J.updateInstall();
+      } catch (e) {
+        clearInterval(timer);
+        u().error = errText(e); u().busy = null; renderSettings();
+      }
+      return;
+    }
+  }
+
   /* 模型下拉：单引擎后只有一组，但保留 optgroup 结构以兼容后端的 modelGroups 字段。
      禁用项在选项文字里带上原因。 */
   function modelOptionsHTML(o, current) {
@@ -5036,6 +5224,8 @@
           (S.cliRaw ? '<details class="cmd-details"><summary>CLI 原始输出（解析授权材料失败时照此手工完成）</summary>' +
             '<div class="codebox">' + esc(S.cliRaw) + '</div></details>' : '') +
         '</div>' +
+        /* —— 应用更新：只有桌面版渲染（网页版没有应用内更新）—— */
+        appUpdateHTML() +
       '</section>';
   }
 
@@ -5357,6 +5547,9 @@
     $('#settingsBody').addEventListener('click', (e) => {
       const cliact = e.target.closest('[data-cliact]');
       if (cliact) { runCliAction(cliact.dataset.cliact); return; }
+      /* 应用更新（仅桌面版会渲染出这些按钮） */
+      const updact = e.target.closest('[data-updact]');
+      if (updact) { runUpdateAction(updact.dataset.updact); return; }
       const dl = e.target.closest('[data-sdl]');
       if (dl) {
         const v = dl.dataset.sdl;
@@ -5389,6 +5582,20 @@
     });
     // 默认参数下拉：change 即改本地状态，「保存设置」时统一 PUT
     $('#settingsBody').addEventListener('change', (e) => {
+      /* 更新源下拉：切换后立即保存并重绘 —— 三种源的字段完全不同，
+         不重绘用户就看不到该填什么。 */
+      if (e.target.id === 'updProvider') {
+        const J = window.JCDesktop;
+        if (J && J.updateSetSource) {
+          S.appUpdate = S.appUpdate || {};
+          S.appUpdate.showCfg = true;
+          J.updateSetSource({ provider: e.target.value }).then((src) => {
+            if (src) S.appUpdate.source = src;
+            renderSettings();
+          }).catch(() => renderSettings());
+        }
+        return;
+      }
       const sel = e.target.closest('select[data-set]');
       if (!sel || !S.settings || !S.settings.defaults) return;
       const k = sel.dataset.set;

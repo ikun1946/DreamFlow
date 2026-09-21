@@ -18,7 +18,14 @@ const api = {
   openDataDir: () => ipcRenderer.invoke('app:openDataDir'),
   openLogs: () => ipcRenderer.invoke('app:openLogs'),
   showItemInFolder: (p) => ipcRenderer.invoke('shell:showItem', p),
-  openExternal: (u) => ipcRenderer.invoke('shell:openExternal', u)
+  openExternal: (u) => ipcRenderer.invoke('shell:openExternal', u),
+  /* 应用自更新。同样是具名动作：页面不能借它做别的事。
+     ⚠ setUpdateSource 的入参在主进程侧走白名单，这里不做信任假设。 */
+  updateStatus: () => ipcRenderer.invoke('update:status'),
+  updateCheck: () => ipcRenderer.invoke('update:check'),
+  updateDownload: () => ipcRenderer.invoke('update:download'),
+  updateInstall: () => ipcRenderer.invoke('update:install'),
+  updateSetSource: (patch) => ipcRenderer.invoke('update:setSource', patch)
 };
 
 contextBridge.exposeInMainWorld('JCDesktop', api);

@@ -24,6 +24,7 @@ const logger = require('./logger');
 const rpaths = require('./runtime-paths');
 const toolsMod = require('./external-tools');
 const legacyMod = require('./legacy-import');
+const updaterMod = require('./updater');
 const runtime = require('../server/runtime');
 
 const APP_ID = 'com.ikun1946.jimengconsole';
@@ -96,6 +97,7 @@ function buildTrayMenu() {
     { label: '打开日志目录', click: () => shell.openPath(paths.logsDir) },
     { label: '环境检测', click: () => showEnvironment() },
     { label: '从旧版导入数据…', click: () => runLegacyImport() },
+    { label: '检查更新…', click: () => checkForUpdatesFromTray() },
     { type: 'separator' },
     { label: '退出', click: () => requestQuit() }
   ]);
@@ -576,6 +578,101 @@ function createTray() {
   }
 }
 
+/* ---------------- 应用自更新 ----------------
+   实现全在 updater.js（取元数据 → 下载 → 校验 → 调安装器）；这里只负责
+   "拿配置、把结果接到界面和托盘"。 */
+let pendingInstaller = null;   // 已下载待安装的安装包路径（下载与安装是两步）
+let lastCheck = null;
+
+function updateSource() {
+  const c = (paths && paths.config && paths.config.updates) || {};
+  return updaterMod.resolveSource(c);
+}
+
+function setUpdateSource(patch) {
+  if (!paths) return null;                     // 还没 boot 完就调用：直接忽略，别抛
+  const cur = (paths.config && paths.config.updates) || {};
+  const next = Object.assign({}, cur, patch || {});
+  rpaths.saveConfig(paths, { updates: next });
+  if (paths.config) paths.config.updates = next;
+  return next;
+}
+
+/* 给渲染进程看的更新源：**不含令牌本身**，只说"配没配"。
+   界面需要让用户能设置令牌，但没必要把已存的密钥回传给页面。 */
+function publicSource() {
+  const s = updateSource();
+  return {
+    provider: s.provider, owner: s.owner, repo: s.repo,
+    url: s.url, dir: s.dir, hasToken: !!s.token
+  };
+}
+
+async function doCheckUpdates() {
+  lastCheck = await updaterMod.check(app.getVersion(), updateSource());
+  console.log('[desktop] 检查更新：' + JSON.stringify({
+    ok: lastCheck.ok, latest: lastCheck.latestVersion, hasUpdate: lastCheck.hasUpdate, error: lastCheck.error
+  }));
+  return lastCheck;
+}
+
+async function doDownloadUpdate() {
+  const dir = path.join(app.getPath('temp'), 'jimeng-update');
+  const r = await updaterMod.download(app.getVersion(), updateSource(), dir);
+  if (r.ok) pendingInstaller = r.path;
+  console.log('[desktop] 下载更新：' + JSON.stringify({ ok: r.ok, path: r.path, error: r.error }));
+  return r;
+}
+
+async function doInstallUpdate() {
+  if (!pendingInstaller) return { ok: false, error: '还没有下载好更新包' };
+  const r = await updaterMod.install(pendingInstaller);
+  if (!r.ok) return r;
+  /* ⚠ 安装器是 detached 拉起的，立刻 app.quit() 有时会让它还没站稳就被回收。
+     留 800ms 让它起来，再退出 —— 安装器会等本进程退出后替换文件。 */
+  setTimeout(() => { quitting = true; app.quit(); }, 800);
+  return { ok: true, path: pendingInstaller };
+}
+
+/* 托盘入口：检查完用对话框把结果说清楚，并支持"下载并安装" */
+async function checkForUpdatesFromTray() {
+  const r = await doCheckUpdates();
+  if (!r.ok) {
+    await dialog.showMessageBox(win || null, {
+      type: 'warning', title: '检查更新失败', message: '没能取到更新信息',
+      detail: r.error + (r.needsToken
+        ? '\n\n提示：本仓库是私有库，需要在设置里填一个只读访问令牌；也可以改用本地目录或自定义 URL 更新源。'
+        : ''),
+      buttons: ['好']
+    });
+    return;
+  }
+  if (!r.hasUpdate) {
+    await dialog.showMessageBox(win || null, {
+      type: 'info', title: '已是最新版', message: '当前版本 ' + r.currentVersion + ' 已是最新。', buttons: ['好']
+    });
+    return;
+  }
+  const pick = await dialog.showMessageBox(win || null, {
+    type: 'question', title: '发现新版本',
+    message: '有新版本可用：' + r.latestVersion,
+    detail: '当前 ' + r.currentVersion + ' → 新版本 ' + r.latestVersion + '\n\n'
+      + '点「下载并安装」后自动完成：下载 → 校验 → 静默安装 → 重启应用。\n'
+      + '你的数据（项目、素材、视频）都在安装目录之外，不受影响。',
+    buttons: ['下载并安装', '以后再说'], defaultId: 0, cancelId: 1
+  });
+  if (pick.response !== 0) return;
+
+  const d = await doDownloadUpdate();
+  if (!d.ok) {
+    await dialog.showMessageBox(win || null, {
+      type: 'error', title: '下载失败', message: '没能下载更新包', detail: d.error, buttons: ['好']
+    });
+    return;
+  }
+  await doInstallUpdate();
+}
+
 /* ---------------- IPC（preload 暴露的最小面） ---------------- */
 function insideDataDir(p) {
   try {
@@ -604,6 +701,29 @@ ipcMain.handle('shell:showItem', (e, p) => {
   return true;
 });
 ipcMain.handle('shell:openExternal', (e, u) => { openExternalSafely(u); return true; });
+
+/* 应用自更新。⚠ 令牌**只进不出**：update:setSource 接受它，
+   但 update:status / setSource 的返回值都只给 hasToken 布尔值，
+   不把已存的令牌回传给页面。 */
+ipcMain.handle('update:status', () => ({
+  version: app.getVersion(),
+  source: publicSource(),
+  progress: updaterMod.progressOf(),
+  lastCheck,
+  hasPendingInstaller: !!pendingInstaller
+}));
+ipcMain.handle('update:check', () => doCheckUpdates());
+ipcMain.handle('update:download', () => doDownloadUpdate());
+ipcMain.handle('update:install', () => doInstallUpdate());
+ipcMain.handle('update:setSource', (e, patch) => {
+  /* 白名单：渲染进程只能改这几个键，避免往配置文件里塞任意内容 */
+  const allow = {};
+  ['provider', 'owner', 'repo', 'token', 'url', 'dir'].forEach((k) => {
+    if (patch && patch[k] !== undefined) allow[k] = String(patch[k]);
+  });
+  const next = setUpdateSource(allow);
+  return next ? publicSource() : null;
+});
 
 /* ---------------- 生命周期 ---------------- */
 const gotLock = app.requestSingleInstanceLock();
