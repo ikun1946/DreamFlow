@@ -145,6 +145,16 @@ function scopeStoryboards(db, scope) {
   return db.storyboards.filter((s) => s && s.workspaceId === scope.workspaceId);
 }
 
+/* 本项目**全部**分镜（跨工作区）。
+   ⚠ 和 scopeStoryboards 的区别很重要：那个按 workspace 收敛，只覆盖当前分镜表。
+   素材是**项目级**的（没有 workspaceId —— schema.js 里指令 §11 明确不加），它的绑定
+   可能散落在同项目的多张分镜表里，所以"解除某个素材的全部绑定"必须用这个。
+   2026-09-21 加：做「素材改类型」时发现的。当时 deleteAsset 用的是 scopeStoryboards，
+   同项目其它分镜表里的引用会留下**悬空 assetId**（分镜引着一个已不存在的素材）。 */
+function projectStoryboards(db, scope) {
+  return db.storyboards.filter((s) => s && s.projectId === scope.projectId);
+}
+
 /* 按 id 取分镜，并**校验它在本作用域内**。
    不在作用域内一律按"不存在"处理（404 而不是 403）—— 不泄露别的项目里是否存在这个 id。 */
 function findScopedSb(db, id, scope) {
@@ -1483,9 +1493,11 @@ function deleteAsset(db, id, scope) {
   /* 只能删本项目的素材（指令 §29）。跨项目删除必须拒绝。 */
   const a = findScopedAsset(db, id, scope);
   db.assets = db.assets.filter((x) => x.id !== id);
-  /* 解绑引用。⚠ 只遍历**本项目**的分镜即可 —— 跨项目绑定在 bindAsset 处已被拒绝，
-     所以其它项目不可能引用这个素材。这里仍按工作区收敛一次，避免"万一"改写别处数据。 */
-  scopeStoryboards(db, scope).forEach((s) => { s.assets = (s.assets || []).filter((r) => r.assetId !== id); });
+  /* 解绑引用：必须遍历**本项目全部分镜**（跨工作区）。
+     跨项目绑定在 bindAsset 处已被拒绝，所以别的项目不可能引用它；但同一个项目的
+     **其它分镜表**完全可能引用 —— 用工作区级的 scopeStoryboards 会把那些引用
+     留成悬空 assetId（分镜引着一个已不存在的素材）。2026-09-21 修正。 */
+  projectStoryboards(db, scope).forEach((s) => { s.assets = (s.assets || []).filter((r) => r.assetId !== id); });
   // 删除本地文件（url 形如 /media/assets/as_xxx.png）
   const file = PATHS.assetFileOf(a);
   if (file) { try { fs.unlinkSync(file); } catch (e) { /* 文件可能已不存在 */ } }
@@ -1493,14 +1505,64 @@ function deleteAsset(db, id, scope) {
   return { deleted: id };
 }
 
-/* 素材设置：更新（名称 / 文生图提示词；两者至少传一项，只更新传了的部分）
-   —— prompt 用于素材详情弹窗的提示词编辑：先有提示词占位资产，图后补 */
+/* 素材被哪些分镜引用（**项目级**，跨工作区）。
+   为什么单独开一个查询：改类型前要告诉用户"会影响 N 条分镜"，而 listAssets 只在传了
+   inShotId 时才计算引用、且只看那一条分镜 —— 前端拿不到准确数字，只能看到当前分镜表。
+   只回最多 20 条短标签用于提示，不把整棵分镜对象发出去。 */
+function assetUsage(db, id, scope) {
+  const a = findScopedAsset(db, id, scope);
+  const label = (s) => {
+    const p = String(s.prompt || '').trim().replace(/\s+/g, ' ');
+    return p ? p.slice(0, 30) : ('分镜 #' + (s.seq != null ? s.seq : ''));
+  };
+  const hits = [];
+  projectStoryboards(db, scope).forEach((s) => {
+    if ((s.assets || []).some((r) => r.assetId === id)) hits.push({ id: s.id, name: label(s) });
+  });
+  return { assetId: a.id, count: hits.length, storyboards: hits.slice(0, 20) };
+}
+
+/* 素材设置：更新（名称 / 文生图提示词 / 类型；至少传一项，只更新传了的部分）
+   —— prompt 用于素材详情弹窗的提示词编辑：先有提示词占位资产，图后补
+   —— type 用于**纠正分类**（2026-09-21 加）：导入图片时的类型取的是"当时所在页签"，
+      页签默认「角色」，于是场景/道具的图很容易被堆进角色分类。 */
 function updateAsset(db, id, body, scope) {
   const a = findScopedAsset(db, id, scope);
   body = body || {};
   const hasName = body.name !== undefined;
   const hasPrompt = body.prompt !== undefined;
-  if (!hasName && !hasPrompt) throw new ApiError(ERR.PARAM, '至少提供 name 或 prompt 之一');
+  const hasType = body.type !== undefined;
+  if (!hasName && !hasPrompt && !hasType) throw new ApiError(ERR.PARAM, '至少提供 name / prompt / type 之一');
+
+  /* 类型放在最前面处理：不合法就直接抛，不留下"改了一半"的状态。 */
+  let unbound = 0;
+  if (hasType) {
+    const type = String(body.type || '').trim();
+    const kind = ASSET_TYPE_KIND[type];
+    if (!kind) {
+      throw new ApiError(ERR.PARAM, '素材类型不合法：' + type + '（支持 ' + Object.keys(ASSET_TYPE_KIND).join('/') + '）');
+    }
+    /* ⚠ 只能在**同 kind** 内改类型：kind 决定磁盘上是什么文件、有没有时长与缩略图。
+       把一张 PNG 标成 audio，后面所有按 kind 分支的逻辑都会走错路。 */
+    if (kind !== ASSET_TYPE_KIND[a.type]) {
+      const nm = (k) => (k === 'audio' ? '音频' : '图片');
+      throw new ApiError(ERR.PARAM, '不能把' + nm(ASSET_TYPE_KIND[a.type]) + '素材改成' + nm(kind) + '类型（' + a.type + ' → ' + type + '）');
+    }
+    if (type !== a.type) {
+      /* ⚠ 分镜的绑定是 [{assetId, role}]，而 **role 就是素材类型**。类型一变，旧绑定
+         立刻变成"槽位与类型不符"的脏数据（一个道具挂在角色槽里）。所以改类型必须
+         一并解绑。返回解绑**条数**，界面据此在动手之前就告诉用户会影响哪些分镜。
+         用项目级遍历：素材是项目级的，绑定可能散落在同项目的多张分镜表里。 */
+      projectStoryboards(db, scope).forEach((s) => {
+        const before = (s.assets || []).length;
+        s.assets = (s.assets || []).filter((r) => r.assetId !== id);
+        unbound += before - s.assets.length;
+        if (s.assets.length !== before) s.dirty = true;
+      });
+      a.type = type;
+    }
+  }
+
   if (hasName) {
     const name = String(body.name || '').trim();
     if (!name) throw new ApiError(ERR.PARAM, '素材名称不能为空');
@@ -1514,7 +1576,8 @@ function updateAsset(db, id, body, scope) {
   }
   a.updatedAt = nowIso();
   store.save();
-  return viewAsset(a);
+  /* unbound 只在真的解绑过时才出现 —— 界面用它给"改类型会解除 N 条绑定"的结果提示 */
+  return unbound ? Object.assign(viewAsset(a), { unbound }) : viewAsset(a);
 }
 
 /* 素材设置：更换文件（保留素材 id 与全部分镜绑定，只替换磁盘文件与访问地址）
@@ -2209,7 +2272,7 @@ module.exports = {
   META, DEFAULT_SETTINGS, splitSegments, stats,
   listStoryboards, getProgress, getStoryboard, createStoryboard, patchStoryboard,
   batchDuration, batchSubmit, cancel, retry, batchDelete, reorder,
-  listAssets, createAsset, createAssetMeta, deleteAsset, updateAsset, replaceAsset, bindAsset, unbindAsset, autoMatchAssets, autoDuration, importPreview, importConfirm, dryRunStoryboard, importAssetPrompts,
+  listAssets, createAsset, createAssetMeta, deleteAsset, updateAsset, assetUsage, replaceAsset, bindAsset, unbindAsset, autoMatchAssets, autoDuration, importPreview, importConfirm, dryRunStoryboard, importAssetPrompts,
   getSettings, putSettings, resetSettings, getOptions, adapterStatus, adapterCheck,
   cliStatus, cliInstall,
   adapterDreaminaLogin, adapterDreaminaSwitch,

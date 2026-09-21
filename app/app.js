@@ -642,6 +642,14 @@
         '<button class="btn-mini" data-assetact="all"' + (total && n < total ? '' : ' disabled') + '>全选</button>' +
         '<button class="btn-mini" data-assetact="invert"' + (total ? '' : ' disabled') + ' title="反选：已选变未选、未选变已选">反选</button>' +
         '<button class="btn-mini" data-assetact="none"' + (n ? '' : ' disabled') + '>清空选择</button>' +
+        /* 批量改类型（2026-09-21）：导入图片时类型取的是"当时所在页签"，很容易把场景/道具的图
+           堆进角色分类。修这类历史错分类，一个个点开太慢 —— 这里给一条批量路径。
+           音频只有一种类型，不显示。 */
+        (n && S.panelTab !== 'audio'
+          ? '<select class="btn-mini" id="bbTypeSel" title="把已选素材改成这个类型">' +
+            ['character', 'scene', 'prop', 'firstFrame', 'storyboard'].map((t) => '<option value="' + t + '">' + esc(ASSET_TAB_LABEL[t]) + '</option>').join('') +
+            '</select><button class="btn-mini" data-assetact="retype"' + (S.assetBusy ? ' disabled' : '') + '>设为该类型</button>'
+          : '') +
         '<button class="btn-mini btn-danger" data-assetact="del"' + (S.assetBusy || !n ? ' disabled' : '') + '>' + (S.assetBusy === 'del' ? '删除中…' : '删除所选' + (n ? '（' + n + '）' : '')) + '</button>' +
         '<button class="btn-primary" data-assetact="exit">完成</button>' +
       '</div>';
@@ -909,10 +917,10 @@
     return assetIndexPending;
   }
 
-  async function planFiles(files) {
-    const lib = await loadAllAssets();
-    const byKey = new Map();
-    lib.forEach((a) => {
+ async function planFiles(files) {
+   const lib = await loadAllAssets();
+   const byKey = new Map();
+   lib.forEach((a) => {
       const k = normAssetKey(a.name);
       const cur = byKey.get(k);
       // 优先无图资产参与匹配；都无图 / 都有图时取最新（listAssets 已按 createdAt 倒序）
@@ -924,34 +932,60 @@
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(f);
     }
-    const plan = { autoFill: [], conflicts: [], plain: [], dupNew: [] };
+    /* 返回**逐行**计划（每个唯一文件名一行），行上带自动匹配结果与可改的决策：
+         matched   自动匹配到的资产（精确同名；null = 没匹配上）
+         type      仅「新增」用：落库类型（默认当前页签，预览里可改）
+         link      仅「未匹配」用：手动关联到的资产（null = 不关联，走新增）
+         dupFiles  批次内同名文件（一律并存为新增，不参与决策）
+       顺带把全库素材一起返回 —— 预览的「关联」下拉要用它列候选。
+       ⚠ 匹配规则**没变**，仍是精确同名（见上方注释）；变的是"结果先给人看、可改"。 */
+    const rows = [];
     for (const fs of groups.values()) {
-      const asset = byKey.get(normAssetKey(fileBaseName(fs[0])));
-      if (!asset) plan.plain.push(fs[0]);
-      else if (!asset.url) plan.autoFill.push({ file: fs[0], asset });
-      else plan.conflicts.push({ file: fs[0], asset });
-      for (let i = 1; i < fs.length; i++) plan.dupNew.push(fs[i]);
+      rows.push({
+        file: fs[0],
+        matched: byKey.get(normAssetKey(fileBaseName(fs[0]))) || null,
+        type: S.imp.impType || S.panelTab,
+        link: null,
+        dupFiles: fs.slice(1)
+      });
     }
-    return plan;
+    return { rows, lib };
   }
 
-  async function executeImportPlan(plan, conflictAction) {
-    const type = S.imp.impType || S.panelTab;
+  /* 执行导入（预览页点「确认导入」后调用）。rows 来自 planFiles，决策已经在行上。
+     分支（与改版前一致，只有"新增类型"从全局一个变成逐行可改）：
+       · 手动关联   → 目标无图则补图、有图则覆盖（用户显式选的，不再走三选一）
+       · 自动匹配无图 → 补图
+       · 自动匹配有图 → 按 conflictAction：覆盖 / 跳过 / 并存（并存 = 另存为新资产）
+       · 没匹配上   → 按行上的类型新增
+       · 批次内同名 → 一律新增并存（沿用旧语义，不参与冲突决策） */
+  async function executeImportPlan(rows, conflictAction) {
     const steps = [];
-    plan.autoFill.forEach((it) => steps.push({ kind: 'fill', file: it.file, asset: it.asset }));
-    plan.plain.forEach((f) => steps.push({ kind: 'new', file: f }));
-    plan.dupNew.forEach((f) => steps.push({ kind: 'new', file: f }));
-    if (conflictAction === 'overwrite') plan.conflicts.forEach((it) => steps.push({ kind: 'overwrite', file: it.file, asset: it.asset }));
-    else if (conflictAction === 'merge') plan.conflicts.forEach((it) => steps.push({ kind: 'new', file: it.file }));
-    // 'skip' → 冲突项不入 steps
+    rows.forEach((r) => {
+      const newType = r.type || S.imp.impType || S.panelTab;
+      const pushNew = (file) => steps.push({ kind: 'new', file, type: newType });
+      if (r.link) {
+        steps.push({ kind: r.link.url ? 'overwrite' : 'fill', file: r.file, asset: r.link });
+      } else if (r.matched) {
+        if (!r.matched.url) steps.push({ kind: 'fill', file: r.file, asset: r.matched });
+        else if (conflictAction === 'overwrite') steps.push({ kind: 'overwrite', file: r.file, asset: r.matched });
+        else if (conflictAction !== 'skip') pushNew(r.file);
+        // 'skip' → 该行不入 steps
+      } else {
+        pushNew(r.file);
+      }
+      r.dupFiles.forEach(pushNew);
+    });
+    const skipCount = conflictAction === 'skip'
+      ? rows.filter((r) => !r.link && r.matched && r.matched.url).length : 0;
     S.assetBusy = 'import'; S.assetMsg = '正在导入 ' + steps.length + ' 个文件…'; renderPanel();
-    const stat = { fill: 0, new: 0, overwrite: 0, skip: conflictAction === 'skip' ? plan.conflicts.length : 0 };
+    const stat = { fill: 0, new: 0, overwrite: 0, skip: skipCount };
     const errs = [];
     for (const st of steps) {
       try {
         if (st.kind === 'fill') await Api.replaceAsset(st.asset.id, st.file, st.asset.name);           // 补图：保留资产名
         else if (st.kind === 'overwrite') await Api.replaceAsset(st.asset.id, st.file, st.asset.name); // 覆盖：保留 id 与绑定
-        else await Api.uploadAsset(st.file, type);
+        else await Api.uploadAsset(st.file, st.type);
         stat[st.kind]++;
       } catch (e) { errs.push(st.file.name + '：' + errText(e)); }
     }
@@ -987,6 +1021,35 @@
     } finally { S.assetBusy = null; }
     renderPanel();
     await loadAssets();
+  }
+
+  /* 批量改类型：把已选素材改成同一个类型。
+     改类型会**解绑所有引用它的分镜**（绑定的 role 就是素材类型），所以先汇总引用数、
+     让用户确认，再逐个改 —— 与单个改类型的提示口径保持一致。 */
+  async function batchRetype() {
+    const sel = document.querySelector('#bbTypeSel');
+    const type = sel && sel.value;
+    const ids = Array.from(S.assetSel);
+    if (!type || !ids.length || S.assetBusy) return;
+    let refs = 0;
+    try {
+      const us = await Promise.all(ids.map((id) => Api.assetUsage(id).catch(() => ({ count: 0 }))));
+      refs = us.reduce((s, u) => s + (u.count || 0), 0);
+    } catch (e) { /* 查不到引用数就按 0 处理；后端仍会解绑并在返回里给 unbound */ }
+    const okGo = await uiConfirm('批量修改素材类型',
+      '把已选的 ' + ids.length + ' 个素材改为「' + (ASSET_TAB_LABEL[type] || type) + '」？' +
+      (refs ? '\n\n它们共被 ' + refs + ' 条分镜引用，改类型会解除这些绑定。' : ''));
+    if (!okGo) return;
+    S.assetBusy = 'retype'; renderPanel();
+    let done = 0; const errs = [];
+    for (const id of ids) {
+      try { await Api.updateAsset(id, { type: type }); done++; }
+      catch (e) { errs.push(errText(e)); }
+    }
+    S.assetBusy = null;
+    S.assetSel.clear(); S.assetSelMode = false;
+    toast('已改类型 ' + done + ' 个' + (errs.length ? '，失败 ' + errs.length + ' 个：' + errs[0] : ''), errs.length ? 'err' : 'ok');
+    await afterAssetMutated();
   }
 
   async function loadAssets() {
@@ -2974,7 +3037,16 @@
             '</div>' +
             '<div class="row-inline"><span class="label-sm">名称</span>' +
               '<input class="input-sm" id="asName" style="flex:1;min-width:0" maxlength="60" value="' + esc(asset.name) + '" /></div>' +
-            (isAudio ? '' : '<div class="row-inline"><span class="label-sm">类型</span><span class="hint-sm">' + esc(kindLabel) + '</span></div>') +
+            /* 类型可改（2026-09-21）：导入图片时的类型取的是"当时所在页签"，页签默认「角色」，
+               场景/道具的图很容易被堆进角色分类。这里给一个改回去的入口。
+               音频只有一种类型，不展示下拉。 */
+            (isAudio ? '' :
+              '<div class="row-inline"><span class="label-sm">类型</span>' +
+                '<select class="input-sm" id="asType">' +
+                  ['character', 'scene', 'prop', 'firstFrame', 'storyboard']
+                    .map((t) => '<option value="' + t + '"' + (asset.type === t ? ' selected' : '') + '>' + esc(ASSET_TAB_LABEL[t]) + '</option>').join('') +
+                '</select>' +
+                '<span class="hint-sm" id="asTypeHint"></span></div>') +
             promptHTML +
             /* 上传入口只有图片区本身（点击即选文件），下方不再有「素材文件 / 更换文件」行 */
             '<input type="file" id="asFile" accept="' + accept + '" hidden />' +
@@ -3054,7 +3126,8 @@
         const name = String(nameEl.value || '').trim();
         if (!name) { toast('素材名称不能为空', 'err'); nameEl.focus(); return; }
         const prompt = promptEl ? String(promptEl.value || '').trim() : undefined;
-        done({ name: name, prompt: prompt, file: picked });
+        const typeEl = mask.querySelector('#asType');
+        done({ name: name, prompt: prompt, file: picked, type: typeEl ? typeEl.value : undefined });
       });
       mask.querySelector('[data-cancel]').addEventListener('click', () => done(null));
       mask.querySelector('[data-x]').addEventListener('click', () => done(null));
@@ -3067,7 +3140,7 @@
     });
   }
 
-  /* 打开素材详情并落库（改名 / 改提示词 / 换文件） */
+  /* 打开素材详情并落库（改名 / 改提示词 / 换文件 / 改类型） */
   async function editAsset(assetId) {
     const a = findAssetAnywhere(assetId);
     if (!a) return;
@@ -3075,15 +3148,32 @@
     if (!r) return;
     const oldPrompt = a.prompt || '';
     const promptChanged = r.prompt !== undefined && r.prompt !== oldPrompt;
-    if (!r.file && r.name === a.name && !promptChanged) { toast('未做任何修改', 'ok'); return; }
+    const typeChanged = !!r.type && r.type !== a.type;
+    if (!r.file && r.name === a.name && !promptChanged && !typeChanged) { toast('未做任何修改', 'ok'); return; }
+    /* 改类型会**解绑所有引用它的分镜** —— 绑定的 role 就是素材类型，不改就会错位
+       （一个道具挂在角色槽里）。所以先查准确的引用数、让用户确认，再动手。 */
+    if (typeChanged) {
+      let n = 0, names = [];
+      try {
+        const u = await Api.assetUsage(a.id);
+        n = u.count || 0;
+        names = (u.storyboards || []).map((x) => x.name).filter(Boolean);
+      } catch (e) { /* 查不到引用数就按 0 处理；后端仍会解绑并在返回里给 unbound */ }
+      const detail = n
+        ? '该素材已被 ' + n + ' 条分镜引用，改类型会解除这些绑定：\n' +
+          names.slice(0, 5).join('、') + (names.length > 5 ? ' 等' : '') + '\n\n确定要改类型吗？'
+        : '把「' + a.name + '」从「' + (ASSET_TAB_LABEL[a.type] || a.type) + '」改为「' +
+          (ASSET_TAB_LABEL[r.type] || r.type) + '」？';
+      if (!(await uiConfirm('修改素材类型', detail))) return;
+    }
     try {
       if (r.file) await Api.replaceAsset(a.id, r.file, r.name);
-      // 名称/提示词有变化才 PATCH（file 分支已带上 name，这里只补提示词或未换文件的场景）
-      if (!r.file && (r.name !== a.name || promptChanged)) {
-        await Api.updateAsset(a.id, { name: r.name, prompt: r.prompt });
-      } else if (r.file && promptChanged) {
-        await Api.updateAsset(a.id, { prompt: r.prompt });
-      }
+      /* 名称 / 类型 / 提示词：有变化才 PATCH（换文件那条分支已经带上了 name） */
+      const patch = {};
+      if (typeChanged) patch.type = r.type;
+      if (!r.file && r.name !== a.name) patch.name = r.name;
+      if (promptChanged) patch.prompt = r.prompt;
+      if (Object.keys(patch).length) await Api.updateAsset(a.id, patch);
       toast('素材已更新', 'ok');
       /* 两个资产视图都要刷新：表格槽位上的名称/缩略图，以及项目资产库里的卡片 */
       await afterAssetMutated();
@@ -3241,98 +3331,197 @@
   function openAssetImport(type) {
     S.imp.impType = type || S.panelTab;
     const isAudioTab = S.imp.impType === 'audio';
-    let mode = 'file';                        // 'file' | 'text' | 'conflict'
+    /* 模式：'file' 选文件 / 'text' 粘提示词 / 'preview' 导入预览（确认后才落库） */
+    let mode = (S.imp.lastMode === 'text' && !isAudioTab) ? 'text' : 'file';
     let pickedFiles = [];                     // 文件模式待传清单
     let parsed = null;                        // 文本模式解析结果
-    /* 文本模式的唯一原文来源。render() 会整体重建 mask.innerHTML，粘贴进去的 textarea
-       节点随之被销毁重建（新节点没有值）—— 若还从 DOM 读原文，「解析预览」后点
-       「确认导入」必然读到空串（服务端以 PARAM「提示词文本为空」拒绝）。 */
-    let rawText = '';
-    let importPlan = null;                    // 文件模式匹配计划（conflict 视图暂存）
-    let conflictAction = 'merge';             // 冲突处理默认「两者并存」（最安全，不破坏原图）
+    let rawText = '';                         // 文本模式的唯一原文来源（面板 DOM 会被重绘）
+    let plan = null;                          // 文件模式的导入计划 { rows, lib }
+    let conflictAction = 'merge';             // 自动匹配到「已有图资产」时的处理：覆盖 / 跳过 / 并存
     let busy = false;
     const typeLabel = ASSET_TAB_LABEL;
     const tabLabel = ASSET_TAB_LABEL;
+    /* 同 kind 的可选类型：图片只能在图片类之间改（角色/场景/道具/首帧/分镜），音频只有音色。
+       跨 kind 后端会拒（见 services.updateAsset）—— 这里只列合法的，省得用户白试一遍。 */
+    const typeChoices = isAudioTab ? ['audio'] : ['character', 'scene', 'prop', 'firstFrame', 'storyboard'];
 
     const mask = document.createElement('div');
     mask.className = 'mask'; mask.style.zIndex = 200;
     document.body.appendChild(mask);
 
-    function render() {
-      const filePane =
-        '<div class="imp-pane">' +
-          '<div class="hint-sm" style="margin-bottom:8px">选择一个或多个本地' + (isAudioTab ? '音频' : '图片') + '文件。文件名（忽略扩展名、首尾空格，大小写不敏感）与<b>全库任意分类</b>的资产名一致时：<b>无图资产自动补图</b>；<b>已有图资产会先询问</b>你覆盖 / 跳过 / 并存。匹配不到任何资产的文件，按当前「' + tabLabel[S.imp.impType] + '」分类新增（文件名无法判断类型，需要你切到对应分类再导入）。</div>' +
-          '<button class="btn-mini" id="impPick"' + (busy ? ' disabled' : '') + '>选择文件…</button>' +
-          '<input type="file" id="impFile" accept="' + (isAudioTab ? 'audio/*' : 'image/*') + '" multiple hidden />' +
-          (pickedFiles.length
-            ? '<div class="imp-files">' + pickedFiles.map((f, i) =>
-                '<div class="imp-file"><span class="nm">' + esc(f.name) + '</span><span class="hint-sm">' + Math.max(1, Math.round(f.size / 1024)) + ' KB</span>' +
-                '<button class="rm-mini" data-rmfile="' + i + '" title="移除">×</button></div>').join('') + '</div>'
-            : '<div class="empty-mini" style="margin-top:8px">尚未选择文件</div>') +
-        '</div>';
-      const textPane = isAudioTab ? '' :
-        '<div class="imp-pane">' +
-          '<div class="hint-sm" style="margin-bottom:8px">粘贴多段文生图提示词，段与段之间用<b>单独一行的 @</b> 分隔。系统自动识别每段的资产类型（场景 / 道具 / 角色）与名称，并按类型归类导入。</div>' +
-          '<textarea id="impText" class="asset-prompt tall" placeholder="角色描述信息如下：林晚…&#10;@&#10;按照下方场景描述内容生成…&#10;@&#10;根据道具描述内容生成…" spellcheck="false">' + esc(rawText) + '</textarea>' +
-          '<div class="row-inline" style="margin-top:8px">' +
-            '<button class="btn-mini" id="impParse"' + (busy ? ' disabled' : '') + '>解析预览</button>' +
-            '<span class="hint-sm" id="impParseHint">' + (parsed
-              ? '可导入 ' + parsed.items.length + ' 个资产' +
-                ((parsed.duplicates || []).length ? '，重复跳过 ' + parsed.duplicates.length + ' 个' : '') +
-                (parsed.skipped.length ? '，未识别 ' + parsed.skipped.length + ' 段' : '')
-              : '粘贴后先解析，再确认导入') + '</span>' +
+    /* 骨架**只建一次**：三个面板常驻 DOM，切模式只改 .on 与内容，不再整体重建 innerHTML。
+       为什么坚持这样（2026-09-21 用户反馈"切换太生硬"）：整体重建会把输入框的滚动位置、
+       光标、焦点全丢掉；而且两个面板高度差很大 —— 重建时内容瞬换、弹窗高度跟着跳，
+       观感就是"生硬"。 */
+    mask.innerHTML =
+      '<div class="modal narrow">' +
+        '<div class="modal-head"><h2>导入资产</h2><span class="grow"></span>' +
+          '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
+        '<div class="modal-body" id="impBody">' +
+          '<div class="seg" id="impSeg" style="margin-bottom:12px">' +
+            '<button id="impModeFile">导入图片文件</button>' +
+            (isAudioTab ? '' : '<button id="impModeText">导入提示词文本</button>') +
           '</div>' +
-          (parsed ? renderParseResult(parsed) : '') +
-        '</div>';
-      const conflictPane = (mode === 'conflict' && importPlan) ? renderConflictPane() : '';
-      mask.innerHTML =
-        '<div class="modal narrow">' +
-          '<div class="modal-head"><h2>' + (mode === 'conflict' ? '导入资产 · 名称冲突' : '导入资产') + '</h2><span class="grow"></span>' +
-            '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
-          '<div class="modal-body">' +
-            (mode !== 'file' ? '' :
-              '<div class="seg" style="margin-bottom:12px">' +
-                '<button id="impModeFile"' + (mode === 'file' ? ' class="on"' : '') + '>导入图片文件</button>' +
-                '<button id="impModeText"' + (mode === 'text' ? ' class="on"' : '') + '>导入提示词文本</button>' +
-              '</div>') +
-            (mode === 'file' ? filePane : (mode === 'conflict' ? conflictPane : textPane)) +
-          '</div>' +
-          '<div class="modal-foot">' +
-            '<span class="hint-sm" id="impFootHint"></span><span class="grow"></span>' +
-            (mode === 'conflict'
-              ? '<button class="btn-outline" id="impBack">返回修改</button>' +
-                '<button class="btn-primary" id="impDoConflict">确认导入</button>'
-              : '<button class="btn-outline" data-cancel>取消</button>' +
-                (mode === 'file'
-                  ? '<button class="btn-primary" id="impDoFiles"' + (busy || !pickedFiles.length ? ' disabled' : '') + '>导入 ' + pickedFiles.length + ' 个文件</button>'
-                  : '<button class="btn-primary" id="impDoText"' + (busy || !parsed || !parsed.items.length ? ' disabled' : '') + '>' + (parsed && parsed.items.length ? '确认导入 ' + parsed.items.length + ' 个资产' : '确认导入') + '</button>')) +
-          '</div>' +
-        '</div>';
-      bind();
+          '<div class="imp-pane" id="impPaneFile"></div>' +
+          '<div class="imp-pane" id="impPaneText"></div>' +
+          '<div class="imp-pane" id="impPanePrev"></div>' +
+        '</div>' +
+        '<div class="modal-foot" id="impFoot"></div>' +
+      '</div>';
+    const bodyEl = mask.querySelector('#impBody');
+    const segEl = mask.querySelector('#impSeg');
+    const paneFile = mask.querySelector('#impPaneFile');
+    const paneText = mask.querySelector('#impPaneText');
+    const panePrev = mask.querySelector('#impPanePrev');
+    const footEl = mask.querySelector('#impFoot');
+
+    const reducedMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+    /* 高度平滑：先量旧高、改完再量新高，把差值做成过渡。
+       ⚠ 必须在改内容**之前**量 —— 改完就量不到旧值了。系统开了"减少动态效果"就跳过。 */
+    function withHeightTransition(fn) {
+      const from = bodyEl.offsetHeight;
+      fn();
+      const to = bodyEl.offsetHeight;
+      if (reducedMotion() || from === to) return;
+      bodyEl.style.height = from + 'px';
+      bodyEl.style.overflow = 'hidden';
+      bodyEl.getBoundingClientRect();                    // 强制回流，让起始高度先生效
+      bodyEl.style.transition = 'height .18s ease';
+      bodyEl.style.height = to + 'px';
+      setTimeout(() => { bodyEl.style.height = ''; bodyEl.style.overflow = ''; bodyEl.style.transition = ''; }, 220);
     }
 
-    /* 冲突处理视图：列出「文件名 ↔ 已有图资产」的冲突项，三选一决策。
-       其余文件（补图 / 正常新增 / 批次内同名并存）不受影响，只在此说明去向。 */
-    function renderConflictPane() {
-      const c = importPlan.conflicts;
-      const rows = c.map((it) =>
-        '<div class="parse-item warn"><span class="type-badge b-conf">冲突</span>' +
-        '<span class="nm">' + esc(fileBaseName(it.file)) + '</span>' +
-        '<span class="hint-sm">→ 资产「' + esc(it.asset.name) + '」已有图片</span></div>').join('');
-      const notes = [];
-      if (importPlan.autoFill.length) notes.push('<div class="hint-sm">' + importPlan.autoFill.length + ' 个文件将自动补入同名无图资产，无需处理。</div>');
-      if (importPlan.plain.length) notes.push('<div class="hint-sm">' + importPlan.plain.length + ' 个文件无同名匹配，将正常新增。</div>');
-      if (importPlan.dupNew.length) notes.push('<div class="hint-sm">另有 ' + importPlan.dupNew.length + ' 个批次内同名文件，将自动并存入库（不参与本选择）。</div>');
-      return '<div class="imp-pane">' +
-        '<div class="hint-sm" style="margin-bottom:6px">匹配规则：文件名（忽略扩展名与首尾空格，大小写不敏感）与资产名一致。以下文件与已有图片的资产同名，请选择处理方式：</div>' +
-        '<div class="imp-parse">' + rows + '</div>' +
-        '<div class="imp-choice">' +
-          '<label class="checkline"><input type="radio" name="impAct" value="overwrite"' + (conflictAction === 'overwrite' ? ' checked' : '') + ' /> 覆盖原有图片（保留该资产与全部分镜绑定，替换图片）</label>' +
-          '<label class="checkline"><input type="radio" name="impAct" value="skip"' + (conflictAction === 'skip' ? ' checked' : '') + ' /> 跳过该图片（不导入，原图不动）</label>' +
-          '<label class="checkline"><input type="radio" name="impAct" value="merge"' + (conflictAction === 'merge' ? ' checked' : '') + ' /> 两者并存（保留原图，另存为新资产）</label>' +
+    /* ---- 三个面板各自的渲染（都是纯字符串，由 render() 决定重绘哪一个） ---- */
+    function renderFilePane() {
+      return '<div class="hint-sm" style="margin-bottom:8px">选择一个或多个本地' + (isAudioTab ? '音频' : '图片') + '文件。文件名（忽略扩展名、首尾空格，大小写不敏感）与<b>全库任意分类</b>的资产名一致时，下一步会自动建议补图 / 覆盖。<b>下一步先给你看清单，确认后才真正导入。</b></div>' +
+        '<button class="btn-mini" id="impPick"' + (busy ? ' disabled' : '') + '>选择文件…</button>' +
+        '<input type="file" id="impFile" accept="' + (isAudioTab ? 'audio/*' : 'image/*') + '" multiple hidden />' +
+        (pickedFiles.length
+          ? '<div class="imp-files">' + pickedFiles.map((f, i) =>
+              '<div class="imp-file"><span class="nm">' + esc(f.name) + '</span><span class="hint-sm">' + Math.max(1, Math.round(f.size / 1024)) + ' KB</span>' +
+              '<button class="rm-mini" data-rmfile="' + i + '" title="移除">×</button></div>').join('') + '</div>'
+          : '<div class="empty-mini" style="margin-top:8px">尚未选择文件</div>');
+    }
+
+    function renderTextPane() {
+      if (isAudioTab) return '';
+      return '<div class="hint-sm" style="margin-bottom:8px">粘贴多段文生图提示词，段与段之间用<b>单独一行的 @</b> 分隔。系统自动识别每段的资产类型（场景 / 道具 / 角色）与名称，并按类型归类导入。</div>' +
+        '<textarea id="impText" class="asset-prompt tall" placeholder="角色描述信息如下：林晚…&#10;@&#10;按照下方场景描述内容生成…&#10;@&#10;根据道具描述内容生成…" spellcheck="false">' + esc(rawText) + '</textarea>' +
+        '<div class="row-inline" style="margin-top:8px">' +
+          '<button class="btn-mini" id="impParse"' + (busy ? ' disabled' : '') + '>解析预览</button>' +
+          '<span class="hint-sm" id="impParseHint">' + (parsed
+            ? '可导入 ' + parsed.items.length + ' 个资产' +
+              ((parsed.duplicates || []).length ? '，重复跳过 ' + parsed.duplicates.length + ' 个' : '') +
+              (parsed.skipped.length ? '，未识别 ' + parsed.skipped.length + ' 段' : '')
+            : '粘贴后先解析，再确认导入') + '</span>' +
         '</div>' +
-        notes.join('') +
-      '</div>';
+        (parsed ? renderParseResult(parsed) : '');
+    }
+
+    function renderFoot() {
+      const head = '<span class="hint-sm" id="impFootHint"></span><span class="grow"></span>';
+      if (mode === 'preview') {
+        const n = plan ? plan.rows.reduce((s, r) => s + 1 + r.dupFiles.length, 0) : 0;
+        return head + '<button class="btn-outline" id="impBack">返回修改</button>' +
+          '<button class="btn-primary" id="impDoImport"' + (busy || !n ? ' disabled' : '') + '>确认导入 ' + n + ' 个文件</button>';
+      }
+      return head + '<button class="btn-outline" data-cancel>取消</button>' +
+        (mode === 'file'
+          ? '<button class="btn-primary" id="impDoFiles"' + (busy || !pickedFiles.length ? ' disabled' : '') + '>下一步：预览 ' + pickedFiles.length + ' 个文件</button>'
+          : '<button class="btn-primary" id="impDoText"' + (busy || !parsed || !parsed.items.length ? ' disabled' : '') + '>' + (parsed && parsed.items.length ? '确认导入 ' + parsed.items.length + ' 个资产' : '确认导入') + '</button>');
+    }
+
+    function render() {
+      paneFile.classList.toggle('on', mode === 'file');
+      paneText.classList.toggle('on', mode === 'text');
+      panePrev.classList.toggle('on', mode === 'preview');
+      segEl.style.display = mode === 'preview' ? 'none' : '';
+      const bFile = mask.querySelector('#impModeFile');
+      const bText = mask.querySelector('#impModeText');
+      if (bFile) bFile.classList.toggle('on', mode === 'file');
+      if (bText) bText.classList.toggle('on', mode === 'text');
+      /* ⚠ 只重绘**当前**面板：非当前面板的 DOM 留着不动，切回去时输入框的滚动/光标还在。
+         这正是"面板常驻"的意义 —— 整体重建会把这些状态全丢掉（也就是"生硬"的来源）。 */
+      if (mode === 'file') paneFile.innerHTML = renderFilePane();
+      else if (mode === 'text') paneText.innerHTML = renderTextPane();
+      else panePrev.innerHTML = renderPreviewPane();
+      footEl.innerHTML = renderFoot();
+    }
+
+    /* 切模式：改状态 → 重绘 → 高度平滑 → 新面板淡入。
+       预览是临时步骤，不写进"上次用的模式"（否则下次打开弹层直接落在预览页，却没有文件可导）。 */
+    function setMode(next) {
+      if (mode === next) return;
+      if (next !== 'preview') S.imp.lastMode = next;
+      withHeightTransition(() => { mode = next; render(); });
+      const el = next === 'file' ? paneFile : (next === 'text' ? paneText : panePrev);
+      if (!reducedMotion() && el) { el.classList.remove('imp-fade'); void el.offsetWidth; el.classList.add('imp-fade'); }
+    }
+
+    /* 导入预览：每个文件一行，去向 / 类型 / 关联都能在**落库前**改。
+       为什么必须有这一步：匹配是**精确同名**，而实际文件名常常对不上（「白色信封」vs「信封」、
+       「公寓卧室」vs 一长串场景描述）。改版前这些文件会**静默**按当前页签新增 —— 页签默认
+       「角色」，于是场景/道具的图全堆进角色分类（用户 2026-09-21 实测反馈）。
+       现在把结果摆出来：对不上的可以手动关联到已有素材，也可以改新素材的分类。 */
+    function renderPreviewPane() {
+      if (!plan) return '';
+      const rows = plan.rows;
+      /* 每行的"实际去向"：**手动关联优先于自动匹配** */
+      const eff = (r) => (r.link ? (r.link.url ? 'overwrite' : 'fill')
+        : (r.matched ? (r.matched.url ? 'conflict' : 'fill') : 'new'));
+      let nFill = 0, nNew = 0, nConflict = 0;
+      rows.forEach((r) => { const k = eff(r); if (k === 'fill') nFill++; else if (k === 'conflict') nConflict++; else nNew++; });
+      const dupN = rows.reduce((s, r) => s + r.dupFiles.length, 0);
+      const conflictRows = rows.filter((r) => eff(r) === 'conflict');
+      /* 手动关联的候选：**同 kind** 的已有素材（图片素材只能关联图片，音频只能关联音频） */
+      const cands = plan.lib.filter((a) => (isAudioTab ? a.type === 'audio' : a.type !== 'audio'));
+
+      const rowsHTML = rows.map((r, i) => {
+        const k = eff(r);
+        const target = r.link || r.matched;
+        let dest;
+        if (k === 'fill') dest = '<span class="dest ok">补图到「' + esc(target.name) + '」</span>';
+        else if (k === 'overwrite') dest = '<span class="dest warn">覆盖「' + esc(target.name) + '」的图</span>';
+        else if (k === 'conflict') dest = '<span class="dest warn">与「' + esc(r.matched.name) + '」同名</span>';
+        else dest = '<span class="dest">新增</span>';
+        let ctl = '';
+        if (k === 'new') {
+          ctl += '<select data-imptype="' + i + '" title="新素材落在哪个分类">' +
+            typeChoices.map((t) => '<option value="' + t + '"' + (r.type === t ? ' selected' : '') + '>' + typeLabel[t] + '</option>').join('') + '</select>';
+        }
+        if (!r.matched) {
+          ctl += '<select data-implink="' + i + '" title="也可以关联到库里已有的素材（补图 / 覆盖）">' +
+            '<option value="">不关联（新增）</option>' +
+            cands.map((a) => '<option value="' + a.id + '"' + (r.link && r.link.id === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.url ? '' : '（无图）') + '</option>').join('') +
+            '</select>';
+        }
+        return '<div class="imp-row">' +
+          '<span class="nm" title="' + esc(r.file.name) + '">' + esc(fileBaseName(r.file)) +
+          (r.dupFiles.length ? '<span class="hint-sm">（另有 ' + r.dupFiles.length + ' 个同名并存）</span>' : '') + '</span>' +
+          dest + ctl + '</div>';
+      }).join('');
+
+      const conflictBox = conflictRows.length
+        ? '<div class="imp-choice">' +
+            '<div class="hint-sm">上面 ' + conflictRows.length + ' 个文件与已有图片的资产同名，选择处理方式：</div>' +
+            '<label class="checkline"><input type="radio" name="impAct" value="overwrite"' + (conflictAction === 'overwrite' ? ' checked' : '') + ' /> 覆盖原有图片（保留该资产与全部分镜绑定，只替换图片）</label>' +
+            '<label class="checkline"><input type="radio" name="impAct" value="skip"' + (conflictAction === 'skip' ? ' checked' : '') + ' /> 跳过这些图片（不导入，原图不动）</label>' +
+            '<label class="checkline"><input type="radio" name="impAct" value="merge"' + (conflictAction === 'merge' ? ' checked' : '') + ' /> 两者并存（保留原图，另存为新资产）</label>' +
+          '</div>'
+        : '';
+
+      return '<div class="hint-sm">匹配规则：文件名（忽略扩展名与首尾空格，大小写不敏感）与资产名<b>完全一致</b>才算命中。对不上的可以在这里手动关联，或改新素材的分类。</div>' +
+        '<div class="imp-sum">补图 <b>' + nFill + '</b> · 新增 <b>' + nNew + '</b>' +
+          (nConflict ? ' · 同名冲突 <b>' + nConflict + '</b>' : '') +
+          (dupN ? ' · 批次内同名 <b>' + dupN + '</b>' : '') + '</div>' +
+        (nNew > 1 && typeChoices.length > 1
+          ? '<div class="row-inline"><span class="hint-sm">把上面全部「新增」设为</span>' +
+            '<select id="impBulkType">' + typeChoices.map((t) => '<option value="' + t + '">' + typeLabel[t] + '</option>').join('') + '</select>' +
+            '<button class="btn-mini" id="impBulkApply">应用</button></div>'
+          : '') +
+        conflictBox +
+        '<div class="imp-parse">' + rowsHTML + '</div>';
     }
 
     function renderParseResult(p) {
@@ -3356,94 +3545,112 @@
         ' · 道具 ' + p.items.filter((x) => x.type === 'prop').length + '）</b></div>' + rows + dups + skips + '</div>';
     }
 
-    function bind() {
-      const fx = mask.querySelector('[data-x]'), cx = mask.querySelector('[data-cancel]');
-      if (fx) fx.addEventListener('click', close);
-      if (cx) cx.addEventListener('click', close);
-      mask.addEventListener('click', (ev) => { if (ev.target === mask) close(); });
-
-      const mFile = mask.querySelector('#impModeFile');
-      const mText = mask.querySelector('#impModeText');
-      if (mFile) mFile.addEventListener('click', () => { mode = 'file'; parsed = null; render(); });
-      if (mText) mText.addEventListener('click', () => { mode = 'text'; render(); });
-
-      if (mode === 'file') {
-        mask.querySelector('#impPick').addEventListener('click', () => mask.querySelector('#impFile').click());
-        mask.querySelector('#impFile').addEventListener('change', (ev) => {
-          const fs = Array.from(ev.target.files || []);
+    /* 事件委托：骨架只建一次，所以监听器也**只挂一次**。
+       以前是每次 render() 后重新 bind() —— 面板常驻之后那样会重复挂、越挂越多。
+       委托的另一个好处：面板 innerHTML 怎么重绘，监听都还在。 */
+    function wire() {
+      mask.addEventListener('click', (ev) => {
+        const t = ev.target;
+        if (t === mask || t.closest('[data-x]') || t.closest('[data-cancel]')) { close(); return; }
+        if (t.closest('#impModeFile')) { parsed = null; setMode('file'); return; }
+        if (t.closest('#impModeText')) { setMode('text'); return; }
+        if (t.closest('#impPick')) { const f = mask.querySelector('#impFile'); if (f) f.click(); return; }
+        const rm = t.closest('[data-rmfile]');
+        if (rm) { pickedFiles.splice(Number(rm.dataset.rmfile), 1); render(); return; }
+        if (t.closest('#impBack')) { setMode('file'); return; }
+        if (t.closest('#impBulkApply')) {
+          const sel = mask.querySelector('#impBulkType');
+          if (sel && plan) { plan.rows.forEach((r) => { if (!r.link && !r.matched) r.type = sel.value; }); render(); }
+          return;
+        }
+        if (t.closest('#impParse')) { doParse(); return; }
+        if (t.closest('#impDoFiles')) { doPlan(); return; }
+        if (t.closest('#impDoImport')) { doImport(); return; }
+        if (t.closest('#impDoText')) { doTextImport(); return; }
+      });
+      mask.addEventListener('change', (ev) => {
+        const t = ev.target;
+        if (t.id === 'impFile') {
+          const fs = Array.from(t.files || []);
           for (const f of fs) if (!pickedFiles.some((x) => x.name === f.name && x.size === f.size)) pickedFiles.push(f);
-          ev.target.value = '';
+          t.value = '';
           render();
-        });
-        mask.querySelectorAll('[data-rmfile]').forEach((b) => b.addEventListener('click', () => {
-          pickedFiles.splice(Number(b.dataset.rmfile), 1); render();
-        }));
-        const go = mask.querySelector('#impDoFiles');
-        if (go) go.addEventListener('click', async () => {
-          if (!pickedFiles.length || busy) return;
-          busy = true; go.disabled = true;
-          mask.querySelector('#impFootHint').textContent = '正在匹配资产名称…';
-          let plan;
-          try { plan = await planFiles(pickedFiles.slice()); }
-          catch (e) { busy = false; go.disabled = false; fail(e); return; }
-          busy = false;
-          if (plan.conflicts.length) { importPlan = plan; mode = 'conflict'; render(); }   // 暂停导入，等用户决策
-          else { close(); await executeImportPlan(plan, null); }
-        });
-      } else if (mode === 'conflict') {
-        mask.querySelectorAll('input[name="impAct"]').forEach((r) => r.addEventListener('change', () => { conflictAction = r.value; }));
-        mask.querySelector('#impBack').addEventListener('click', () => { mode = 'file'; render(); });
-        mask.querySelector('#impDoConflict').addEventListener('click', async () => {
-          const plan = importPlan; const act = conflictAction;
-          if (!plan || !plan.conflicts.length || busy) return;
-          busy = true;
-          close();
-          await executeImportPlan(plan, act);
-        });
-      } else {
-        const parseBtn = mask.querySelector('#impParse');
-        const textEl = mask.querySelector('#impText');
-        textEl.addEventListener('input', () => { rawText = textEl.value; });
-        parseBtn.addEventListener('click', async () => {
-          rawText = String(textEl.value || '');
-          if (!rawText.trim()) { toast('请先粘贴提示词文本', 'err'); return; }
-          busy = true; parseBtn.disabled = true;
-          mask.querySelector('#impParseHint').textContent = '解析中…';
-          try {
-            parsed = await Api.importAssetPrompts(rawText, false);
-            if (!parsed.items.length) {
-              // 全是重复项时不能报"没识别出来" —— 那是两回事，提示语要对得上
-              toast((parsed.duplicates || []).length
-                ? '这些段落都已存在，没有新资产可导入'
-                : '没有识别出任何资产段，请检查 @ 分隔与段首类型标识', 'err');
-            }
-          } catch (e) { parsed = null; fail(e); }
-          busy = false;
+          return;
+        }
+        if (t.name === 'impAct') { conflictAction = t.value; render(); return; }
+        /* 预览里逐行改决策：类型（仅新增）/ 手动关联（仅未匹配） */
+        if (t.dataset && t.dataset.imptype != null && plan) { plan.rows[Number(t.dataset.imptype)].type = t.value; render(); return; }
+        if (t.dataset && t.dataset.implink != null && plan) {
+          const row = plan.rows[Number(t.dataset.implink)];
+          row.link = t.value ? (plan.lib.find((a) => a.id === t.value) || null) : null;
           render();
-        });
-        const go = mask.querySelector('#impDoText');
-        if (go) go.addEventListener('click', async () => {
-          if (!parsed || !parsed.items.length || busy) return;
-          busy = true; go.disabled = true;
-          try {
-            const r = await Api.importAssetPrompts(rawText, true);
-            const c = { character: 0, scene: 0, prop: 0 };
-            (r.created || []).forEach((x) => { c[x.type]++; });
-            const dupN = (r.duplicates || []).length;
-            toast('导入完成：角色 ' + c.character + ' · 场景 ' + c.scene + ' · 道具 ' + c.prop +
-              (dupN ? '（重复已跳过 ' + dupN + ' 个）' : '') +
-              (r.skipped.length ? '（未识别 ' + r.skipped.length + ' 段）' : ''), 'ok');
-            close();
-            await loadAssets();
-            await loadList({ skeleton: false });
-          } catch (e) { busy = false; go.disabled = false; fail(e); }
-        });
-      }
+          return;
+        }
+      });
+      mask.addEventListener('input', (ev) => { if (ev.target.id === 'impText') rawText = ev.target.value; });
+    }
+
+    /* ---- 动作：都从 wire() 的委托里调，只定义一次 ---- */
+    async function doParse() {
+      const textEl = mask.querySelector('#impText');
+      if (textEl) rawText = String(textEl.value || '');
+      if (!rawText.trim()) { toast('请先粘贴提示词文本', 'err'); return; }
+      busy = true; render();
+      try {
+        parsed = await Api.importAssetPrompts(rawText, false);
+        if (!parsed.items.length) {
+          // 全是重复项时不能报"没识别出来" —— 那是两回事，提示语要对得上
+          toast((parsed.duplicates || []).length
+            ? '这些段落都已存在，没有新资产可导入'
+            : '没有识别出任何资产段，请检查 @ 分隔与段首类型标识', 'err');
+        }
+      } catch (e) { parsed = null; fail(e); }
+      busy = false;
+      render();
+    }
+
+    async function doTextImport() {
+      if (!parsed || !parsed.items.length || busy) return;
+      busy = true; render();
+      try {
+        const r = await Api.importAssetPrompts(rawText, true);
+        const c = { character: 0, scene: 0, prop: 0 };
+        (r.created || []).forEach((x) => { c[x.type]++; });
+        const dupN = (r.duplicates || []).length;
+        toast('导入完成：角色 ' + c.character + ' · 场景 ' + c.scene + ' · 道具 ' + c.prop +
+          (dupN ? '（重复已跳过 ' + dupN + ' 个）' : '') +
+          (r.skipped.length ? '（未识别 ' + r.skipped.length + ' 段）' : ''), 'ok');
+        close();
+        await loadAssets();
+        await loadList({ skeleton: false });
+      } catch (e) { busy = false; render(); fail(e); }
+    }
+
+    /* 「下一步：预览」——算出计划并切到预览页。
+       ⚠ 这里**不再直接导入**：计划先给人看、可改，确认后才落库。
+       改版前的静默导入正是"图片全堆进角色页"的成因。 */
+    async function doPlan() {
+      if (!pickedFiles.length || busy) return;
+      busy = true; render();
+      try { plan = await planFiles(pickedFiles.slice()); }
+      catch (e) { busy = false; render(); fail(e); return; }
+      busy = false;
+      setMode('preview');
+    }
+
+    /* 「确认导入」——按预览里的决策落库 */
+    async function doImport() {
+      if (!plan || busy) return;
+      busy = true;
+      const rows = plan.rows; const act = conflictAction;
+      close();
+      await executeImportPlan(rows, act);
     }
 
     function close() { document.removeEventListener('keydown', escImp); mask.remove(); }
     function escImp(ev) { if (ev.key === 'Escape') close(); }
     document.addEventListener('keydown', escImp);
+    wire();
     render();
   }
 
@@ -4404,6 +4611,7 @@
       if (act === 'exit') { S.assetSelMode = false; S.assetSel.clear(); renderPanel(); return; }
       if (act === 'all') { S.assets.forEach((a) => S.assetSel.add(a.id)); renderPanel(); return; }
       if (act === 'none') { S.assetSel.clear(); renderPanel(); return; }
+      if (act === 'retype') { batchRetype(); return; }
       if (act === 'invert') {                    // 反选：已选变未选、未选变已选
         const next = new Set();
         S.assets.forEach((a) => { if (!S.assetSel.has(a.id)) next.add(a.id); });

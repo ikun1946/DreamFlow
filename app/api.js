@@ -236,6 +236,8 @@
     listAssets:   (query)     => request('GET', '/assets', { query: scopeQuery(query) }),
     // 素材设置：更新名称 / 文生图提示词（body: { name?, prompt? }，至少一项）/ 更换文件（更换保留素材 id 与全部分镜绑定）
     updateAsset:  (id, body)  => request('PATCH', '/assets/' + id, { body: body || {}, query: scopeQuery() }),
+    // 素材被哪些分镜引用（项目级）。改类型前用它给出准确的"N 条分镜"提示。
+    assetUsage:   (id)        => request('GET', '/assets/' + id + '/usage', { query: scopeQuery() }),
     replaceAsset: (id, file, name, durationSec) => request('POST', '/assets/' + id + '/file',
       { raw: true, mime: file.type, body: file,
         query: scopeQuery({ filename: file.name, name: name || undefined, durationSec: secOrUndef(durationSec) }) }),

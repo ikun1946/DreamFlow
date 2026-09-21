@@ -207,6 +207,9 @@ function makeRouter(cfg, adapter) {
     }, scopeOf(ctx)))],
     // 素材设置：重命名
     ['PATCH', /^\/assets\/([^/]+)$/, async (ctx) => ok(ctx.res, S.updateAsset(ctx.db, ctx.params[0], ctx.body, scopeOf(ctx)))],
+    // 素材被哪些分镜引用（项目级）。改类型前用它给出准确的"N 条分镜"，而不是靠前端猜。
+    // ⚠ 必须排在 /assets/:id 这类通配之前吗？不必 —— 那条是 PATCH/DELETE，这里是 GET，方法不同。
+    ['GET', /^\/assets\/([^/]+)\/usage$/, async (ctx) => ok(ctx.res, S.assetUsage(ctx.db, ctx.params[0], scopeOf(ctx)))],
     // 素材设置：更换文件（原始字节；query: filename 用于扩展名校验与取名，name 为展示名覆盖）
     ['POST', /^\/assets\/([^/]+)\/file$/, async (ctx) => ok(ctx.res, await S.replaceAsset(ctx.db, ctx.params[0], {
       filename: ctx.query.filename,
