@@ -83,13 +83,17 @@ function serveFile(req, res, absPath) {
   return true;
 }
 
-/* 应用首页：读取 app/index.html，把三个相对资源改写到 /app/ 下
-   （页面挂在 / 上，styles.css / api.js / app.js 若不改写会解析成根路径 404，
+/* 应用首页：读取 app/index.html，把四个相对资源改写到 /app/ 下
+   （页面挂在 / 上，styles.css / api.js / app.js / icon.png 若不改写会解析成根路径 404，
     表现为整页无样式、无交互的裸骨架——已踩过的坑，勿删改写逻辑）。
    api.js 的 baseUrl 会自动取同源 /api/v1，无需注入配置。 */
 const CSS_ANCHOR = '<link rel="stylesheet" href="styles.css" />';
 const API_ANCHOR = '<script src="api.js"></script>';
 const APP_ANCHOR = '<script src="app.js"></script>';
+/* 应用内图标：favicon 用 href、顶栏品牌标用 src（2026-09-21 换新图标时加）。
+   ⚠ 漏了这条的后果不是"图标没换"，而是**两个裂图** —— 请求打到 /icon.png 上直接 404
+   （smoke 的资源日志里能看到 icon.png=404）。 */
+const ICON_ANCHOR = /(href|src)="icon\.png"/g;
 
 /* 页面安全策略：禁止外部脚本 / 外部连接 / 被嵌框。
    ⚠ 仍允许 'unsafe-inline'：index.html 里有一段「主题防闪」内联脚本，app.js 也大量
@@ -114,7 +118,8 @@ function buildIndexHtml(cfg) {
   let out = html
     .replace(CSS_ANCHOR, '<link rel="stylesheet" href="/app/styles.css" />')
     .replace(API_ANCHOR, '<script src="/app/api.js"></script>')
-    .replace(APP_ANCHOR, '<script src="/app/app.js"></script>');
+    .replace(APP_ANCHOR, '<script src="/app/app.js"></script>')
+    .replace(ICON_ANCHOR, function (m, attr) { return attr + '="/app/icon.png"'; });
   /* 桌面版用一次性 Token 保护本地 API：页面必须**在 api.js 之前**拿到它。
      注入在同源页面里是安全的 —— 其它来源连这个 HTML 都取不到（见 originPolicy）。 */
   if (cfg.token) {

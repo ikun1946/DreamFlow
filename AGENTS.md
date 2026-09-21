@@ -1,7 +1,7 @@
 # AGENTS.md —— 给 AI agent 的项目约定
 
 > 本文件是**任何 agent 接手本仓库时的第一份必读**。人也可以看，但它主要写给 agent。
-> 最后核对：2026-09-21（版本 `v0.25.2`）
+> 最后核对：2026-09-21（版本 `v0.26.0`）
 >
 > 📖 **想「通读一遍就完整理解项目」** → 读 `docs/项目文档.md`（定位 / 结构 / 目录职责 / 模块依赖 / 主要流程 /
 > 配置运行 / 数据 / 接口 / 收尾清单 / 边界 / 事故注释索引 / 文档地图）。本文件保留 agent 最需要的短契约。
@@ -47,7 +47,7 @@
 |---|---|
 | 不要提交 `server/data/` | 那是运行数据（含用户素材与视频），且已 gitignore |
 | 不要提交 `release/` | 上百 MB 二进制，会把仓库撑爆 |
-| 不要删 `build/icon.png` / `icon.ico` | 打包的输入，删了 `npm run dist` 会失败 |
+| 不要删 `build/icon-source.png` / `icon.png` / `icon.ico` | 源图删了就**再也生成不出**图标；产物删了 `npm run dist` 会失败。三者都已入库 |
 | 不要删用户的 `db.json` 或 `projects/` | 用户的全部数据，**不可恢复** |
 | 不要在应用里嵌 GitHub 令牌 | 安装包可解压，等于公开私有仓库读权限 |
 | 不要往安装目录写数据 | 装到 Program Files 后那里只读；数据必须走用户目录 |
@@ -62,7 +62,7 @@ npm install             # 只在要跑桌面版时需要
 npm start               # 桌面版开发态
 npm run dist            # 出 NSIS 安装包 → release/
 npm run pack            # 只出免安装目录 → release/win-unpacked/
-npm run icons           # 重新生成图标
+npm run icons           # 由 build/icon-source.png 重新生成图标（build/icon.png、icon.ico、app/icon.png）
 ```
 
 桌面版冒烟自检（打包后也能用）：

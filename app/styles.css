@@ -287,6 +287,9 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .brand{display:flex;align-items:center;gap:8px}
 .brand-mark{display:grid;place-items:center}
+/* 应用内品牌标：2026-09-21 起改用 app/icon.png（由 build/icon-source.png 生成），
+   不再是内联 SVG。PNG 自带圆角透明，这里只管尺寸与基线对齐。 */
+.brand-mark img{display:block;width:18px;height:18px}
 .brand-name{font-weight:600;font-size:13px;white-space:nowrap}
 .proj{font-size:13px;color:var(--ink80);white-space:nowrap}
 .chip{

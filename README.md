@@ -15,11 +15,12 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 ├── AGENTS.md                        给 AI agent 的项目约定（红线、常用命令、关键文件地图）
 ├── build.js                         构建脚本：把 app/ 内联成 dist/ 单文件版
 │
-├── app/                             前端源码（四个文件，分层清晰）
+├── app/                             前端源码（四个文件 + 应用内图标）
 │   ├── index.html                   入口页面（页面骨架）
 │   ├── styles.css                   全部样式 + 设计令牌（:root）
 │   ├── api.js                       接口层：全部走真实 HTTP（唯一模式）
-│   └── app.js                       状态、渲染、交互、轮询
+│   ├── app.js                       状态、渲染、交互、轮询
+│   └── icon.png                     应用内图标：favicon + 顶栏品牌标（npm run icons 生成）
 │
 ├── server/                          后端：本地桥接服务（零 npm 依赖）
 │   ├── index.js                     入口：HTTP 服务 + 首页托管 + CLI worker
@@ -53,7 +54,8 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 │   ├── legacy-import.js             旧版 server/data → 桌面版数据目录：导入 + 完整性体检
 │   └── logger.js                    主进程日志落盘（2 MB 轮转）
 │
-├── build/                           打包图标（scripts/make-icons.js 生成，**需入库**）
+├── build/                           打包图标（**需入库**；除源图外都由 npm run icons 生成）
+│   ├── icon-source.png              图标源图（设计稿 1254×1254）—— 删了就再也生成不出图标
 │   ├── icon.png                     512×512：窗口与托盘图标
 │   └── icon.ico                     16/24/32/48/64/128/256 多尺寸：安装包图标
 │
@@ -73,7 +75,7 @@ jimeng-console/                      ← 项目根。所有文件都在这一层
 └── scripts/
     ├── push-to-github.sh            创建 GitHub 私有仓库并推送（需 GITHUB_TOKEN）
     ├── backup-data.sh               把运行数据与本地快照备份到项目之外（git 保不住的那部分）
-    └── make-icons.js                生成 build/icon.png 与 icon.ico（零依赖，自写 PNG/ICO 编码）
+    └── make-icons.js                由 build/icon-source.png 生成三处图标（零依赖：自写 PNG 解码 + 编码）
 ```
 
 **路径约定**：源码只进 `app/`、产物只进 `dist/`、文档只进 `docs/`、脚本只进 `scripts/`、后端只进 `server/`、桌面壳只进 `desktop/`；目录名用 ASCII，文件名可用中文；根目录只留 `README.md` + `build.js` + 桌面端的 `package.json` / `electron-builder.yml`。
@@ -110,7 +112,7 @@ npm install                   # 只为桌面端装 electron 与 electron-builder
 npm start                     # 开发态直接起桌面窗口
 npm run dist                  # 打 NSIS 安装包 → release/JimengConsole-<版本>-x64-Setup.exe
 npm run pack                  # 只出免安装目录 → release/win-unpacked/（排障时更快）
-npm run icons                 # 重新生成 build/icon.png 与 icon.ico
+npm run icons                 # 重新生成图标：build/icon.png、build/icon.ico、app/icon.png
 ```
 
 安装包约 106 MB（Electron 运行时占绝大部分）。**不携带 dreamina / ffmpeg**：创作 CLI 可以在应用内一键安装（见下节），ffmpeg 需自行安装（只影响封面抽帧与音频时长，不影响生成）。
@@ -253,7 +255,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 node build.js
 ```
 
-脚本内联四个文件、写出 `dist/即梦批量生成控制台.html`，并自动校验产物（`$$` 是否被吞、script/style 块数量、有无残留外部引用），任一不通过即报错退出。
+脚本内联四个文件 + 应用内图标、写出 `dist/即梦批量生成控制台.html`，并自动校验产物（`$$` 是否被吞、script/style 块数量、有无残留外部引用），任一不通过即报错退出。
 
 > ⚠️ 改构建流程时务必保留两道防护：`String.replace` 必须用回调形式（字符串形式会吞 `$$`）；内联前必须检查字面量 `</script`。
 
@@ -395,7 +397,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.25.2`**
+当前版本：**`0.26.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -408,6 +410,17 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.26.0` — 2026-09-21
+
+**应用图标换成设计稿 + 首页补上设置入口**
+
+- **新图标**：改用设计稿（层叠的渐变星形）作为**应用图标与应用内图标**。`scripts/make-icons.js` 的职责从「脚本画图」改成「读图 → 缩放 → 编码」：读 `build/icon-source.png`（1254×1254），按 22% 半径切圆角，再从**原始大图**分别缩放到各尺寸（不是从 512 再缩，少一次重采样），产出三处：`build/icon.png`（512，窗口与托盘）、`build/icon.ico`（16/24/32/48/64/128/256，安装包与 exe）、`app/icon.png`（128，favicon + 顶栏品牌标）。仍然零依赖：PNG 解码 = 解析块 + `zlib.inflateSync` + 逐行反过滤；缩放用**预乘 alpha** 的面积平均（直接平均非预乘 RGB 会在边缘渗出一圈脏边）。
+- **踩到的坑（已在 `server/server.js` 修掉并留注释）**：页面挂在 `/` 上，服务端本来就把 `styles.css` / `api.js` / `app.js` 三个相对引用改写成 `/app/...`；新加的 `icon.png` 漏了这条改写，浏览器去请求 `/icon.png` 直接 404 —— 表现是**两个裂图**（favicon + 顶栏品牌标）。冒烟自检的资源日志里能直接看到 `icon.png=404`，现已补上 `ICON_ANCHOR` 改写。
+- **单文件版也要有图标**：`dist/` 是 `file://` 打开的，旁边没有 `icon.png`，所以 `build.js` 新增一步把 `app/icon.png` 内联成 data URI，并加进后置校验（产物里不得残留 `="icon.png"`）。
+- **首页补设置入口**（用户反馈：此前只有进了项目页才够得着设置，而「刚装完、还没建项目、正要去装创作 CLI」恰恰最需要设置）：首页顶栏在「刷新」左侧新增「设置」按钮，复用同一个设置抽屉。抽屉对空库本来就是安全的（`openSettings` 里三个请求各自 catch，取不到就渲染占位）。
+
+**版本**：`0.25.2 → 0.26.0`（MINOR：新增能力 + 图标更换；无接口变更、无数据结构变更、无迁移）。
 
 #### `0.25.2` — 2026-09-21
 

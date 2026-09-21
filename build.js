@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * 构建发布版：把 app/ 下的四个文件内联成 dist/ 里的单文件应用。
+ * 构建发布版：把 app/ 下的四个文件 + 应用内图标内联成 dist/ 里的单文件应用。
  *
  *   cd jimeng-console
  *   node build.js
  *
- * 两个必须遵守的约束（都是踩过坑的）：
+ * 三个必须遵守的约束（都是踩过坑的）：
  *
  * 1. 必须用「回调函数」形式的 String.replace。
  *    字符串形式的替换会把代码里的 `$$` / `$'` / `$&` 当成替换占位符吞掉，
@@ -13,6 +13,9 @@
  *
  * 2. 内联前必须检查脚本里有没有字面量 `</script`。
  *    哪怕出现在注释里，浏览器也会在那里提前结束脚本块，后面的代码全部丢失。
+ *
+ * 3. 应用内图标（app/icon.png）必须内联成 data URI。
+ *    单文件版是 file:// 打开的，旁边没有 icon.png —— 不内联就是 favicon 与顶栏品牌标两个裂图。
  */
 const fs = require('fs');
 const path = require('path');
@@ -36,6 +39,15 @@ function main() {
   const css = read('styles.css');
   const api = read('api.js');
   const app = read('app.js');
+
+  /* 应用内图标（favicon + 顶栏品牌标）在单文件版里必须内联成 data URI，
+     否则 file:// 打开时找不到 icon.png（2026-09-21 换新图标时补）。 */
+  const iconFile = path.join(APP, 'icon.png');
+  if (!fs.existsSync(iconFile)) {
+    console.error('✗ 缺少应用内图标：app/icon.png（跑 npm run icons 生成）');
+    process.exit(1);
+  }
+  const iconUri = 'data:image/png;base64,' + fs.readFileSync(iconFile).toString('base64');
 
   // ── 前置校验 1：字面量结束标签 ──────────────────────────────
   for (const [name, code] of [['api.js', api], ['app.js', app]]) {
@@ -65,6 +77,7 @@ function main() {
   out = out.replace(JS_ANCHOR, function () {
     return '<script>\n' + api + '\n</script>\n<script>\n' + app + '\n</script>';
   });
+  out = out.replace(/(href|src)="icon\.png"/g, function (m, attr) { return attr + '="' + iconUri + '"'; });
 
   // ── 后置校验：确认代码没被改写 ──────────────────────────────
   const errors = [];
@@ -86,6 +99,9 @@ function main() {
   if (out.includes('href="styles.css"') || out.includes('src="api.js"')) {
     errors.push('仍存在未内联的外部引用');
   }
+  if (out.includes('="icon.png"')) {
+    errors.push('应用内图标未内联（app/icon.png 的引用仍在）');
+  }
 
   if (errors.length) {
     console.error('✗ 构建产物校验未通过：');
@@ -104,7 +120,8 @@ function main() {
               ' + api.js ' + kb(api.length) +
               ' + app.js ' + kb(app.length));
   console.log('  产物 ' + path.relative(ROOT, outPath).replace(/\\/g, '/') + '   ' + kb(out.length));
-  console.log('  校验 $$ 保留 / script 块 ' + (inlineScripts + 2) + ' / style 块 1 / 无外部引用 → 全部通过');
+  console.log('  图标 app/icon.png 内联为 data URI  ' + kb(iconUri.length));
+  console.log('  校验 $$ 保留 / script 块 ' + (inlineScripts + 2) + ' / style 块 1 / 图标已内联 / 无外部引用 → 全部通过');
 }
 
 main();

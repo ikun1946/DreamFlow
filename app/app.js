@@ -2298,6 +2298,10 @@
     const on = (id, fn) => { const el = $(id); if (el) el.addEventListener('click', fn); };
     on('#homeNew', () => onNewProject());
     on('#homeRefresh', () => loadProjects());
+    /* 首页也要能进设置（2026-09-21 用户反馈：此前只有进了项目页才够得着设置，
+       而"刚装完还没建项目、正要去装创作 CLI"恰恰是最需要设置的场景）。
+       抽屉本身对空库是安全的：openSettings 里三个请求各自 catch，取不到就渲染占位。 */
+    on('#homeSettings', () => openSettings());
     on('#projBack', () => enterHome());
     on('#projNewWs', () => onNewWorkspace());
     on('#projRename', () => { if (S.cur.project) onRenameProject(S.cur.project.id, S.cur.project.name); });
