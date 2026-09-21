@@ -1,0 +1,156 @@
+# ============================================================
+# ci.yml —— 持续集成
+#
+# 两个 job，理由见 docs/项目审查与改进清单.md §8：
+#   · check   （Linux / Node 20）—— 代码质量门禁：项目检查 → 测试 → 构建
+#   · package （Windows / Node 20）—— 真实目标平台的打包验证
+#
+# ⚠ 为什么**必须**有 Windows job：本项目的目标平台是 Windows x64，
+#   而不少问题只在 Windows 上出现（路径分隔符、fsync 目录 EPERM、
+#   文件占用导致 rmSync 部分失败、NSIS 打包本身）。只在 Linux 上
+#   `node --check` 通过，等于没验过"能不能装"。
+#
+# ⚠ 打包 job **不做签名**：签名凭据只存在于正式发布流程里。
+#   这里只验"能打出包来"。需要强制签名时，在发布 job 里设 CSC_REQUIRE=1。
+# ============================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的新提交取消上一次未完成的运行
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ────────────────────────────────────────────────────────────
+  # Linux：代码质量门禁
+  # ────────────────────────────────────────────────────────────
+  check:
+    name: 检查与测试（Linux / Node 20）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # ⚠ 不加 --ignore-scripts：electron / electron-builder 的 postinstall
+      #   在 Linux 上会被跳过（平台上没有对应二进制），但这里**不需要**它们 ——
+      #   check job 只跑纯 Node 逻辑，不打包。
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 项目检查
+        run: npm run check
+
+      - name: 自动化测试
+        run: npm test
+
+      - name: 构建网页版单文件
+        run: npm run build:web
+
+      - name: 确认构建产物已生成
+        shell: bash
+        run: |
+          set -e
+          ls -la dist/
+          test -n "$(ls dist/*.html 2>/dev/null)" || (echo "dist/ 下没有 html 产物" && exit 1)
+
+      # ★ 网页版 smoke 与 E2E 业务流验证。
+      #   两者都在 Linux 上跑得通（服务端是纯 Node，不依赖 Windows）。
+      #   它们**各自**占一档：smoke 验"服务起得来、接口通、关得干净"，
+      #   e2e 验"一条真实业务链从建项目到彻底删除能跑完"。
+      - name: 网页版 smoke test
+        run: npm run smoke:web -- --port 8897
+
+      - name: 端到端业务流验证
+        run: npm run e2e -- --port 8899
+
+  # ────────────────────────────────────────────────────────────
+  # Windows：打包验证
+  # ────────────────────────────────────────────────────────────
+  package:
+    name: 打包验证（Windows / Node 20）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 打包前先过一遍检查与测试 —— 打包成功的"坏代码"没有意义
+      - name: 项目检查
+        run: npm run check
+
+      - name: 自动化测试
+        run: npm test
+
+      # --dir 只产出 release/win-unpacked，不打 NSIS 安装器：
+      # 快得多，且足以验证"Electron 能把整个应用装进目录并起得来"。
+      - name: 打包（未封装目录）
+        run: npm run pack
+
+      - name: 确认打包产物齐备
+        shell: pwsh
+        run: |
+          $exe = "release\win-unpacked\JimengConsole.exe"
+          if (-not (Test-Path $exe)) { throw "缺少主程序：$exe" }
+          Write-Host "主程序已生成：$((Get-Item $exe).Length) 字节"
+          if (-not (Test-Path "release\win-unpacked\resources\app.asar")) {
+            throw "缺少 app.asar"
+          }
+          Write-Host "app.asar 已生成"
+          Get-ChildItem release\win-unpacked | Select-Object Name, Length
+
+      # ★ 桌面版 smoke：起真程序，确认服务监听、页面渲染、退出码 0
+      - name: 桌面版 smoke test
+        shell: pwsh
+        run: |
+          $env:JC_DESKTOP_SMOKE = "1"
+          $env:JC_SMOKE_DELAY = "3000"
+          $p = Start-Process -FilePath "release\win-unpacked\JimengConsole.exe" `
+                -PassThru -NoNewWindow -RedirectStandardOutput "smoke-out.txt" `
+                -RedirectStandardError "smoke-err.txt"
+          # smoke 模式应自行退出
+          if (-not $p.WaitForExit(90000)) {
+            Write-Warning "smoke 进程 90 秒未退出，强制结束"
+            $p.Kill()
+            throw "桌面版 smoke 超时"
+          }
+          Write-Host "退出码：$($p.ExitCode)"
+          Write-Host "--- stdout ---"
+          Get-Content "smoke-out.txt" -ErrorAction SilentlyContinue
+          Write-Host "--- stderr ---"
+          Get-Content "smoke-err.txt" -ErrorAction SilentlyContinue
+
+          if ($p.ExitCode -ne 0) { throw "桌面版 smoke 退出码非 0：$($p.ExitCode)" }
+          $log = (Get-Content "smoke-out.txt" -Raw -ErrorAction SilentlyContinue) +
+                 (Get-Content "smoke-err.txt" -Raw -ErrorAction SilentlyContinue)
+          if ($log -notmatch "\[smoke\] OK") { throw "日志里没有出现 [smoke] OK" }
+          Write-Host "smoke 通过"
+
+      - name: 上传 smoke 日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: |
+            smoke-out.txt
+            smoke-err.txt
+          if-no-files-found: ignore
+          retention-days: 7
