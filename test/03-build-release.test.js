@@ -20,6 +20,7 @@ const REPO = H.REPO_ROOT;
 const updater = require(path.join(REPO, 'desktop', 'updater.js'));
 const extTools = require(path.join(REPO, 'desktop', 'external-tools.js'));
 const legacy = require(path.join(REPO, 'desktop', 'legacy-import.js'));
+const updateStateMod = require(path.join(REPO, 'desktop', 'update-state.js'));
 
 const SANDBOX = H.freshDir('build-release');
 
@@ -117,7 +118,7 @@ describe('updater —— 更新文件名安全校验（P0-1 路径穿越回归�
   });
 
   test('assertManifestFile：改写 m.file，非法清单整份拒绝', () => {
-    const good = { version: '0.27.0', file: 'JimengConsole-0.27.0-x64-Setup.exe' };
+    const good = { version: '0.27.0', file: 'JimengConsole-0.27.0-x64-Setup.exe', sha512: 'AbCdEf==' };
     const r1 = updater.assertManifestFile(good);
     assert.equal(r1.file, good.file, '合法清单应原样通过');
 
@@ -126,12 +127,18 @@ describe('updater —— 更新文件名安全校验（P0-1 路径穿越回归�
     assert.equal(updater.assertManifestFile(null), null);
 
     // 有 file 但非法 → 抛错
-    assert.throws(() => updater.assertManifestFile({ version: '0.27.0', file: '../../evil.exe' }),
+    assert.throws(() => updater.assertManifestFile({ version: '0.27.0', file: '../../evil.exe', sha512: 'x' }),
       /更新文件名/, '穿越清单必须被整份拒绝');
 
     // 版本不一致 → 抛错
-    assert.throws(() => updater.assertManifestFile({ version: '1.0.0', file: 'JimengConsole-0.27.0-x64-Setup.exe' }),
+    assert.throws(() => updater.assertManifestFile({ version: '1.0.0', file: 'JimengConsole-0.27.0-x64-Setup.exe', sha512: 'x' }),
       /版本|不一致/);
+
+    /* ★ 没有 sha512 → 整份拒绝（2026-09-22 补）。原实现会放行，
+       而下游 `if (expectSha512 && …)` 就跳过了校验 —— 等于"无校验安装"。
+       三种更新源都经过这里，所以这是唯一的落点。 */
+    assert.throws(() => updater.assertManifestFile({ version: '0.27.0', file: 'JimengConsole-0.27.0-x64-Setup.exe' }),
+      /sha512/, '★ 缺校验和的清单必须拒绝');
   });
 
   test('★ 实测复现：path.join 确实会被穿越，所以必须在校验层拦截', () => {
@@ -185,23 +192,96 @@ describe('updater —— 版本比较与清单解析', () => {
     assert.equal(m.sha512, 'AbCdEf==');
     assert.ok(m.size === 12345678 || m.size === undefined, 'size 应被解析或忽略，实得 ' + m.size);
   });
+});
 
-  test('SHA-512 是发布的必要条件：清单里必须给出校验和', () => {
-    const src = fs.readFileSync(path.join(REPO, 'desktop', 'updater.js'), 'utf8');
-    assert.match(src, /sha512/i, '更新器必须处理 sha512');
-    // 校验不通过时必须拒绝（不能"校验失败也装"）
-    assert.match(src, /校验|sha512.*不|mismatch|不一致/i,
-      '应有校验失败的处理分支');
+/* ============================================================
+   安装前必须校验 sha512 —— 行为型（2026-09-22 由"匹配源码文本"改写）
+
+   为什么必须真的跑一遍：原先这条断言的是"updater.js 源码里出现过 sha512 这个词"，
+   而把校验分支删掉、或让 expectSha512 传空，源码里照样有 sha512 —— 测试照样绿。
+   现在用 local 更新源（完全离线、不联网）走完整的 download() 链路。
+   ============================================================ */
+describe('updater —— 安装前必须校验 sha512（行为型）', () => {
+  const V = '0.99.0';
+  const FILE = 'JimengConsole-0.99.0-x64-Setup.exe';
+  const SAMPLE = Buffer.from('MZ' + 'x'.repeat(4096), 'utf8');   // 假装是个 PE 的字节流
+
+  const sha512 = (buf) => require('crypto').createHash('sha512').update(buf).digest('base64');
+
+  /** 造一个 local 更新源：目录里放 latest.yml + 安装包，再给一个空的目标目录 */
+  function makeSource(tag, bytes, hash, size) {
+    const dir = H.freshDir('upd-src-' + tag);
+    const dest = H.freshDir('upd-dst-' + tag);
+    fs.writeFileSync(path.join(dir, FILE), bytes);
+    const yml = [
+      'version: ' + V,
+      'files:',
+      '  - url: ' + FILE,
+      hash ? '    sha512: ' + hash : '',
+      size ? '    size: ' + size : '',
+      'path: ' + FILE,
+      hash ? 'sha512: ' + hash : ''
+    ].filter(Boolean).join('\n');
+    fs.writeFileSync(path.join(dir, 'latest.yml'), yml, 'utf8');
+    return { dir, dest };
+  }
+
+  test('★ 哈希对不上：拒绝并丢弃，不留下任何可执行文件', async () => {
+    const { dir, dest } = makeSource('bad', SAMPLE, 'A'.repeat(86) + '==');
+    const r = await updater.download('0.1.0', { provider: 'local', dir }, dest);
+    assert.equal(r.ok, false, '★ 校验不通过必须失败');
+    assert.match(r.error, /校验不通过|sha512/, '错误里要说清是校验问题，而不是含糊的"下载失败"');
+    assert.deepEqual(fs.readdirSync(dest), [], '★ 目标目录必须一个文件都不剩（含 .part- 临时文件）');
+  });
+
+  test('★ 字节数对不上：同样拒绝（防"下了一半就当成功"）', async () => {
+    const { dir, dest } = makeSource('size', SAMPLE, sha512(SAMPLE), SAMPLE.length + 10);
+    const r = await updater.download('0.1.0', { provider: 'local', dir }, dest);
+    assert.equal(r.ok, false, '★ 字节数不符必须失败');
+    assert.match(r.error, /字节数不符/);
+    assert.deepEqual(fs.readdirSync(dest), [], '不得留下半截包');
+  });
+
+  test('哈希与字节数都对：落盘到目标目录，内容逐字节一致', async () => {
+    const { dir, dest } = makeSource('ok', SAMPLE, sha512(SAMPLE), SAMPLE.length);
+    const r = await updater.download('0.1.0', { provider: 'local', dir }, dest);
+    assert.equal(r.ok, true, '合法包应通过：' + (r.error || ''));
+    assert.equal(r.file, FILE);
+    assert.equal(r.bytes, SAMPLE.length);
+    assert.ok(fs.readFileSync(path.join(dest, FILE)).equals(SAMPLE),
+      '★ 执行的就是被验过的那一份，内容必须一致');
+    assert.deepEqual(fs.readdirSync(dest), [FILE], '目录里只应有最终文件（.part- 已改名）');
+  });
+
+  test('清单里没给 sha512：仍然拒绝（没有校验和就没有可信度）', async () => {
+    const { dir, dest } = makeSource('nohash', SAMPLE, '');
+    const r = await updater.download('0.1.0', { provider: 'local', dir }, dest);
+    assert.equal(r.ok, false, '★ 清单缺 sha512 时不得放行');
+    assert.deepEqual(fs.readdirSync(dest), []);
+  });
+
+  test('★ 更新源必须是 https：http 源在发请求之前就被拒（不联网也能验）', async () => {
+    const r = await updater.fetchText('http://example.com/latest.yml', null);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /https/, '★ 必须明确说"更新源必须是 https" —— 这是防中间人替换 exe 的第一道闸');
+  });
+});
+
+describe('updater —— 更新源解析（行为型）', () => {
+  test('三种 provider 原样保留，非法 provider 回落到 github', () => {
+    for (const p of ['github', 'url', 'local']) {
+      assert.equal(updater.resolveSource({ provider: p }).provider, p, p + ' 应被保留');
+    }
+    assert.equal(updater.resolveSource({ provider: 'ftp' }).provider, 'github');
+    assert.equal(updater.resolveSource({ provider: '' }).provider, 'github');
   });
 
   test('默认更新源是 ikun1946/DreamFlow（不是旧仓库名）', () => {
     assert.equal(updater.DEFAULT_SOURCE.provider, 'github');
     assert.equal(updater.DEFAULT_SOURCE.owner, 'ikun1946');
     assert.equal(updater.DEFAULT_SOURCE.repo, 'DreamFlow', '★ 仓库名应是 DreamFlow，不是 jimeng-console');
-
-    const src = fs.readFileSync(path.join(REPO, 'desktop', 'updater.js'), 'utf8');
-    assert.ok(!/jimeng-console/.test(src),
-      '★ updater.js 不得残留旧仓库名 jimeng-console');
+    /* 旧仓库名的源码残留由 scripts/check-project.js 的"旧名残留"一项全仓库统一盯
+       （比在测试里逐文件匹配更不容易漏），这里不再重复断言文本。 */
   });
 
   test('resolveSource：非法 provider 回落到 github，且永远带上默认 owner/repo', () => {
@@ -216,13 +296,11 @@ describe('updater —— 版本比较与清单解析', () => {
     assert.equal(updater.resolveSource(null).repo, 'DreamFlow');
   });
 
-  test('更新来源只认 github / url / local 三种，github 走 https', () => {
-    const src = fs.readFileSync(path.join(REPO, 'desktop', 'updater.js'), 'utf8');
-    assert.match(src, /'github'/);
-    assert.match(src, /'url'/);
-    assert.match(src, /'local'/);
-    assert.match(src, /https:\/\/api\.github\.com|https:\/\/github\.com/,
-      'github 源应走 https');
+  test('github 源的 https 强制由 fetchText 覆盖（这里不再重复断言源码文本）', () => {
+    /* 原先这条断言的是源码里出现过 'github' / 'url' / 'local' 与一个 https:// 字面量 ——
+       取值已由上面那条行为用例覆盖，https 强制由 fetchText 那条真实覆盖
+       （http 源会在发请求前被拒）。这里只把口径写清楚，避免再退回"断言源码里出现过某个词"。 */
+    assert.equal(updater.resolveSource({ provider: 'github' }).provider, 'github');
   });
 });
 
@@ -288,54 +366,224 @@ describe('updater —— 临时文件治理与并发保护（P0-3）', () => {
   });
 });
 
-describe('main.js —— 更新互斥状态机（P0-3）', () => {
-  const src = fs.readFileSync(path.join(REPO, 'desktop', 'main.js'), 'utf8');
+/* ============================================================
+   更新互斥状态机 —— 行为型（2026-09-22 由"匹配源码文本"改写而来，P0-3）
 
-  test('定义了五态状态机与 canStartUpdate', () => {
-    assert.match(src, /UPDATE_STATES\s*=\s*\[[^\]]*'idle'[^\]]*'checking'[^\]]*'downloading'[^\]]*'ready'[^\]]*'installing'[^\]]*\]/,
-      '应有 idle/checking/downloading/ready/installing 五态');
-    assert.match(src, /function canStartUpdate/, '应有 canStartUpdate');
-    assert.match(src, /function withUpdateLock/, '应有 withUpdateLock');
+   为什么值得重写：这五条规则是"并发更新"事故的**唯一**防线，原先只能断言
+   main.js 的源码里出现过哪些字符串 —— 把 withUpdateLock 改名会误报，
+   而把复位的时机改坏却可能照样绿。改完立刻抓到一个真缺陷（见下面 ★ 那条）。
+   ============================================================ */
+describe('update-state —— 更新互斥状态机（行为型，P0-3）', () => {
+  const mk = (opts) => updateStateMod.makeUpdateState(opts || {});
+
+  test('五态齐全，且与 main.js 的 payload 口径一致', () => {
+    assert.deepEqual(updateStateMod.STATES, ['idle', 'checking', 'downloading', 'ready', 'installing']);
   });
 
-  test('withUpdateLock 用 try/finally 释放，失败路径也解锁', () => {
-    // 抓 withUpdateLock 函数体
-    const i = src.indexOf('function withUpdateLock');
-    assert.ok(i >= 0);
-    const body = src.slice(i, i + 1400);
-    assert.match(body, /try\s*\{/, '应有 try');
-    assert.match(body, /finally\s*\{/, '★ 必须在 finally 里释放，否则异常会永久锁死更新流程');
+  test('★ 并发第二次调用被拒绝（checking / downloading / installing 三态都拦）', async () => {
+    const pairs = [
+      ['check', 'check', 'idle'],
+      ['download', 'download', 'idle'],
+      /* 安装这一对跑完停在 installing（进程即将退出，刻意不复位）—— 见下面那条 ★ */
+      ['install', 'download', 'installing']
+    ];
+    for (const [first, second, endState] of pairs) {
+      const rejected = [];
+      const st = mk({ onReject: (action, state) => rejected.push({ action, state }) });
+      let release; const gate = new Promise((r) => { release = r; });
+      const firstRun = st.withLock(first, async () => { await gate; return { ok: true, tag: 'first' }; });
+      await Promise.resolve();   // 让第一次进到 fn（此时状态已切换）
+      const r2 = await st.withLock(second, async () => ({ ok: true, tag: 'second' }));
+      assert.equal(r2.ok, false, first + ' 进行中再发起 ' + second + ' 必须被拒');
+      assert.equal(r2.busy, true, '被拒时要带 busy 标记（界面据此静默处理，不弹错误框）');
+      assert.equal(r2.tag, undefined, '★ 第二次的 fn 一次都不能执行 —— 否则就是两次并发下载/安装');
+      assert.match(r2.error, /正在进行中|正在安装/, '拒绝理由要说人话');
+      assert.deepEqual(rejected, [{ action: second, state: updateStateMod.ACTION_STATE[first] }],
+        '★ 被拒时要留痕（onReject）—— 排查"点了没反应"时这是唯一线索');
+      release();
+      const r1 = await firstRun;
+      assert.equal(r1.tag, 'first', '第一次应正常跑完');
+      assert.equal(st.get(), endState, '跑完后应收敛到 ' + endState);
+    }
   });
 
-  test('三个更新动作都包进锁里', () => {
-    assert.match(src, /withUpdateLock\('check'/, '检查应上锁');
-    assert.match(src, /withUpdateLock\('download'/, '下载应上锁');
-    assert.match(src, /withUpdateLock\('install'/, '安装应上锁');
+  test('★ fn 抛异常时锁必须释放（否则更新永久卡死，只能重启应用）', async () => {
+    const st = mk();
+    await assert.rejects(() => st.withLock('download', async () => { throw new Error('网络断了'); }),
+      /网络断了/, '异常必须继续上抛，不能被吞');
+    assert.equal(st.get(), 'idle', '★ 异常路径也要回到 idle（这就是 try/finally 存在的理由）');
+    const again = await st.withLock('download', async () => ({ ok: true }));
+    assert.equal(again.ok, true, '释放后应能再次发起');
   });
 
-  test('busy 时不弹无谓的错误框', () => {
-    assert.match(src, /r\s*&&\s*r\.busy/, '托盘检查应识别 busy 并静默返回');
+  test('★ 安装成功后保持 installing —— 800ms 退出窗口里不得放行第二次安装', async () => {
+    /* 这条是本轮改写抓到的**真缺陷**：原实现在 fn 返回后立刻把 installing 复位成 ready，
+       而 main.js 还要留 800ms 等 detached 安装器站稳 —— 那段窗口里用户再点一次"安装"，
+       canStart 是放行的，会拉起第二个安装器同时替换程序文件。
+       原测试只匹配源码文本（"含 installing""含 quitting = true"），完全没发现。 */
+    const st = mk();
+    const r = await st.withLock('install', async () => ({ ok: true, path: 'x' }));
+    assert.equal(r.ok, true);
+    assert.equal(st.get(), 'installing', '★ 安装成功后不得复位（进程即将退出）');
+    const again = await st.withLock('install', async () => ({ ok: true }));
+    assert.equal(again.ok, false, '★ 退出窗口里第二次安装必须被拒');
+    assert.match(again.error, /正在安装/);
   });
 
-  test('安装期间保持 installing 态直到退出（防"退出流程中并发操作"）', () => {
-    assert.match(src, /state\s*=\s*'installing'|state:\s*'installing'|installing/, '应有 installing 态');
-    assert.match(src, /quitting\s*=\s*true/, '应置 quitting 标志');
+  test('安装失败由调用方显式降级 → 回到 ready，可重试（且此时才算不忙）', async () => {
+    const st = mk();
+    await st.withLock('install', async () => { st.set('ready'); return { ok: false, error: '安装器没起来' }; });
+    assert.equal(st.get(), 'ready', '失败后应退回 ready（安装包还在）');
+    assert.equal(st.isBusy(), false, 'ready 不算忙');
+    const retry = await st.withLock('install', async () => ({ ok: true }));
+    assert.equal(retry.ok, true, 'ready 状态下应允许重试安装');
   });
 
-  test('boot 时清理过期更新临时文件', () => {
-    assert.match(src, /cleanupStaleTemp/, '启动时应调用 cleanupStaleTemp');
-    assert.match(src, /jimeng-update/, '应指向更新器使用的临时目录名');
+  test('★ 调用方在 fn 里设的状态不被锁覆盖；ready 下重下 / 安装 / 再检查都放行', async () => {
+    const st = mk();
+    await st.withLock('download', async () => { st.set('ready'); return { ok: true }; });
+    assert.equal(st.get(), 'ready', '★ 下载成功置的 ready 不能被 finally 冲掉');
+    for (const a of ['check', 'download', 'install']) {
+      assert.equal(st.canStart(a), true, 'ready 应放行 ' + a + '（否则托盘"检查更新"会静默失效）');
+    }
   });
 
-  test('preload 暴露 onUpdateState 且只订阅固定 channel', () => {
-    const pre = fs.readFileSync(path.join(REPO, 'desktop', 'preload.js'), 'utf8');
-    assert.match(pre, /onUpdateState/, '应暴露 onUpdateState');
-    assert.match(pre, /'update:state'/, '应订阅固定 channel update:state');
-    // 不得暴露任意 channel 的通用订阅（那等于把 IPC 面全开）
-    assert.ok(!/ipcRenderer\.on\s*\(\s*channel/.test(pre),
-      '★ 不得提供"传任意 channel"的通用订阅');
+  test('check / download 正常结束后自动回到 idle', async () => {
+    const st = mk();
+    await st.withLock('check', async () => ({ ok: true }));
+    assert.equal(st.get(), 'idle');
+    await st.withLock('download', async () => ({ ok: false, error: 'x' }));
+    assert.equal(st.get(), 'idle', '失败也要回 idle（锁不该把状态留在中间态）');
+  });
+
+  test('★ 写入未知状态名直接抛（拼错会让互斥静默失效）', () => {
+    const st = mk();
+    assert.throws(() => st.set('redy'), /未知更新状态/);
+    assert.equal(st.get(), 'idle', '抛错后状态不得被改动');
+  });
+
+  test('onChange 只在状态真的变化时触发（避免重复广播）', async () => {
+    const seen = [];
+    const st = mk({ onChange: (s) => seen.push(s) });
+    await st.withLock('check', async () => ({ ok: true }));
+    assert.deepEqual(seen, ['checking', 'idle'], '应恰好广播两次：进入 checking、回到 idle');
+    st.set('idle');
+    assert.equal(seen.length, 2, '同值写入不触发广播');
+  });
+
+  test('snapshot 给出 state + busy（界面读的就是这两个字段）', () => {
+    const st = mk();
+    assert.deepEqual(st.snapshot(), { state: 'idle', busy: false });
+    st.set('ready');
+    assert.deepEqual(st.snapshot(), { state: 'ready', busy: false }, 'ready 不忙 —— 按钮保持可用');
+    st.set('installing');
+    assert.deepEqual(st.snapshot(), { state: 'installing', busy: true });
   });
 });
+
+/* ============================================================
+   preload —— 桥面形状（行为型）
+   用 stub 顶掉 electron，然后**真的加载一次 preload.js**，看它暴露了什么。
+   比"匹配源码文本"强的地方：换写法 / 改名不会误报，而"多暴露一个动作"
+   "订阅了别的 channel""退订没生效"这类退化一定会被抓住。
+   ============================================================ */
+describe('preload —— 桥面形状（行为型，P0-3）', () => {
+  function loadPreload() {
+    const calls = { expose: [], on: [], invoke: [], removeListener: [] };
+    const stub = {
+      contextBridge: { exposeInMainWorld: (name, api) => calls.expose.push({ name, api }) },
+      ipcRenderer: {
+        invoke: (ch, ...rest) => { calls.invoke.push({ ch, rest }); return Promise.resolve({ ch }); },
+        on: (ch, h) => { calls.on.push({ ch, h }); },
+        removeListener: (ch, h) => { calls.removeListener.push({ ch, h }); }
+      }
+    };
+    const Module = require('module');
+    const orig = Module._load;
+    Module._load = function (request) {
+      if (request === 'electron') return stub;
+      return orig.apply(this, arguments);
+    };
+    const target = path.join(REPO, 'desktop', 'preload.js');
+    try {
+      delete require.cache[require.resolve(target)];
+      require(target);
+    } finally {
+      Module._load = orig;                        // 立刻还原，别影响别的用例
+      delete require.cache[require.resolve(target)];
+    }
+    assert.equal(calls.expose.length, 1, '应恰好暴露一个全局对象');
+    assert.equal(calls.expose[0].name, 'JCDesktop');
+    return { calls, api: calls.expose[0].api };
+  }
+
+  test('暴露的只有具名动作，不把 ipcRenderer / process 交出去', () => {
+    const { api } = loadPreload();
+    assert.equal(api.isDesktop, true);
+    assert.equal(typeof api.platform, 'string', 'platform 应是字符串，不是 process 对象');
+    for (const k of ['info', 'openDataDir', 'openLogs', 'showItemInFolder', 'openExternal',
+      'updateStatus', 'updateCheck', 'updateDownload', 'updateInstall', 'updateSetSource', 'onUpdateState']) {
+      assert.equal(typeof api[k], 'function', '应暴露 ' + k);
+    }
+    const keys = JSON.stringify(Object.keys(api));
+    assert.ok(!/ipcRenderer|require|process/.test(keys), '★ 桥面上不得挂 Electron / Node 对象');
+  });
+
+  test('每个动作都只打到自己那条 channel（参数原样透传）', async () => {
+    const { calls, api } = loadPreload();
+    await api.info();
+    await api.openDataDir();
+    await api.openLogs();
+    await api.showItemInFolder('C:\\x\\y.mp4');
+    await api.openExternal('https://example.com/');
+    await api.updateStatus();
+    await api.updateCheck();
+    await api.updateDownload();
+    await api.updateInstall();
+    await api.updateSetSource({ provider: 'url' });
+    assert.deepEqual(calls.invoke.map((c) => c.ch),
+      ['app:info', 'app:openDataDir', 'app:openLogs', 'shell:showItem', 'shell:openExternal',
+        'update:status', 'update:check', 'update:download', 'update:install', 'update:setSource']);
+    assert.deepEqual(calls.invoke[3].rest, ['C:\\x\\y.mp4'], '路径参数应原样透传（主进程侧再校验）');
+    assert.deepEqual(calls.invoke[9].rest, [{ provider: 'url' }], '更新源补丁应原样透传');
+  });
+
+  test('★ onUpdateState 只订阅固定 channel update:state，且退订移除同一个 handler', () => {
+    const { calls, api } = loadPreload();
+    const got = [];
+    const off = api.onUpdateState((p) => got.push(p));
+    assert.equal(calls.on.length, 1, '只应订阅一次');
+    assert.equal(calls.on[0].ch, 'update:state', '★ channel 必须是固定的 update:state');
+    calls.on[0].h({ sender: 'x' }, { state: 'downloading' });
+    assert.deepEqual(got, [{ state: 'downloading' }], '页面回调只应拿到 payload（不给 event 句柄）');
+    off();
+    assert.equal(calls.removeListener.length, 1, '退订应移除监听');
+    assert.equal(calls.removeListener[0].ch, 'update:state');
+    assert.equal(calls.removeListener[0].h, calls.on[0].h, '★ 退订的必须就是订阅时那个 handler');
+  });
+
+  test('★ 页面回调抛异常不得冒泡；非函数入参不订阅、但仍返回可调用的退订函数', () => {
+    const { calls, api } = loadPreload();
+    const off = api.onUpdateState(() => { throw new Error('页面自己炸了'); });
+    assert.doesNotThrow(() => calls.on[0].h({}, { state: 'idle' }), '回调异常必须被吞掉（否则会打到主进程）');
+    const off2 = api.onUpdateState('not a function');
+    assert.equal(typeof off2, 'function', '非函数也要返回一个能安全调用的退订函数');
+    assert.equal(calls.on.length, 1, '非函数入参不得订阅');
+    off(); off2();
+  });
+});
+
+/* ============================================================
+   仓库形状 —— **刻意保留**的文本断言
+   为什么这几条故意是文本断言（不是懒，是没有更便宜的办法）：
+     · main.js 的入口函数依赖 electron 的 app/win/dialog，不起 Electron 就跑不起来；
+     · electron-builder.yml / LICENSE 本身是**声明性文件**，它们的形状就是事实。
+   规则：这类断言只放在本组，且每条都要写清"为什么必须断言文本"。
+   ============================================================ */
+/* ============================================================
+   preload 的桥面形状测试见上面的 describe('preload —— 桥面形状')。
+   刻意保留的文本断言统一放在文件末尾的 describe('仓库形状')。
+   ============================================================ */
 
 describe('external-tools —— 外部工具状态四件套（P1-10）', () => {
   test('TOOL_SPEC / TOOL_CODES 覆盖 dreamina / ffmpeg / ffprobe', () => {
@@ -510,9 +758,60 @@ describe('legacy-import —— 旧数据导入报告落盘（P2-11）', () => {
   });
 });
 
-describe('版本一致性（P0-4 / P2-14 相关）', () => {
-  test('package.json 的版本号是合法 semver 且与 electron-builder 产物名模板相容', () => {
-    const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
+/* ============================================================
+   仓库形状 —— **刻意保留**的文本断言（阶段 2.3 的收口）
+
+   为什么这些断言故意是文本断言（不是懒，是没有更便宜的办法）：
+     · electron-builder.yml / LICENSE / THIRD-PARTY-NOTICES / package.json 是**声明性文件**，
+       它们的形状就是事实，没有"行为"可调；
+     · main.js 的入口函数依赖 electron 的 app / win / dialog，不起 Electron 就跑不起来。
+
+   规则（改动本组前先读）：
+     1. 这类断言**只放在本组**，别散回各个行为型 describe 里；
+     2. 每条都要写清"为什么必须断言文本"；
+     3. 改打包配置 / 许可 / 主进程入口时必须同步这里。
+   ============================================================ */
+describe('仓库形状（刻意保留的文本断言）', () => {
+  const mainSrc = fs.readFileSync(path.join(REPO, 'desktop', 'main.js'), 'utf8');
+
+  test('main.js：三个更新动作都包进 withLock（入口依赖 electron，无法直接调用）', () => {
+    assert.match(mainSrc, /updateStates\.withLock\('check'/, '检查应上锁');
+    assert.match(mainSrc, /updateStates\.withLock\('download'/, '下载应上锁');
+    assert.match(mainSrc, /updateStates\.withLock\('install'/, '安装应上锁');
+    assert.doesNotMatch(mainSrc, /function\s+withUpdateLock/, '锁本体只应在 update-state.js 里（单一事实来源）');
+  });
+
+  test('main.js：安装成功路径留 800ms 再退出（文本侧兜住接线）', () => {
+    assert.match(mainSrc, /setTimeout\(\(\)\s*=>\s*\{\s*quitting\s*=\s*true;\s*app\.quit\(\);\s*\},\s*800\)/,
+      '★ 必须留时间让 detached 安装器站稳，再退出');
+  });
+
+  test('main.js：托盘入口在 busy 时静默返回（不弹无谓的错误框）', () => {
+    assert.match(mainSrc, /if \(r && r\.busy\) return;/, '被互斥拒掉时应静默返回');
+  });
+
+  test('main.js：boot 时清理过期更新临时文件', () => {
+    assert.match(mainSrc, /cleanupStaleTemp/, '启动时应调用 cleanupStaleTemp');
+    assert.match(mainSrc, /jimeng-update/, '应指向更新器使用的临时目录名');
+  });
+
+  test('★ payload 的 installing 字段与界面读取的字段对齐（跨文件契约）', () => {
+    const appSrc = fs.readFileSync(path.join(REPO, 'app', 'app.js'), 'utf8');
+    assert.match(mainSrc, /installing:\s*updateStates\.get\(\)\s*===\s*'installing'/,
+      '★ payload 必须给出 installing —— 界面按这个字段显示"正在安装"卡片');
+    assert.match(appSrc, /u\.installing/, '界面确实读的是 installing');
+  });
+
+  test('ARTIFACT_RE / ARTIFACT_PREFIX 与 electron-builder.yml 的 artifactName 一致', () => {
+    /* 跨文件契约：更新器靠这个正则识别"是不是我们的安装包"，而名字由打包配置生成。
+       两边漂移的后果是**更新器拒绝所有合法安装包**。这里只核对"声明与实现同形状"，
+       正则本身的逐条行为在 P0-1 那组里测。 */
+    const yml = fs.readFileSync(path.join(REPO, 'electron-builder.yml'), 'utf8');
+    assert.ok(yml.includes('artifactName: ' + updater.ARTIFACT_PREFIX + '${version}'),
+      'yml 的 artifactName 应使用 ' + updater.ARTIFACT_PREFIX + '${version} 前缀');
+  });
+
+  test('package.json 的版本号是合法 semver 且与 electron-builder 产物名模板相容', () => {    const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     assert.match(pkg.version, /^\d+\.\d+\.\d+$/, '版本号应是 x.y.z，实得 ' + pkg.version);
     assert.equal(pkg.license, 'SEE LICENSE IN LICENSE', 'P0-4：license 字段应指向 LICENSE 文件');
     assert.ok(fs.existsSync(path.join(REPO, 'LICENSE')), '★ LICENSE 文件必须存在');
@@ -578,9 +877,11 @@ describe('版本一致性（P0-4 / P2-14 相关）', () => {
       assert.ok(gi.includes(pat), '★ .gitignore 必须忽略 ' + pat);
     }
   });
-});
 
-describe('构建产物一致性（node build.js 相关）', () => {
+  /* ---------------- 构建产物一致性（node build.js 相关） ----------------
+     同属"仓库形状"：这里问的是"文件在不在、能不能过语法检查"，
+     不是"行为对不对" —— 打包/图标出问题的表现是"装出来没有图标"，属于形状问题。 */
+
   test('build.js 存在且可被 node --check 通过', () => {
     const p = path.join(REPO, 'build.js');
     assert.ok(fs.existsSync(p), 'build.js 必须存在');

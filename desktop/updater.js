@@ -150,9 +150,18 @@ function safeArtifactName(name, expectVersion) {
 }
 
 /* 校验并回写 m.file。约定：只有 latest.yml 确实带了 file 时才校；
-   file 缺失由调用方按"清单不完整"处理。 */
+   file 缺失由调用方按"清单不完整"处理。
+
+   ⚠ 2026-09-22 补：**清单必须带 sha512**，否则整份拒绝。
+   为什么（这是把"安装前必须校验 sha512"从注释变成事实）：
+   原先 sha512 缺失时 copyAndVerify / downloadTo 会跳过校验（`if (expectSha512 && …)`），
+   于是一份没有校验和的 latest.yml 可以一路装到底 —— 而 sha512 正是"下到的 exe
+   就是 release 里声明的那个"的唯一凭据。三种更新源（github/url/local）都经过这里，
+   所以这是唯一的落点。electron-builder 生成的 latest.yml 一定带 sha512，
+   拒绝缺字段的清单不会误伤正常发布（测试里有对应用例）。 */
 function assertManifestFile(m) {
   if (!m || !m.file) return m;
+  if (!m.sha512) throw new Error('更新清单没有 sha512 校验和，已拒绝（无法确认安装包就是声明的那个）');
   m.file = safeArtifactName(m.file, m.version);
   return m;
 }

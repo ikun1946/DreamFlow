@@ -25,6 +25,7 @@ const rpaths = require('./runtime-paths');
 const toolsMod = require('./external-tools');
 const legacyMod = require('./legacy-import');
 const updaterMod = require('./updater');
+const updateStateMod = require('./update-state');   // 更新互斥状态机（纯逻辑，可单测）
 const runtime = require('../server/runtime');
 
 const APP_ID = 'com.ikun1946.jimengconsole';
@@ -620,53 +621,20 @@ function createTray() {
      · 连点两次"检查更新" → 两次并发请求，结果互相覆盖（lastCheck 是单变量）
      · 检查/下载期间又点安装 → 拿到半截文件或没校验完的路径
      · 重复下载 → 两个流程写同一个 `*-Setup.exe.part-<pid>`
-   状态只有 5 个，但**每个都必须拦**。所有更新入口统一走 withUpdateLock()，
-   拿不到锁的直接返回 { ok:false, busy:true }，由界面提示"请等当前操作完成"。 */
-const UPDATE_STATES = ['idle', 'checking', 'downloading', 'ready', 'installing'];
-let updateState = 'idle';
+   状态只有 5 个，但**每个都必须拦**。所有更新入口统一走 withLock()，
+   拿不到锁的直接返回 { ok:false, busy:true }，由界面提示"请等当前操作完成"。
 
-/* 哪些状态下允许发起什么 —— 这是互斥规则**唯一**的落点，改规则只改这里。
-   允许的转移：
-     idle        → checking | downloading        （常规入口）
-     ready       → downloading（重下）/ installing（安装已下好的包）
-     checking/downloading/installing → 一律拒绝（有流程在跑） */
-function canStartUpdate(action) {
-  if (updateState === 'idle') return true;
-  if (updateState === 'ready' && (action === 'download' || action === 'install')) return true;
-  return false;
-}
+   ⚠ 2026-09-22：状态机本体已抽到 ./update-state.js（纯逻辑、不 require electron）。
+   原因是它原先只能靠"匹配 main.js 源码文本"来测 —— 改名会误报、行为退化却可能漏报，
+   抽出来才能做真正的行为测试。这里只保留"把状态接到界面/托盘"的部分。 */
+const updateStates = updateStateMod.makeUpdateState({
+  /* 状态变化主动推给界面：渲染进程平时靠轮询，但"被拒绝"这件事需要立刻可见 */
+  onChange: () => broadcastUpdateState(),
+  /* 被互斥拒掉时留一行日志（排查"点了没反应"时这是唯一的线索） */
+  onReject: (action, st) => console.warn('[desktop] 更新互斥：拒绝 ' + action + '（当前 ' + st + '）')
+});
 
-/* 状态机 + 异常兜底。为什么用 try/finally 而不是靠各分支自己复位：
-   fetchManifest/download 里任何一处抛未捕获异常，状态会永久卡在 downloading，
-   之后**再也无法更新**（要重启应用）—— 这类"卡死型"故障比原 bug 更难排查。 */
-async function withUpdateLock(action, fn) {
-  if (!canStartUpdate(action)) {
-    const msg = updateState === 'installing'
-      ? '正在安装更新，请等待应用自动重启'
-      : '已有更新操作正在进行中（' + updateState + '），请稍候';
-    console.warn('[desktop] 更新互斥：拒绝 ' + action + '（当前 ' + updateState + '）');
-    return { ok: false, busy: true, state: updateState, error: msg };
-  }
-  const prev = updateState;
-  updateState = (action === 'check') ? 'checking' : (action === 'download' ? 'downloading' : 'installing');
-  broadcastUpdateState();
-  try {
-    return await fn();
-  } finally {
-    /* installing 成功时进程即将退出，不需要复位（复位反而会给"并发安装"留窗口） */
-    if (updateState !== 'idle') {
-      if (updateState === 'installing' && prev !== 'installing') {
-        /* 安装失败 → 退回 ready（安装包还在，用户可以重试）；成功则进程已退出 */
-        updateState = pendingInstaller ? 'ready' : 'idle';
-      } else {
-        updateState = 'idle';
-      }
-      broadcastUpdateState();
-    }
-  }
-}
-
-/* 状态变化主动推给界面：渲染进程平时靠轮询，但"被拒绝"这件事需要立刻可见 */
+/* 状态变化主动推给界面 */
 function broadcastUpdateState() {
   try {
     if (win && !win.isDestroyed()) win.webContents.send('update:state', updateStatusPayload());
@@ -679,42 +647,56 @@ function updateStatusPayload() {
     source: publicSource(),
     progress: updaterMod.progressOf(),
     lastCheck,
-    state: updateState,
-    busy: updateState !== 'idle' && updateState !== 'ready',
+    state: updateStates.get(),
+    busy: updateStates.isBusy(),
+    /* ⚠ 界面（app/app.js 的设置抽屉）读的是 installing 而不是 state ——
+       原先这里没给这个字段，于是"正在安装更新，应用即将自动重启…"那张卡片
+       永远不显示，用户在安装器拉起后的 800ms 里看不到任何反馈。 */
+    installing: updateStates.get() === 'installing',
     hasPendingInstaller: !!pendingInstaller
   };
 }
 
 async function doCheckUpdates() {
-  return withUpdateLock('check', async () => {
+  return updateStates.withLock('check', async () => {
     lastCheck = await updaterMod.check(app.getVersion(), updateSource());
     console.log('[desktop] 检查更新：' + JSON.stringify({
       ok: lastCheck.ok, latest: lastCheck.latestVersion, hasUpdate: lastCheck.hasUpdate, error: lastCheck.error
     }));
-    /* 有新版本且还没下载过 → 进入 ready，让"安装"入口可用 */
-    if (lastCheck.ok && lastCheck.hasUpdate && pendingInstaller) updateState = 'ready';
+    /* 有新版本且已经下好安装包 → 进入 ready（界面据此把"下载并安装"换成"安装"） */
+    if (lastCheck.ok && lastCheck.hasUpdate && pendingInstaller) updateStates.set('ready');
     return lastCheck;
   });
 }
 
 async function doDownloadUpdate() {
-  return withUpdateLock('download', async () => {
+  return updateStates.withLock('download', async () => {
     const dir = path.join(app.getPath('temp'), 'jimeng-update');
     const r = await updaterMod.download(app.getVersion(), updateSource(), dir);
-    if (r.ok) { pendingInstaller = r.path; updateState = 'ready'; }
+    if (r.ok) { pendingInstaller = r.path; updateStates.set('ready'); }
     console.log('[desktop] 下载更新：' + JSON.stringify({ ok: r.ok, path: r.path, error: r.error }));
     return r;
   });
 }
 
 async function doInstallUpdate() {
-  return withUpdateLock('install', async () => {
-    if (!pendingInstaller) return { ok: false, error: '还没有下载好更新包' };
+  return updateStates.withLock('install', async () => {
+    if (!pendingInstaller) {
+      /* 没有安装包就谈不上"安装中"：显式降级，否则状态机会停在 installing
+         （install 的自动回落刻意是"不复位"，见 update-state.js）→ 更新被永久锁死。 */
+      updateStates.set('idle');
+      return { ok: false, error: '还没有下载好更新包' };
+    }
     const r = await updaterMod.install(pendingInstaller);
-    if (!r.ok) return r;
+    if (!r.ok) {
+      /* 安装失败 → 退回 ready（安装包还在，用户可以重试） */
+      updateStates.set(pendingInstaller ? 'ready' : 'idle');
+      return r;
+    }
     /* ⚠ 安装器是 detached 拉起的，立刻 app.quit() 有时会让它还没站稳就被回收。
        留 800ms 让它起来，再退出 —— 安装器会等本进程退出后替换文件。
-       这段时间保持 state='installing'，任何并发更新请求都会被拒（见 canStartUpdate）。 */
+       这段时间**保持 state='installing'**，任何并发更新请求都会被拒（见 canStart）。
+       （2026-09-22 修：原实现会在 fn 返回后立刻复位成 ready，这 800ms 里放行第二次安装。） */
     setTimeout(() => { quitting = true; app.quit(); }, 800);
     return { ok: true, path: pendingInstaller };
   });
