@@ -92,6 +92,7 @@ function serveFile(req, res, absPath) {
    api.js 的 baseUrl 会自动取同源 /api/v1，无需注入配置。 */
 const CSS_ANCHOR = '<link rel="stylesheet" href="styles.css" />';
 const API_ANCHOR = '<script src="api.js"></script>';
+const CONST_ANCHOR = '<script src="constants.js"></script>';
 const APP_ANCHOR = '<script src="app.js"></script>';
 /* 应用内图标：favicon 用 href、顶栏品牌标用 src（2026-09-21 换新图标时加）。
    ⚠ 漏了这条的后果不是"图标没换"，而是**两个裂图** —— 请求打到 /icon.png 上直接 404
@@ -140,6 +141,7 @@ function buildIndexHtml(cfg, nonce) {
   let out = html
     .replace(CSS_ANCHOR, '<link rel="stylesheet" href="/app/styles.css" />')
     .replace(API_ANCHOR, '<script src="/app/api.js"></script>')
+    .replace(CONST_ANCHOR, '<script src="/app/constants.js"></script>')
     .replace(APP_ANCHOR, '<script src="/app/app.js"></script>')
     .replace(ICON_ANCHOR, function (m, attr) { return attr + '="/app/icon.png"'; })
     /* 主题防闪脚本：唯一一段 index.html 里的内联 <script> —— 不打 nonce 会被新策略拦下，

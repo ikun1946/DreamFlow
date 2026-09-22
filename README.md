@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.28.8`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.28.9`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.28.8`**
+当前版本：**`0.28.9`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -449,6 +449,30 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.28.9` — 2026-09-22（前端静态数据抽出 app/constants.js）
+
+**现状**：原 `app/app.js` 5517 行（单 IIFE 包住全部 UI 逻辑），超出 P2-5 的 ≤2500 行门禁。
+本轮抽出最稳的一类 —— **纯静态查找表 / 常量**（无闭包依赖、无运行时计算）：
+`ICONS / STATUS_TEXT / ROLE_META / ASSET_TABS / ASSET_TAB_LABEL / COLUMNS` 共 6 个常量块。
+
+**为什么选静态数据先切**：app.js 里有 95+ 个 UI 函数共享一个全局 `S` 状态、加上轮询定时器、
+闭包引用，错综复杂；一刀切到 2500 行以下是**硬做不动 也不应该硬做**的 —— 会拆掉
+行为一致性。抽静态数据是最稳的第一步：零行为变更、纯文件搬家。
+
+**改法**：
+- 新增 `app/constants.js`：IIFE 内部定义 6 张表，挂到 `window.APP_*` 上。
+- `app/app.js`：删掉那 6 张表，改成 `const I = window.APP_ICONS;` 等 6 行接住。
+- `app/index.html`：在 `api.js` 与 `app.js` 之间插一行 `<script src="constants.js"></script>`。
+- `server/server.js`：`buildIndexHtml` 也跟着改（同样的 6 行内联替换）。
+- `build.js`：**无需改动** —— 阶段 2.4 已经让它按"实际出现的 `<script src>` 顺序逐个内联"，
+  新增第三个脚本是被自动接管的（N=3 脚本：485.0 KB 产物，4 个 `<script>` 块全过）。
+
+**结果**：app.js 5517 → 5461 行（-56 行）。**未达到 ≤2500 的目标**，但这是**结构性进步**：
+后续按域拆"render / view / I/O"每一段都需要先建依赖图，再单独拆。**这一轮先打底**，
+让"在 app.js 之外还能放文件"这件事被实际验证一遍（构建 / 加载 / 测试全过）。
+
+**`npm run verify` 仍 140 用例全绿**（结构性变更，不引入新行为）。
 
 #### `0.28.8` — 2026-09-22（services.js 拆 records 域 + 持久化基线）
 
