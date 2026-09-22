@@ -737,6 +737,54 @@ if (!remoteUrl) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════
+// 16. 文档里的数量口径与实际一致（用例数 / 检查项数）
+// ════════════════════════════════════════════════════════════════
+head('[16] 文档中的数量口径');
+
+/* 为什么加这一项：README「版本」一节写着「npm test（N 用例）、npm run check（N 项一致性检查）」，
+   而这两个数字已经漂移过两轮 —— 用例从 89 涨到 95 时没跟上，检查项从 40 涨到 42 时也没跟上。
+   数字是读者判断"这套门禁有多厚"的唯一依据，写错比不写更糟；而它偏偏是最容易被忘掉的一类改动
+   （加测试、加检查都在别的文件里，没人会想到回头改 README）。所以交给机器盯。
+
+   口径（写在这里，免得下次又靠猜）：
+     · 用例数 = test/*.test.js 里**字面量** `test(` 的个数，与 `node --test` 报的 tests 数一致；
+       ⚠ 若将来用循环批量生成用例，静态计数会偏小 —— 那时请把 README 改成实际数字，并在此注明原因。
+     · 检查项数 = 本脚本实际执行的检查数（就是最后汇总里打印的那个数）。
+       本项自己也算一次检查，所以此刻的 `checks + 1` 就是最终总数。 */
+const caseDir = path.join(ROOT, 'test');
+const caseFiles = fs.existsSync(caseDir)
+  ? fs.readdirSync(caseDir).filter((f) => f.endsWith('.test.js')).sort()
+  : [];
+let caseCount = 0;
+caseFiles.forEach((f) => { caseCount += ((read('test/' + f) || '').match(/^\s*test\(/gm) || []).length; });
+const expectedTotal = checks + 1;
+
+const readmeText = read('README.md') || '';
+const mCases = /`npm test`（(\d+) 用例）/.exec(readmeText);
+const mChecks = /`npm run check`（(\d+) 项一致性检查）/.exec(readmeText);
+const drift = [];
+if (!mCases) drift.push('README 找不到「`npm test`（N 用例）」的写法');
+else if (Number(mCases[1]) !== caseCount) drift.push('README 用例数写的是 ' + mCases[1] + '，实际 ' + caseCount);
+if (!mChecks) drift.push('README 找不到「`npm run check`（N 项一致性检查）」的写法');
+else if (Number(mChecks[1]) !== expectedTotal) drift.push('README 检查项数写的是 ' + mChecks[1] + '，实际 ' + expectedTotal);
+
+/* AGENTS.md 的门禁表里有同样两个数字（agent 一进来就先看这张表，错了会把 agent 带偏） */
+const agentsText = read('AGENTS.md') || '';
+const aCases = /(\d+) 用例全通/.exec(agentsText);
+const aChecks = /(\d+) 项全通/.exec(agentsText);
+if (!aCases) drift.push('AGENTS.md 找不到「N 用例全通」的写法');
+else if (Number(aCases[1]) !== caseCount) drift.push('AGENTS.md 用例数写的是 ' + aCases[1] + '，实际 ' + caseCount);
+if (!aChecks) drift.push('AGENTS.md 找不到「N 项全通」的写法');
+else if (Number(aChecks[1]) !== expectedTotal) drift.push('AGENTS.md 检查项数写的是 ' + aChecks[1] + '，实际 ' + expectedTotal);
+
+if (drift.length) {
+  fail('文档里的数量口径与实际不一致：' + drift.join('；'),
+    '改 README「版本」一节那句话 + AGENTS.md 的门禁表即可（口径见本文件第 16 节注释）');
+} else {
+  ok('文档数量口径与实际一致（' + caseCount + ' 用例 / ' + expectedTotal + ' 项检查）');
+}
+
 // ── 汇总 ────────────────────────────────────────────────────────
 console.log('');
 if (failures.length) {
