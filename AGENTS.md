@@ -84,7 +84,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 
 | 命令 | 管什么 | 现在的状态 |
 |---|---|---|
-| `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs 七组） | **140 用例全通** |
+| `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y 八组） | **147 用例全通** |
 | `npm run check` | 一致性门禁：`scripts/check-project.js`（版本漂移、dist 同步、图标、许可、更新器、旧名残留、过期表述、收尾清单一致性、docs 状态标记、路由计数、git remote、文档数量口径…） | **43 项全通** |
 | `npm run lint` | 静态检查：`scripts/lint.js`（语法 / `debugger` / 前端调试输出 / 相对 require 目标 / 插值告警） | **6 项全通** |
 | `npm run smoke:web` | 网页版连通性：起真服务 → 首页 / 接口 / 鉴权 / 边界 → 关停无残留 | 通过 |
