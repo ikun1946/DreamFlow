@@ -1,7 +1,7 @@
 {
   "name": "dreamflow",
   "productName": "即梦批量生成控制台",
-  "version": "0.29.2",
+  "version": "0.29.3",
   "private": true,
   "description": "即梦批量生成控制台 —— 面向 AI 短剧 / 分镜视频生产的分镜批量管理工作台（Windows 桌面版）",
   "author": "ikun1946",

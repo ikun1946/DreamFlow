@@ -18,13 +18,13 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.29.2`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.29.3`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
 | 运行时依赖 | **零 npm 依赖**：后端只用 Node 内置模块，前端是原生 HTML/CSS/JS；`electron` / `electron-builder` 只在打包期用到 |
-| 自动化测试 | **89 个用例**（`npm test`，Node 内置 test runner）：数据安全 26 / 任务逻辑 20 / 构建发布 43 |
-| 统一检查 | `npm run check`（`scripts/check-project.js`，15 节 40 项一致性检查）+ `npm run lint`（静态检查：语法 / debugger / 前端调试输出 / require 目标 / 插值告警） |
+| 自动化测试 | **153 个用例**（`npm test`，Node 内置 test runner）：数据安全 26 / 任务逻辑 20 / 构建发布 61 / 路由 6 / 队列 9 / CSP 7 / cliJobs 11 / a11y 7 / 错误码 6 |
+| 统一检查 | `npm run check`（`scripts/check-project.js`，16 节 43 项一致性检查）+ `npm run lint`（7 项静态检查：语法 / debugger / 前端调试输出 / require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） |
 | 端到端验收 | 网页版 `npm run smoke:web`（连通性）；业务流 `npm run e2e`（53 项断言）；桌面版 `JC_DESKTOP_SMOKE=1`（见「自检」）；CI 双 job 已就位（`.github/workflows/ci.yml`） |
 | 一键回归 | `npm run verify` = `check` + `lint` + `test` + `build:web` |
 
@@ -438,7 +438,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.29.2`**
+当前版本：**`0.29.3`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 

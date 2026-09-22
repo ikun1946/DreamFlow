@@ -782,6 +782,48 @@ else if (Number(aCases[1]) !== caseCount) drift.push('AGENTS.md 用例数写的�
 if (!aChecks) drift.push('AGENTS.md 找不到「N 项全通」的写法');
 else if (Number(aChecks[1]) !== expectedTotal) drift.push('AGENTS.md 检查项数写的是 ' + aChecks[1] + '，实际 ' + expectedTotal);
 
+/* ── README「当前状态」表格：口径的第二处落点（2026-09-22 · 0.29.3 补） ────────
+   上面四条只认 README「版本」一节那句「`npm test`（N 用例）」的写法，而
+   README 顶部「当前状态」表格里写着**另一份**口径：「**N 个用例**」与
+   「N 节 M 项一致性检查」。实测 0.29.3 本轮：表格当时还留着 89 个用例 /
+   15 节 40 项 —— 与实际相差 64 个用例、3 项检查，却因为正则根本匹配不到
+   那两行而长期没被发现（§16 一直报 OK）。表格是读者第一眼看到的地方，
+   错了比不写更糟，所以这里把四个数字一并钉住：用例数 / 检查项数 / 检查节数 / lint 项数。
+   ⚠ 节数与 lint 项数直接数源码里的 `head('[N] ...')`，不硬编码 —— 加减小节时自动跟上。 */
+const sectionCount = (fs.readFileSync(__filename, 'utf8').match(/^head\('\[/gm) || []).length;
+const lintCount = ((read('scripts/lint.js') || '').match(/^head\('\[/gm) || []).length;
+
+const mTableCases = /\*\*(\d+) 个用例\*\*/.exec(readmeText);
+if (!mTableCases) drift.push('README「当前状态」表格找不到「**N 个用例**」的写法');
+else if (Number(mTableCases[1]) !== caseCount) {
+  drift.push('README 表格用例数写的是 ' + mTableCases[1] + '，实际 ' + caseCount);
+}
+
+const mTableChecks = /(\d+) 节 (\d+) 项一致性检查/.exec(readmeText);
+if (!mTableChecks) drift.push('README 表格找不到「N 节 M 项一致性检查」的写法');
+else {
+  if (Number(mTableChecks[1]) !== sectionCount) {
+    drift.push('README 表格写的检查节数是 ' + mTableChecks[1] + '，实际 ' + sectionCount);
+  }
+  if (Number(mTableChecks[2]) !== expectedTotal) {
+    drift.push('README 表格写的检查项数是 ' + mTableChecks[2] + '，实际 ' + expectedTotal);
+  }
+}
+
+const mTableLint = /(\d+) 项静态检查/.exec(readmeText);
+if (!mTableLint) drift.push('README 表格找不到「N 项静态检查」的写法（lint 项数）');
+else if (Number(mTableLint[1]) !== lintCount) {
+  drift.push('README 表格写的 lint 项数是 ' + mTableLint[1] + '，实际 ' + lintCount);
+}
+
+/* AGENTS.md 的「N 项全通」有两处（check 与 lint），上面对了第一处，
+   这里补 lint 那一处 —— 0.29.3 之前它写的是 6 项，而 lint 早已是 7 项。 */
+const aFullPass = [...agentsText.matchAll(/(\d+) 项全通/g)].map((m) => Number(m[1]));
+if (!aFullPass.includes(lintCount)) {
+  drift.push('AGENTS.md 的「N 项全通」里没有 lint 的实际项数 ' + lintCount
+    + '（现有：' + aFullPass.join(' / ') + '）');
+}
+
 if (drift.length) {
   fail('文档里的数量口径与实际不一致：' + drift.join('；'),
     '改 README「版本」一节那句话 + AGENTS.md 的门禁表即可（口径见本文件第 16 节注释）');
