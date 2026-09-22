@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.28.9`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.29.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.28.9`**
+当前版本：**`0.29.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -449,6 +449,43 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.29.0` — 2026-09-22（阶段 3 · 可访问性：弹层 ARIA + Escape 全局 + 屏幕阅读器播报）
+
+**范围**：流程文档 P2-3 / P3-2。本轮只做阶段 3 中**最小、最稳、行为纯增**的一块：
+**可访问性**。其余四项（签名证书 / 更新流回归脚本 / README 瘦身 / 错误码四件套）
+需要外部资源或单独立项，留作下几轮。
+
+**改法**：
+
+1. **弹层 ARIA 化**（`app/index.html`）：
+   - `importMask` / `detailMask` 内部的 `.modal` 加 `role="dialog"` + `aria-modal="true"` + `aria-labelledby="..."`（指向 modal-head 的 `<h2>`）。
+   - `settingsDrawer`（`<aside>`）同样加 `role="dialog"` + `aria-modal="true"` + `aria-labelledby="settingsTitle"`。
+   - 三个关闭按钮都加 `aria-label="关闭..."`（屏幕阅读器默认会念 `id="importClose"`，加 aria-label 让 NVDA / VoiceOver 直接念"关闭导入弹层"）。
+
+2. **Escape 全局关闭弹层**（`app/app.js`）：
+   - `document.addEventListener('keydown', ...)` 在最外层集中判断"Escape 关最上层 modal"，
+     顺序：detail > import > autoMask > settings。**为什么不绑在每个 mask 上**：
+     1) 一处管所有（避免每加一个弹层要重写绑定逻辑）；
+     2) 不会与弹层内部的 keydown 事件冒泡冲突；
+     3) future-proof —— 新增弹层只需在这里加一条。
+
+3. **屏幕阅读器播报区**（`app/index.html` + `app/app.js`）：
+   - body 顶层加 `<div id="srLive" class="sr-only" role="status" aria-live="polite" aria-atomic="false">`。
+     ⚠ 必须常驻可见（不能用 `hidden`），否则读屏工具看不到。
+   - `toast()` 同步写一份到 `srLive`：先 `textContent = ''` 清空再写，强制 ARIA 把它当新消息播报
+     （连同样内容也会读）。err 加 "错误：" 前缀、warn 加 "警告：" 前缀。
+
+**测试 `test/08-a11y.test.js`（7 用例）**：读 `app/index.html` 与 `app/app.js` 的源文本，
+断言：
+- importMask / detailMask / settingsDrawer 都有 `role=dialog` + `aria-modal=true` + `aria-labelledby` + `aria-label`；
+- body 顶层有 `srLive`（role=status / aria-live=polite / 不可 hidden）；
+- `app.js` 的 keydown 处理**单点**接管所有弹层（含 `closeSettings` 别错叫）；
+- `toast()` 写到 `srLive`，重置 textContent 强制重播，err 加 "错误：" 前缀。
+
+**用例总数 140 → 147**。本地 `npm run verify` 全绿；CI 待验。
+
+> ⚠ 本机测不到音频层（无障碍要真渲染 + 屏幕阅读器），所以这组用**静态产物形状断言**作为回归依据 —— 至少在重构 `index.html` 或 `toast()` 时能立刻发现"漏挂 aria"。**真正的端到端可访问性测试需要 Playwright + axe-core**，那是阶段 3 后续项。
 
 #### `0.28.9` — 2026-09-22（前端静态数据抽出 app/constants.js）
 

@@ -99,13 +99,20 @@
 <!-- 素材面板遮罩：仅 ≤1440px 面板覆盖层化时使用，点击关闭面板 -->
 <div class="mask" id="panelMask" hidden></div>
 
+<!-- ⚠ P3 可访问性：屏幕阅读器播报区。
+     aria-live=polite + role=status 让 toast() 写入文本时被 NVDA / VoiceOver 念出
+     （同时 aria-atomic=false 让它只追加、不重复整段）。
+     ⚠ 必须放在 body 顶层、不可放在任何一个会随弹层隐藏的容器里 —— 否则读屏工具
+     在弹层出现时也会被"重新挂载"打断。 -->
+<div id="srLive" class="sr-only" role="status" aria-live="polite" aria-atomic="false"></div>
+
 <!-- ========== P2 批量导入提示词 ========== -->
 <div class="mask" id="importMask" hidden>
-  <div class="modal" role="dialog" aria-modal="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importTitle">
     <div class="modal-head">
-      <h2>批量导入提示词</h2>
+      <h2 id="importTitle">批量导入提示词</h2>
       <span class="grow"></span>
-      <button class="icon-btn" id="importClose" title="关闭">
+      <button class="icon-btn" id="importClose" title="关闭" aria-label="关闭导入弹层">
         <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       </button>
     </div>
@@ -140,11 +147,11 @@
 
 <!-- ========== P3 设置 ========== -->
 <div class="mask drawer-mask" id="settingsMask" hidden></div>
-<aside class="drawer" id="settingsDrawer" aria-hidden="true">
+<aside class="drawer" id="settingsDrawer" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
   <div class="drawer-head">
-    <h2>设置</h2>
+    <h2 id="settingsTitle">设置</h2>
     <span class="grow"></span>
-    <button class="icon-btn" id="settingsClose" title="关闭">
+    <button class="icon-btn" id="settingsClose" title="关闭" aria-label="关闭设置">
       <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
     </button>
   </div>
@@ -158,11 +165,11 @@
 
 <!-- ========== 详情 / 预览弹层 ========== -->
 <div class="mask" id="detailMask" hidden>
-  <div class="modal narrow" role="dialog" aria-modal="true">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
     <div class="modal-head">
       <h2 id="detailTitle">详情</h2>
       <span class="grow"></span>
-      <button class="icon-btn" id="detailClose" title="关闭">
+      <button class="icon-btn" id="detailClose" title="关闭" aria-label="关闭详情弹层">
         <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       </button>
     </div>

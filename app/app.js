@@ -147,8 +147,43 @@
     $('#toasts').appendChild(el);
     setTimeout(() => { el.style.transition = '.24s'; el.style.opacity = '0'; el.style.transform = 'translateY(8px)'; }, 2200);
     setTimeout(() => el.remove(), 2500);
+    /* ⚠ P3 可访问性：toast 同时往屏幕阅读器播报区写一份（P2-3）。
+       ⚠ 屏幕阅读器播报与可见 toast 是两条流：
+         · 可见 toast 有定时器淡出（不影响阅读）；
+         · 屏幕阅读器流不淡出（ARIA live region 自身的规则），也不会重发同样内容
+           —— 写前先重置 textContent 强制 "新消息" 语义。
+       ⚠ 限流时不开 eval / Function —— kind 是字符串映射白名单。 */
+    const live = document.getElementById('srLive');
+    if (live) {
+      const prefix = kind === 'err' ? '错误：' : (kind === 'warn' ? '警告：' : '');
+      live.textContent = '';
+      live.textContent = prefix + msg;
+    }
   }
   const fail = (e) => toast(errText(e), 'err');
+
+  /* ---------------------------------------------------------- 键盘可达性（P3-2）：
+     Escape 关掉**最上层**的弹层（import / detail / settings / 自动匹配预览等）。
+     ⚠ 必须放在最外层 document.keydown 而不是绑在每个 mask 上：
+       1. 一次性管理所有可关闭层（包括将来新增的）；
+       2. 不会因为"mask 在弹层里再次冒泡"而失效；
+       3. 简单：
+         · 有任意 [hidden]=false 的 modal → 调它的关闭函数；
+         · 没有 → 不消费 Escape，让别的（如设置抽屉）也能响应。
+     ⚠ 不绑在 window 上是因为桌面 Electron 与网页版都是 document —— 这是更便携的选择。 */
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    /* 顺序：detail > import > 自动匹配 > settings（最上层的优先关） */
+    if (!$('#detailMask').hidden) { closeDetail(); e.preventDefault(); return; }
+    if (!$('#importMask').hidden) { closeImport(); e.preventDefault(); return; }
+    if (!$('#autoMask').hidden) {
+      /* 自动匹配弹层没有显式 close 钩子，按 mask 模式关闭 */
+      $('#autoMask').hidden = true; e.preventDefault(); return;
+    }
+    if (!$('#settingsDrawer').hidden || $('#settingsDrawer').getAttribute('aria-hidden') === 'false') {
+      closeSettings(); e.preventDefault(); return;
+    }
+  });
 
   /* ---------------------------------------------------------- 顶栏 */
   function renderTopbar() {
