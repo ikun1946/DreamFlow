@@ -59,7 +59,12 @@ function walk(dir, out, skip) {
   let items;
   try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return out; }
   for (const it of items) {
-    if (skip && skip.some((s) => it.name === s || it.name.startsWith(s))) continue;
+    /* ⚠ 2026-09-22 修：`it.name.startsWith(s)` 原对**文件与目录一视同仁**，于是 skip 列表里的
+       `.git` 把 `.gitignore` / `.gitattributes` 一并跳过了 —— 这是 `.gitignore` 长期扫不到的
+       **第二道**障碍（第一道是 §10 只认带扩展名的白名单，见 §10 注释）。
+       skip 的本意是"不钻进这些目录树"（node_modules / .git / dist / release / .test-tmp / .workbuddy），
+       所以前缀匹配只应对目录生效；同名文件仍由精确匹配处理。 */
+    if (skip && skip.some((s) => it.name === s || (it.isDirectory() && it.name.startsWith(s)))) continue;
     const full = path.join(dir, it.name);
     if (it.isDirectory()) walk(full, out, skip);
     else out.push(full);
@@ -528,9 +533,19 @@ if (!exist('scripts/e2e-flow.js')) {
 // ════════════════════════════════════════════════════════════════
 head('[10] 旧仓库名残留（jimeng-console 作为**仓库/路径**）');
 
+/* ⚠ 2026-09-22 补：原先只用「带扩展名的文本文件」白名单，于是 `.gitignore` 这类
+   **无扩展名**文件永远不在扫描范围内 —— `.gitignore` 里的「仓库根是 jimeng-console/」
+   注释因此长期漏检（P2-14 在清单里已被标 ✅，实际未改，直到 2026-09-22 人工复核才发现）。
+   这里显式补上仓库根的无扩展名文本文件。 */
+const TEXT_EXT_RE = /\.(md|yml|yaml|json|js|sh)$/;
+const NO_EXT_TEXT = ['.gitignore', '.gitattributes', 'LICENSE'];
 const legacyHits = [];
 for (const f of walk(ROOT, [], NPM_SKIP.concat(['docs']))) {
-  if (!/\.(md|yml|yaml|json|js|sh)$/.test(f)) continue;
+  /* 自指豁免：本脚本为了描述这条规则，必然写出「仓库根是 jimeng-console」这句话 ——
+     扩白名单后它会扫到自己（2026-09-22 实测踩到）。与 §11 / lint.js 同一处理。 */
+  if (rel(f) === 'scripts/check-project.js') continue;
+  const base = path.basename(f);
+  if (!TEXT_EXT_RE.test(base) && !NO_EXT_TEXT.includes(base)) continue;
   const t = read(rel(f));
   if (t === null) continue;
   const lines = t.split('\n');
@@ -557,11 +572,18 @@ head('[11] 过期表述（"没有自动化测试"）');
    把刚建好的门禁重新荒废。这类矛盾不会被版本号检查拦住，必须专门盯。
    两个豁免：① 历史记录类文件（变更日志、审查报告）本就会引用旧说法；
    ② 其余文件里若确属历史叙述，须在**同一行**写明「此前 / 已作废」等标记。 */
-const OUTDATED_RE = /没有自动化测试|已不保留自动化测试|自动化测试已删除/;
+/* ⚠ 2026-09-22 补：原先只认三种说法，于是「自动化测试：待恢复最小集合」这类
+   **同一件事的其它写法**全部漏检（`docs/项目审查与改进清单.md` 第 15 节的示例块就这么写着，
+   直到人工复核才发现）。补两条，但**刻意不泛化到「未实现 / 待恢复」的裸词** ——
+   `docs/更改文档.md` 里的「已知未实现项（边界）」是正当的功能边界说明，泛化会误伤。 */
+const OUTDATED_RE = /没有自动化测试|已不保留自动化测试|自动化测试已删除|自动化测试[^\n]{0,6}待恢复|待恢复最小(化)?集合/;
 const HISTORICAL_MARK_RE = /已作废|此前|历史|曾经|当时|删除过|已恢复|\d+\s*个用例/;
 /* 豁免：① 历史记录类文件（变更日志、审查报告）本就会引用旧说法；
    ② 本脚本自身 —— 它为了描述规则必然写出这些词（自指陷阱，与 lint.js 同一处理）。 */
-const OUTDATED_EXEMPT = ['docs/更改文档.md', 'docs/项目全面审查与改进流程.md', 'scripts/check-project.js'];
+/* ⚠ 2026-09-22 补 `docs/CHANGELOG.md`：它 0.29.2 才新建，没进原始豁免名单 ——
+   而变更日志**本就会引用旧说法**（0.29.4 那节为了说明问题，原样引用了
+   「自动化测试：待恢复最小集合」）。属豁免原则第 ① 类的遗漏，不是新放宽。 */
+const OUTDATED_EXEMPT = ['docs/更改文档.md', 'docs/项目全面审查与改进流程.md', 'docs/CHANGELOG.md', 'scripts/check-project.js'];
 const outdatedHits = [];
 for (const f of walk(ROOT, [], NPM_SKIP)) {
   if (!/\.(js|md)$/.test(f)) continue;
