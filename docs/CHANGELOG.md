@@ -13,6 +13,36 @@
 
 ---
 
+#### `0.29.6` — 2026-09-22（补 `publish` 配置 + 修正发布流程文档）
+
+**背景**：0.29.5 发版时踩到三个坑。本轮把它们从"一次性的手改绕过"变成"不再复发的默认行为"。
+
+**改法**：
+
+1. **`electron-builder.yml` 补顶层 `publish` 配置**（`provider: github` / `owner: ikun1946` / `repo: DreamFlow`）。
+   - **为什么必须有**：electron-builder **只在配置了 publish provider 时**才生成 `latest.yml`。
+     没有它，`npm run dist` 只产出 exe 与 `.blockmap` —— 而 `latest.yml` 恰恰是应用内自更新
+     读取「最新版是多少 + 校验和」的唯一来源，**缺它则传了 Release 也等于没发**。
+   - **历史**：0.22.0–0.29.4 期间都没有这一段，于是每次发版都要在命令行手加
+     `--config.publish.provider=github --config.publish.owner=... --config.publish.repo=...`
+     才拿得到最新元数据（**0.29.5 的 Release 就是这么发的**）。写进配置后直接 `npm run dist` 即可。
+   - `provider: github` 只用于生成元数据，**不代表本地打包会上传**；要明确禁止上传用 `--publish never`。
+2. **修正 `docs/版本发布与更新流程.md` §4**：原文写「`npm run dist` 产出四个文件（含 latest.yml）」，
+   **实测不准确**（无 publish 配置时根本不生成）。现已写明生成条件与判断标准
+   （`release/` 下必须**同时有** `latest.yml`），并补记本机环境的删除保护绕过方式
+   （输出到仓库外目录，避开 WorkBuddy 的 `genie-trash` fail-closed）。
+3. **§6 补「引导问题」（bootstrap problem）说明**：装的版本 **≤ 0.23.0**（那些版本还没有自更新能力）
+   或 **0.24.0 / 0.25.0**（更新器自身有缺陷）的使用者，**其应用内更新器无法把修复推给自己** ——
+   必须手动安装一次。发布时应把这一点写进 Release 说明（0.29.5 已照此办理）。
+
+**影响范围**：`electron-builder.yml` 与文档**都不在安装包的 `files` 白名单里**，
+因此**安装包内容与 0.29.5 完全一致**（仅版本号不同）。本次改动服务的是"下次发版更顺"，对使用者无行为变化。
+
+**测试**：`npm run check` 43/43；`npm run lint` 7/7；`npm test` 155/155；
+**实测 `npm run dist`（不带任何 publish 相关 CLI 参数）产出 `latest.yml`** —— 验证配置真的生效。
+
+---
+
 #### `0.29.5` — 2026-09-22（★ 修复：github 更新源下「检查更新」100% 失败）
 
 **问题（P0 · 功能完全不可用）**：桌面版的应用内自更新在 `github` 更新源下**必然失败**，

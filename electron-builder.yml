@@ -16,6 +16,27 @@ directories:
   output: release
   buildResources: build
 
+# ============================================================
+# 发布元数据（latest.yml）—— 2026-09-22 补
+#
+# 为什么必须有这一段：electron-builder **只在配置了 publish provider 时**
+# 才生成 `latest.yml`。而没有它，`npm run dist` 只产出 exe 与 .blockmap ——
+# 但 `latest.yml` 恰恰是应用内自更新读取「最新版是多少 + 校验和」的唯一来源，
+# 缺它则更新链路静默失效（安装包传上去也没人能发现新版）。
+#
+# 历史踩坑：0.22.0–0.29.4 期间没有这一段，于是每次发版都要在命令行手加
+#   --config.publish.provider=github --config.publish.owner=ikun1946 --config.publish.repo=DreamFlow
+# 才拿得到 latest.yml（0.29.5 的 Release 就是这么发的）。写进配置后，
+# 直接 `npm run dist` 即可产出 —— 见 docs/版本发布与更新流程.md §4。
+#
+# ⚠ provider: github 只用于「生成元数据 + 知道去哪找」，**不代表本地打包会上传**。
+#   想明确禁止上传：npm run dist -- --publish never
+# ============================================================
+publish:
+  - provider: github
+    owner: ikun1946
+    repo: DreamFlow
+
 # 只打包运行时真正需要的东西。把仓库里的文档、脚本、旧数据排除掉，
 # 既减小体积，也避免把开发机上的东西（比如 server/data 里的库）误发给别人。
 files:
