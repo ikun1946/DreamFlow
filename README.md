@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.28.6`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.28.7`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.28.6`**
+当前版本：**`0.28.7`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -444,11 +444,36 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（129 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
+⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（140 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
 
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.28.7` — 2026-09-22（cliJobs 治理：活跃保留 + 老化淘汰 + 启动期 GC）
+
+**问题（流程文档 P2-?）**：
+`cliJobs`（storyboardId → submitId / command / argv / state / ...）是事后用 `dreamina query_result --submit_id=...` 续查 / 补下载的**唯一凭据**。
+原先没有任何治理 —— 跑过几百条分镜的库会无限堆，每条 ~500 B，落盘 fsync 越来越慢，
+老条目还在界面列表里可见，误导排查。
+
+**改法**：
+- 新增 `server/cli-jobs.js`（独立模块）：
+  - **活跃保留**：`state ∈ { submitting, downloading, queued }` 一律保留（任务正在进行中不能删）。
+  - **终态双裁剪**：`succeeded / failed / canceled / ready` 按 `updatedAt` 淘汰（默认 7 天），
+    同时按数量淘汰（保留最近 50 条）。⚠ `keepTerminal=0` 与 `Array.slice(-0)` 的 JS 怪癖
+    必须显式短路（否则变成"全保留"，与意图相反 —— 本轮修两个真 bug）。
+  - **孤儿清理**：分镜不在 `db.storyboards` 里的 cliJob 一律删（兜底 `batchDelete` 漏掉的异常路径）。
+  - **缺 updatedAt 的迁移期旧数据**：按 0 毫秒兜底，必被淘汰（否则旧数据永远霸占名额）。
+- `server/server.js` 启动 `boot()` 里加 GC 钩子：清理结果写系统日志，便于排查"启动期 GC 是不是修了什么"。
+
+**测试 `test/07-cli-jobs.test.js`（11 用例）**：
+- 活性判定（submitting / downloading / queued 是活跃；未知 state 按"活跃"兜底）。
+- 孤儿清理（分镜已删 → cliJob 必清；清理不误伤正常条目）。
+- 终态老化（超 maxAgeMs 必删、超 keepTerminal 删最老、活跃无视年龄、缺 updatedAt 必淘汰）。
+- `gc()` 综合：3 组混合 + 重复调用幂等。
+
+**用例总数 129 → 140**。
 
 #### `0.28.6` — 2026-09-22（script-src 去 unsafe-inline：注入脚本逃逸的防线）
 

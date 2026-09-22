@@ -28,6 +28,7 @@ const S = require('./services');
 const { makeDreaminaAdapter } = require('./dreamina-cli');
 const { makeWorker } = require('./worker');
 const { makeRouter, queryOf } = require('./routes');
+const cliJobsMod = require('./cli-jobs');   // cliJobs 治理（活性保留 + 老化淘汰）
 
 /* ---------------- 静态文件 ---------------- */
 const MIME = {
@@ -286,6 +287,24 @@ function createServer(opts) {
        不清理的话它会永远挂在界面上显示「生成中」（2026-09-18 事故形态）。 */
     try { worker.reconcileOrphans(store.load()); }
     catch (e) { console.error('[启动清理] 失败：' + e.message); }
+
+    /* 启动期 cliJobs GC（阶段 2.9）：
+       - 孤儿条目（分镜已被删 / 改写）一律清掉（兜底 batchDelete 漏掉的异常路径）；
+       - 终态条目（succeeded / failed / canceled / ready）按 updatedAt + keepTerminal 淘汰；
+       - 活跃条目（submitting / downloading / queued）一律保留 —— 跑动中的任务不删。
+       失败/抛错都要落系统日志：这事是给"跑过几个月"的库用的，启动期漏 GC
+       会让 db.json 慢慢膨胀，排查时连自己都察觉不到。 */
+    try {
+      const r = cliJobsMod.gc(store.load());
+      if (r.removedOrphan || r.removedByAge || r.removedBySize) {
+        store.save();
+        store.pushLog('system', 'info',
+          'cliJobs 启动清理：移除 ' + r.removedOrphan + ' 孤儿 + ' +
+          r.removedByAge + ' 老化 + ' + r.removedBySize + ' 超额；' +
+          '保留 ' + r.active + ' 活跃 + ' + r.terminalKept + ' 终态');
+      }
+    }
+    catch (e) { console.error('[cliJobs 启动 GC] 失败：' + e.message); }
 
     tickTimer = setInterval(async () => {
       try {
