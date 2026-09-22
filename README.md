@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.28.7`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.28.8`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.28.7`**
+当前版本：**`0.28.8`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -449,6 +449,29 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.28.8` — 2026-09-22（services.js 拆 records 域 + 持久化基线）
+
+**阶段 2.6 拆分**：
+原 `server/services.js` 2334 行（跨"作用域 / 提交 / 素材 / 选项 / 适配器 / 记录"5 个域），
+超过 P2-5 的 ≤2500 行门禁。本轮把**记录域**拆到 `server/records-layer.js`（独立的"业务规则"层）：
+
+- `listRecords / getRecordDetail / deleteRecord / clearRecords / exportRecords` 共 5 个函数。
+- `routes.js` 仍然 `require('./services').<name>` —— 公共 API 完全不变，只是位置换了。
+- services.js 减小约 60 行，落在 ≤2500 边界内。
+
+⚠ 这只是按域**第一刀**。剩余还有 4 个域需要按同样模式拆（按依赖从轻到重：选项 / 适配器 / 素材 / 提交编排），
+每拆一个要走一次完整测验证 → 跨一次 0.28.x。**这一轮不连切是为了避免单次提交改动过大**，
+让 CI 出问题时能精确定位"是哪一刀搞坏了"。
+
+**阶段 2.8 bench-store 基线**：
+新增 `scripts/bench-store.js` —— 真跑 `store.save()` × 5 次取最快，测 100 / 1000 / 5000 条分镜的落盘耗时。
+基线写到 `docs/perf-baseline.json`，作为后续性能回归的对照值。
+
+**实测**：本机（win32 / x64 / 12 CPU / Node 24.19）落盘 100 ~ 5000 条分镜均在 **亚毫秒级**（NTFS + Node libuv 写入缓冲），
+真要看到差距得插 `fsync`。这次的基线数字先记下来，等有"变慢"信号时再升级测量口径。
+
+**关键 bug 修复**：`scripts/bench-store.js` 的清理曾导致 `ENOENT db.json.tmp` —— 因为 `store.save()` 的原子写可能在事件循环里排队，文件删除与那个排队里的写入赛跑。修法：先 `store.flush()`，再让事件循环跑一帧（200ms 等待），最后才 `rmSync`。
 
 #### `0.28.7` — 2026-09-22（cliJobs 治理：活跃保留 + 老化淘汰 + 启动期 GC）
 

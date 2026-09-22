@@ -11,7 +11,7 @@ const store = require('./store');
 const models = require('./models');   // 模型注册表：归属/命名/路由的唯一事实来源
 const TS = require('./task-state');   // 任务状态迁移与写入权限的唯一事实来源
 const AL = require('./asset-lock');   // 素材图号 / 素材锁定区块 / 引用校验的唯一事实来源
-const REC = require('./records');     // 生成记录：查询 / 详情 / 删除 / 清空 / 导出
+const REC = require('./records');     // mapTaskError 失败落记录时仍要用 REC.append
 const P = require('./projects');      // 项目/工作区归属与作用域解析的唯一出口
 const fs = require('fs');
 const path = require('path');
@@ -2255,69 +2255,9 @@ function logDreaminaAuth(action, out) {
    记录本身是「落盘那一刻的快照」，永远可读；分镜被改被删都不影响它。 */
 
 /* ---------------- 生成记录（项目作用域） ----------------
-   记录属于**项目**（指令 §7/§13）。作用域由后端注入查询条件，绝不依赖前端过滤（§29）。
-   ⚠ 记录里的 projectName / workspaceName 是**生成时刻的快照**，不是现查 ——
-     项目改名或软删后，旧记录仍显示当时的名字（§47）。 */
-function listRecords(db, q, scope) {
-  return REC.listRecords(db, Object.assign({}, q, { projectId: scope.projectId }));
-}
-
-function getRecordDetail(db, id, scope) {
-  const r = REC.getRecord(db, id);
-  if (!r) throw new ApiError(ERR.NOTFOUND, '生成记录不存在（可能已被清理）');
-  /* 跨项目读记录必须拒绝：记录里含完整提示词、命令与产物地址 */
-  if (r.projectId && r.projectId !== scope.projectId) {
-    throw new ApiError(ERR.NOTFOUND, '生成记录不属于当前项目：' + id);
-  }
-  const sb = findSb(db, r.storyboardId);
-  return Object.assign({}, r, {
-    // 中文标签：列表走 records.lite() 会带，详情直接返回原记录，这里补齐
-    actionLabel: REC.ACTION_LABEL[r.action] || r.action,
-    outcomeLabel: REC.OUTCOME_LABEL[r.outcome] || r.outcome,
-    // 分镜是否还在：只影响"能否跳回分镜"，不影响记录本身的完整性
-    storyboardExists: !!sb,
-    storyboardStatus: sb ? sb.status : null,
-    storyboardCurrentModel: sb ? sb.model : null,
-    // 若现在重跑，会走哪条链路（记录里的 engine 是当时的真实事实，两者不同属正常）
-    currentEngine: sb ? plannedEngineFor(db, sb).engine : null
-  });
-}
-
-function deleteRecord(db, id, scope) {
-  const r = REC.getRecord(db, id);
-  if (!r) throw new ApiError(ERR.NOTFOUND, '生成记录不存在（可能已被清理）');
-  if (r.projectId && r.projectId !== scope.projectId) {
-    throw new ApiError(ERR.NOTFOUND, '生成记录不属于当前项目：' + id);
-  }
-  const out = REC.deleteRecord(db, id);
-  if (!out.removed) throw new ApiError(ERR.NOTFOUND, '生成记录不存在（可能已被清理）');
-  return out;
-}
-
-/* 清空记录。⚠ 原实现的 {all:true} 会清掉**所有项目**的历史，多项目之后这是数据事故：
-   现在只在本项目内清理。口径仍然要求显式给出（ids / before / action / all）。 */
-function clearRecords(db, body, scope) {
-  const b = Object.assign({}, body || {});
-  const all = Array.isArray(db.records) ? db.records : [];
-  const mine = all.filter((r) => r && (!r.projectId || r.projectId === scope.projectId));
-  const foreignCount = all.length - mine.length;
-
-  if (Array.isArray(b.ids) && b.ids.length) {
-    /* 只允许删本项目的记录 */
-    const allowed = new Set(mine.filter((r) => b.ids.includes(r.id)).map((r) => r.id));
-    if (allowed.size !== b.ids.length) {
-      throw new ApiError(ERR.NOTFOUND, '有 ' + (b.ids.length - allowed.size) + ' 条记录不属于当前项目，未做任何改动');
-    }
-  }
-  const out = REC.clearRecords(db, Object.assign({}, b, { projectId: scope.projectId }));
-  if (!out.removed && out.message) throw new ApiError(ERR.PARAM, out.message);
-  if (foreignCount) out.note = '仅清理当前项目的记录；另有 ' + foreignCount + ' 条属于其它项目，未受影响';
-  return out;
-}
-
-function exportRecords(db, q, format, scope) {
-  return REC.exportRecords(db, Object.assign({}, q, { projectId: scope.projectId }), format);
-}
+   阶段 2.6 拆分：原 5 个记录函数已抽到 ./records-layer.js，本文件只 re-export
+   （routes.js 继续 require('./services').<name> 拿到）。这样 services.js 减约 60 行。 */
+const recordsLayer = require('./records-layer');
 
 module.exports = {
   META, DEFAULT_SETTINGS, splitSegments, stats,
@@ -2327,7 +2267,12 @@ module.exports = {
   getSettings, putSettings, resetSettings, getOptions, adapterStatus, adapterCheck,
   cliStatus, cliInstall,
   adapterDreaminaLogin, adapterDreaminaSwitch,
-  listRecords, getRecordDetail, deleteRecord, clearRecords, exportRecords,
+  /* 记录域：转发到 records-layer.js（行为不变，只是换位置） */
+  listRecords: recordsLayer.listRecords,
+  getRecordDetail: recordsLayer.getRecordDetail,
+  deleteRecord: recordsLayer.deleteRecord,
+  clearRecords: recordsLayer.clearRecords,
+  exportRecords: recordsLayer.exportRecords,
   /* 以下为内部实现，导出只为测试能直接钉住规则（音频预算 / 素材名解析） */
   checkAudioBudget, audioBudgetOf, nameKeys
 };
