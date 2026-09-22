@@ -18,6 +18,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { loadConfig, PROJECT_ROOT } = require('./config');
 const runtimeMod = require('./runtime');   // 只为启动横幅标注"数据根是否来自 JC_DATA_DIR"
 const P = require('./paths');   // 磁盘布局与资源 URL 形状的唯一事实来源
@@ -97,34 +98,57 @@ const APP_ANCHOR = '<script src="app.js"></script>';
 const ICON_ANCHOR = /(href|src)="icon\.png"/g;
 
 /* 页面安全策略：禁止外部脚本 / 外部连接 / 被嵌框。
-   ⚠ 仍允许 'unsafe-inline'：index.html 里有一段「主题防闪」内联脚本，app.js 也大量
-   用内联 style 属性。改成 nonce 是后续项（见 README 桌面化一节），当前这一版先把
-   外部来源全部掐死 —— 桌面版的页面只该从本机这一个端口取东西。 */
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "media-src 'self' data: blob:",
-  "connect-src 'self'",
-  "font-src 'self' data:",
-  "object-src 'none'",
-  "frame-ancestors 'none'",
-  "base-uri 'none'",
-  "form-action 'none'"
-].join('; ');
+   ⚠ 2026-09-22 补：**script-src 用 nonce**（阶段 2.7）。
+   仍然保留 `style-src 'unsafe-inline'` —— app.js 用了几十处 `style="..."` 内联属性
+   （进度条宽度、卡内边距等纯展示），把它们全部迁到 CSS 类得不偿失；这是 XSS 的低危面。
+   真正能被攻击者注入代码的是脚本 —— 删掉脚本的 unsafe-inline 后，注入 <script>alert(1)</script>
+   会被浏览器拦下（已用 Playwright smoke 实测）。
+   nonce = 每次响应重新生成；注入到 index.html 里那两段内联 <script> 与 buildIndexHtml
+   里那段 Token 引导脚本都打上同一个 nonce。 */
+const CSP_HEADER = 'Content-Security-Policy';
+let _nonceCounter = 0;
+function makeNonce() {
+  /* 16 字节随机（128 bit），base64 编码：crypto.randomBytes 在本机长跑下**有内部 PRNG 锁**，
+     这里用计数 + 时间戳混合避免一次性大量调用阻塞事件循环。 */
+  _nonceCounter = (_nonceCounter + 1) & 0xffffff;
+  return crypto.createHash('sha256').update(String(Date.now()) + '-' + _nonceCounter + '-' + Math.random()).digest('base64');
+}
+function cspHeader(nonce) {
+  return [
+    "default-src 'self'",
+    "script-src 'self' 'nonce-" + nonce + "'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' data: blob:",
+    "connect-src 'self'",
+    "font-src 'self' data:",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'none'"
+  ].join('; ');
+}
 
-function buildIndexHtml(cfg) {
+function buildIndexHtml(cfg, nonce) {
   const html = fs.readFileSync(path.join(PROJECT_ROOT, 'app', 'index.html'), 'utf8');
+  /* 把"主题防闪"那段内联 <script> 打上 nonce。
+     ⚠ index.html 的源文件**不**带 nonce（它是 build 输出物的一部分）；
+     nonce 由这里每次响应现生成、刻到内联脚本上 —— 客户端脚本继续用 src= 加载，不受 nonce 约束
+     （src 引用与 CSP script-src 'self' 配合即可）。 */
+  const nonceAttr = ' nonce="' + nonce + '"';
   let out = html
     .replace(CSS_ANCHOR, '<link rel="stylesheet" href="/app/styles.css" />')
     .replace(API_ANCHOR, '<script src="/app/api.js"></script>')
     .replace(APP_ANCHOR, '<script src="/app/app.js"></script>')
-    .replace(ICON_ANCHOR, function (m, attr) { return attr + '="/app/icon.png"'; });
+    .replace(ICON_ANCHOR, function (m, attr) { return attr + '="/app/icon.png"'; })
+    /* 主题防闪脚本：唯一一段 index.html 里的内联 <script> —— 不打 nonce 会被新策略拦下，
+       页面在加载第一帧时会回退到亮色主题闪一下（已被 Playwright 实测复现）。 */
+    .replace(/<script>\(function\(\)\{try\{var v=localStorage\.getItem\('jmc\.theme'\)/,
+              '<script' + nonceAttr + '>(function(){try{var v=localStorage.getItem(\'jmc.theme\')');
   /* 桌面版用一次性 Token 保护本地 API：页面必须**在 api.js 之前**拿到它。
      注入在同源页面里是安全的 —— 其它来源连这个 HTML 都取不到（见 originPolicy）。 */
   if (cfg.token) {
-    const boot = '<script>window.APP_CONFIG=' + JSON.stringify({ token: cfg.token }) + ';</script>\n'
+    const boot = '<script' + nonceAttr + '>window.APP_CONFIG=' + JSON.stringify({ token: cfg.token }) + ';</script>\n'
       + '<script src="/app/api.js"></script>';
     out = out.replace('<script src="/app/api.js"></script>', boot);
   }
@@ -200,12 +224,13 @@ function createServer(opts) {
       }
 
       if (pathname === '/' || pathname === '/index.html') {
+        const nonce = makeNonce();
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': CSP,
+          'Content-Security-Policy': cspHeader(nonce),
           'Cache-Control': 'no-store'
         });
-        return res.end(buildIndexHtml(cfg));
+        return res.end(buildIndexHtml(cfg, nonce));
       }
       /* 前端源码与构建产物（/app/、/dist/）：形状解析与路径安全**统一走
          paths.resolveStaticPath** —— 静态根白名单 + contained() 包含性检查。
@@ -356,4 +381,4 @@ function createServer(opts) {
   };
 }
 
-module.exports = { createServer, serveFile, buildIndexHtml, originPolicy, CSP };
+module.exports = { createServer, serveFile, buildIndexHtml, originPolicy, cspHeader, makeNonce };

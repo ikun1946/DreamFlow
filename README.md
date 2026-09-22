@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.28.5`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.28.6`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.28.5`**
+当前版本：**`0.28.6`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -444,11 +444,30 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（122 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
+⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（129 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
 
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.28.6` — 2026-09-22（script-src 去 unsafe-inline：注入脚本逃逸的防线）
+
+**背景（流程文档阶段 2.7 / P2-?）**：
+页面安全策略原先是 `script-src 'self' 'unsafe-inline'`。这等于告诉浏览器"任何内联 `<script>` 都放行" —— 而 `app.js` 在 renderTable / renderRecords / renderPanel / 等多处都用 `innerHTML` 拼字符串拼出 HTML 片段。即便所有拼接都过了 `esc()`，**只要有一处漏转义，注入的 `<script>` 就会被浏览器执行**。style-src 上的 `'unsafe-inline'` 仍然保留 —— `app.js` 有几十处 `style="..."` 内联属性（进度条宽度、卡内边距），把它们全迁到 CSS 类得不偿失，且 style 不执行代码。
+
+**改法**：
+- `server/server.js` 的 CSP 改为 `script-src 'self' 'nonce-XXX'`；`cspHeader(nonce)` 与 `makeNonce()` 是 server 暴露的两个**纯函数**，便于测试。
+- 每次响应生成新 nonce：sha256(时间戳 + 计数 + Math.random())，base64 输出。
+- 主题防滑那段 index.html 内联 `<script>` 由 server 端加 nonce（index.html 源文件里不带 nonce —— 那是响应产物的一部分）。
+- 桌面版的 Token 引导 `<script>` 也用同一个 nonce。
+
+**测试**：`test/06-csp.test.js`（7 用例）真起服务 + 真发 HTTP：
+- 响应头 CSP 形态（无 unsafe-inline / 有 nonce / 长度够）。
+- **5 次响应的 nonce 必须互不相同**（重复 nonce 等于 nonce 失效）。
+- 主题防滑脚本**必须**带 nonce（否则浏览器拒掉、首屏闪亮）。
+- 整段 HTML 里 `<script>` 总数 = "外链 + 带 nonce 的内联" + "0 个不带 nonce 的内联" —— 这是钉住"产物层面没有漏"的关键断言，回归里能抓住任何"漏加 nonce 的内联脚本"。
+
+**smoke 测试**：本地 `node scripts/smoke-web.js --port 8891` 跑通；用例总数 122 → 129。
 
 #### `0.28.5` — 2026-09-22（更新互斥状态机抽出可测模块 + 测试从"匹配源码文本"改行为型，顺带抓到两个真缺陷）
 
