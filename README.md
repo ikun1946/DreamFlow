@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.29.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.29.1`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.29.0`**
+当前版本：**`0.29.1`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -444,11 +444,48 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（147 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
+⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（153 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
 
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.29.1` — 2026-09-22（阶段 3 第二刀：错误码"四件套"元数据）
+
+**背景**：`ERR` 之前是 code ↔ name 的纯映射。前端拿到 `{code, message}` 后只能正则匹配 message 字符串判断"这错能不能重试 / 要怎么修" —— 脆且不可测。**`fail()` 也只回 `{code, message, data, traceId}` 四件**，但**后端内部**没有结构化元数据（"这个码 retryable 吗？什么 category？给用户什么提示？"），全部靠 message 文本猜。
+
+**改法**：
+
+1. **三张元数据表**（`server/util.js`）—— 每个 ERR 码绑 4 项：
+   - `ERR_CATEGORIES` —— 大类（param / notfound / conflict / forbidden / ratelimit / internal / cli / tool / unknown）
+   - `ERR_RETRYABLE` —— 是否可自动重试（前端据此决定要不要重提交按钮）
+   - `ERR_HTTP` —— 对应的 HTTP 状态（默认 200；这里登记的是"严格 REST 化"时的真实值，留作未来迁移参考）
+   - `ERR_HINTS` —— 人类可读建议（前端能直接弹给用户看）
+
+2. **新增 3 个 ERR 码**（`server/util.js`）：
+   - `NO_SUBMIT_ID` (51006) —— 即梦没创建任务就拒绝返回（账号异常）
+   - `UPSTREAM_FAILED` (51007) —— 即梦明确返回 fail_status
+   - `MODEL_NEEDS_FIRST_RUN` (51008) —— 模型首次合规未完成
+   这三条之前都走 `ERR.INTERNAL` + 自由文本，前端只能 message 正则。
+
+3. **`errInfo(code)` 纯函数**：返回 `{code, name, category, retryable, http, hint}`，未知码与 OK=0 都返回 null（前端按"未知"兜底）。
+
+4. **`fail()` 改造**：把 `__err` 段塞进 `data` 字段，不破坏现有信封：
+   ```json
+   { "code": 40400, "message": "...", "data": { "__err": {name, category, retryable, messageHint} }, "traceId": "..." }
+   ```
+   ⚠ 不放在顶层 —— 避免破坏既有 `{code, message, data, traceId}` 信封；
+   ⚠ message（具体原因）与 messageHint（通用建议）是**两件事**，前端可拼接"看到了什么 + 下一步该做什么"。
+
+**测试 `test/09-err-info.test.js`（6 用例）**：
+- **元数据完整性回归**（最重要的一条）：遍历 `Object.keys(ERR).filter(k=>k!=='OK')`，
+  断言每个码都有 category / retryable / http / hint 四件。**新增 ERR 码但忘了登记元数据 → 这条立刻红**。
+- 关键码的 retryable 业务期望（参数错 / 资源不存在 / 缺工具 / 缺积分 = 不可重试；上游超时 / 服务中断 / 限流 = 可重试）。
+- 0.29.1 新增的 3 个码全登记。
+- 未知码 → null；OK → null（成功码不进错误表）。
+- 真实 HTTP 路径：404 端点的 `data.__err` 必带 category / retryable / messageHint。
+
+**用例总数 147 → 153**。
 
 #### `0.29.0` — 2026-09-22（阶段 3 · 可访问性：弹层 ARIA + Escape 全局 + 屏幕阅读器播报）
 
