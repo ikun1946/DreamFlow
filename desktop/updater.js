@@ -402,7 +402,22 @@ async function fetchManifest(source) {
   const ymlAsset = assets.find((a) => a && a.name === 'latest.yml');
   if (!ymlAsset) return { ok: false, error: '这个 release 里没有 latest.yml 附件（发布时漏传了？）' };
 
-  const yr = await fetchText(ymlAsset.url, Object.assign({ Accept: 'application/octet-stream' }, ghHeaders(source.token)), 256 * 1024);
+  /* ⚠ 顺序不能反（2026-09-22 修 PATCH-1）：
+     `Object.assign(target, source)` 是 **source 覆盖 target**。原先写成
+     `Object.assign({ Accept: 'application/octet-stream' }, ghHeaders(token))`，
+     而 ghHeaders() 返回 `{ Accept: 'application/vnd.github+json' }` —— 于是 octet-stream
+     被静默覆盖。请求资产端点时带的是 JSON Accept，GitHub 忠实地返回**资产元数据 JSON**
+     （实测 1446 字节）而不是文件正文（366 字节 yml），parseLatestYml() 得到 version=null，
+     最终报「latest.yml 里没有 version / file 字段」—— **报错指向解析器，真凶却在 headers**。
+
+     症状：github 模式的「检查更新」100% 失败。旁证：线上 latest.yml 的 download_count
+     长期为 0（从未被成功取走），而安装包是 3。
+     为什么测试没抓到：test-update-flow.ps1 只用 local 模式 mock 更新源，
+     根本不经过 GitHub 的 Accept 语义。
+
+     修法：octet-stream 放到**最后一个**参数，让它去覆盖 ghHeaders 的 Accept。 */
+  const yr = await fetchText(ymlAsset.url,
+    Object.assign({}, ghHeaders(source.token), { Accept: 'application/octet-stream' }), 256 * 1024);
   if (!yr.ok) return { ok: false, error: '取 latest.yml 内容失败：' + yr.error };
   const m = parseLatestYml(yr.text);
   if (!m.version || !m.file) return { ok: false, error: 'latest.yml 里没有 version / file 字段' };
@@ -418,7 +433,9 @@ async function fetchManifest(source) {
     notes: String(rel.body || ''), releaseUrl: rel.html_url || null,
     /* 用 API 资源地址 + octet-stream：公有库私有库都能下，且会 302 到真实对象存储 */
     downloadUrl: exeAsset.url,
-    headers: Object.assign({ Accept: 'application/octet-stream' }, ghHeaders(source.token)),
+    /* 与 :405 同一个顺序问题 —— 下载安装包时也必须让 octet-stream 生效，
+       否则带 JSON Accept 去拉二进制。 */
+    headers: Object.assign({}, ghHeaders(source.token), { Accept: 'application/octet-stream' }),
     localPath: null
   };
 }

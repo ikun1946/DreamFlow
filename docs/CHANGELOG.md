@@ -13,6 +13,59 @@
 
 ---
 
+#### `0.29.5` — 2026-09-22（★ 修复：github 更新源下「检查更新」100% 失败）
+
+**问题（P0 · 功能完全不可用）**：桌面版的应用内自更新在 `github` 更新源下**必然失败**，
+报错 `latest.yml 里没有 version / file 字段`。
+
+**根因**：`desktop/updater.js` 两处 `Object.assign` **参数顺序写反**。
+`Object.assign(target, source)` 是 **source 覆盖 target**，而
+
+```js
+Object.assign({ Accept: 'application/octet-stream' }, ghHeaders(token))
+```
+
+里 `ghHeaders()` 返回的 `{ Accept: 'application/vnd.github+json' }` **把 octet-stream 覆盖掉了**。
+于是请求 GitHub 资产端点时带的是 JSON Accept，GitHub 忠实地返回**资产元数据 JSON**
+（实测 1446 字节）而不是文件正文（366 字节 yml），`parseLatestYml()` 于是得到 `version: null`。
+
+- `:405` 取 latest.yml 正文（"检查更新"环节，必然失败）
+- `:421` 安装包下载的 headers（同款顺序错误）
+
+**为什么潜伏这么久**（三条互相独立的原因）：
+
+1. **回归只测 local 模式** —— `scripts/test-update-flow.ps1` 与单测都用 `local` 更新源 mock，
+   **根本不经过 GitHub 的 Accept 语义**；
+2. **报错文案误导** —— 「latest.yml 里没有 version / file 字段」指向解析器，真凶却在 headers；
+3. **"声称可用" ≠ "验证过可用"** —— v0.25.0 的 Release notes 写着「以后就不用手动下载安装包了」，
+   而线上 `latest.yml` 的 `download_count` 长期为 **0**（安装包是 3）——
+   即这个文件**从未被成功取走过一次**。
+
+**改法**：
+
+1. 两处改为 `Object.assign({}, ghHeaders(token), { Accept: 'application/octet-stream' })` ——
+   让 octet-stream 位于**最后一个**参数，去覆盖 `ghHeaders` 的 Accept。
+2. **新增行为型回归（`test/03`，+2 用例）**：mock `https.request`，
+   **直接观察应用真正发出的请求头**，断言资产请求的 `Accept` 必须是 `application/octet-stream`。
+   - 刻意**不做**"源码里出现过某个词"的文本断言 —— 那类断言删掉逻辑照样绿（本仓库当日已有此教训）；
+   - **做了反向验证**：把顺序改回错误写法跑测试 → 2 条断言精确 FAIL
+     （`实得「application/vnd.github+json」`），确认断言真的抓得住这个缺陷。
+
+**验证**：
+
+- `npm test` **155/155**（153 → +2）
+- **线上实测**（真实网络、直接调用生产 `check()`）：
+  - 当前 `0.29.5` → `ok:true / latestVersion:0.25.0 / hasUpdate:false`（正确不降级）
+  - 模拟已装 `0.24.0` → `ok:true / hasUpdate:true` ← **修复前是 `ok:false`**
+  - 并正确带出 `sha512` / `size` / Release 说明 / `releaseUrl`
+- 同类写法全仓库扫描：其余 `Object.assign` 均为正确的「默认值 + 允许覆盖」模式，**无同类缺陷**。
+
+**⚠ 使用者须知（引导问题，无法靠升级自身解决）**：修好的代码只存在于新版本里。
+**已装 0.24.0 / 0.25.0 的用户，其应用内的更新器仍是旧的有缺陷版本，仍无法自动升级** ——
+必须**手动下载安装一次**本版本（或更高版本）；此后自动更新才真正可用。
+
+---
+
 #### `0.29.4` — 2026-09-22（审查清单复核：3 处陈旧/失实 + §10 / §11 门禁补漏）
 
 **背景**：复核 `docs/项目审查与改进清单.md`（484 行），逐条与仓库实际代码/配置对照。发现 **3 处陈旧或失实**与 **2 个新的门禁盲区** —— 后者的病根与 0.29.3 修的 §16 **完全同构**：**门禁只盯它认得的写法**。

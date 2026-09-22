@@ -195,6 +195,118 @@ describe('updater —— 版本比较与清单解析', () => {
 });
 
 /* ============================================================
+   github 模式的请求头 —— 行为型（2026-09-22 新增，Accept 覆盖回归）
+
+   为什么要有这一条：2026-09-22 实测发现 `desktop/updater.js` 里两处
+
+     Object.assign({ Accept: 'application/octet-stream' }, ghHeaders(token))
+
+   把 octet-stream **覆盖**成了 ghHeaders() 返回的 application/vnd.github+json。
+   于是 GitHub 返回的是**资产元数据 JSON**（实测 1446 字节）而不是文件正文（366 字节 yml），
+   parseLatestYml() 得到 version=null，最终报「latest.yml 里没有 version / file 字段」——
+   github 模式的「检查更新」100% 失败。旁证：线上 latest.yml 的 download_count 长期为 0。
+
+   为什么之前没抓到：`scripts/test-update-flow.ps1` 只用 local 更新源 mock，
+   根本不经过 GitHub 的 Accept 语义。
+
+   所以这里 mock 掉 https.request，**直接观察应用真正发出的请求头** ——
+   这是行为断言，不是"源码里出现过某个词"的文本断言（后者删掉逻辑照样绿）。
+   ============================================================ */
+describe('updater —— github 模式的请求头（★ 2026-09-22 Accept 覆盖回归）', () => {
+  const { EventEmitter } = require('events');
+  const https = require('https');
+
+  const RELEASE_JSON = JSON.stringify({
+    tag_name: 'v9.9.9',
+    html_url: 'https://github.com/x/y/releases/tag/v9.9.9',
+    body: 'release notes',
+    assets: [
+      { name: 'latest.yml', url: 'https://api.github.com/repos/x/y/releases/assets/1' },
+      { name: 'JimengConsole-9.9.9-x64-Setup.exe', url: 'https://api.github.com/repos/x/y/releases/assets/2', size: 123 }
+    ]
+  });
+  const YML = [
+    'version: 9.9.9',
+    'files:',
+    '  - url: JimengConsole-9.9.9-x64-Setup.exe',
+    '    sha512: AbCdEf==',
+    '    size: 123',
+    'path: JimengConsole-9.9.9-x64-Setup.exe'
+  ].join('\n');
+
+  /** 用假的 https.request 跑一段逻辑，期间记录每个请求的 url 与 headers */
+  async function withCapturedRequests(fn) {
+    const orig = https.request;
+    const seen = [];
+    https.request = function (url, opts, cb) {
+      const u = String(url);
+      seen.push({ url: u, headers: Object.assign({}, (opts && opts.headers) || {}) });
+      const route = /releases\/latest$/.test(u) ? RELEASE_JSON : YML;
+      const req = new EventEmitter();
+      req.setTimeout = function () { return req; };
+      req.destroy = function () {};
+      req.end = function () {
+        const res = new EventEmitter();
+        res.statusCode = 200;
+        res.headers = {};
+        res.resume = function () {};
+        res.destroy = function () {};
+        setImmediate(function () {
+          cb(res);
+          setImmediate(function () {
+            res.emit('data', Buffer.from(route, 'utf8'));
+            res.emit('end');
+          });
+        });
+      };
+      return req;
+    };
+    try { return await fn(seen); }
+    finally { https.request = orig; }
+  }
+
+  const SRC = (token) => updater.resolveSource({ provider: 'github', owner: 'x', repo: 'y', token });
+
+  test('★ 取 latest.yml / 安装包时，Accept 必须是 octet-stream（不被 JSON Accept 覆盖）', async () => {
+    let manifest = null;
+    const seen = await withCapturedRequests(async (s) => {
+      manifest = await updater.fetchManifest(SRC(''));
+      return s;
+    });
+
+    assert.equal(manifest.ok, true, 'mock 下应解析成功：' + (manifest.error || ''));
+    assert.equal(manifest.version, '9.9.9', '★ 只有 Accept 正确时才拿得到 yml 正文');
+
+    const assetReqs = seen.filter((r) => /releases\/assets/.test(r.url));
+    assert.ok(assetReqs.length >= 1, '应请求过至少一次资产内容，实得 ' + assetReqs.length);
+    assetReqs.forEach((r) => {
+      assert.equal(r.headers.Accept, 'application/octet-stream',
+        '★ 请求资产内容时 Accept 必须是 application/octet-stream，实得「' + r.headers.Accept
+        + '」—— 被 ghHeaders() 的 JSON Accept 覆盖了，GitHub 会返回资产元数据而不是文件正文');
+    });
+
+    assert.equal(manifest.headers.Accept, 'application/octet-stream',
+      '★ 交给下载环节的 headers 同样必须是 octet-stream');
+  });
+
+  test('带令牌时：认证头保留，且 Accept 仍是 octet-stream', async () => {
+    let manifest = null;
+    const seen = await withCapturedRequests(async (s) => {
+      manifest = await updater.fetchManifest(SRC('tok123'));
+      return s;
+    });
+
+    assert.equal(manifest.ok, true, (manifest && manifest.error) || '');
+    const assetReqs = seen.filter((r) => /releases\/assets/.test(r.url));
+    assert.ok(assetReqs.length >= 1, '应请求过至少一次资产内容');
+    assetReqs.forEach((r) => {
+      assert.equal(r.headers.Accept, 'application/octet-stream', '★ 带令牌也不能丢掉 octet-stream');
+      assert.equal(r.headers.Authorization, 'Bearer tok123', '认证头必须保留');
+    });
+  });
+});
+
+/* ============================================================
    安装前必须校验 sha512 —— 行为型（2026-09-22 由"匹配源码文本"改写）
 
    为什么必须真的跑一遍：原先这条断言的是"updater.js 源码里出现过 sha512 这个词"，

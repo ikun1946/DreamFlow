@@ -18,12 +18,12 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.29.4`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.29.5`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
 | 运行时依赖 | **零 npm 依赖**：后端只用 Node 内置模块，前端是原生 HTML/CSS/JS；`electron` / `electron-builder` 只在打包期用到 |
-| 自动化测试 | **153 个用例**（`npm test`，Node 内置 test runner）：数据安全 26 / 任务逻辑 20 / 构建发布 61 / 路由 6 / 队列 9 / CSP 7 / cliJobs 11 / a11y 7 / 错误码 6 |
+| 自动化测试 | **155 个用例**（`npm test`，Node 内置 test runner）：数据安全 26 / 任务逻辑 20 / 构建发布 63 / 路由 6 / 队列 9 / CSP 7 / cliJobs 11 / a11y 7 / 错误码 6 |
 | 统一检查 | `npm run check`（`scripts/check-project.js`，16 节 43 项一致性检查）+ `npm run lint`（7 项静态检查：语法 / debugger / 前端调试输出 / require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） |
 | 端到端验收 | 网页版 `npm run smoke:web`（连通性）；业务流 `npm run e2e`（53 项断言）；桌面版 `JC_DESKTOP_SMOKE=1`（见「自检」）；CI 双 job 已就位（`.github/workflows/ci.yml`） |
 | 一键回归 | `npm run verify` = `check` + `lint` + `test` + `build:web` |
@@ -438,7 +438,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.29.4`**
+当前版本：**`0.29.5`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -446,7 +446,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（153 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
+⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（155 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
 
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
