@@ -422,6 +422,28 @@ if (!testFiles.length) {
     'P1-6：至少要覆盖数据安全 / 任务逻辑 / 构建发布三组');
 } else {
   ok('自动化测试文件 ' + testFiles.length + ' 个：' + testFiles.join('、'));
+
+  /* ⚠ 2026-09-22 加的：`npm test` 必须**逐个列出**测试文件，不能用 glob。
+     原因：Node 20 的 `node --test` 只接受文件/目录路径，不支持 glob 展开
+     （glob 是 Node 21+ 才有的；而 Node 21+ 又不再支持目录参数）—— CI 跑的是
+     Node 20，用 "test/*.test.js" 会让测试整步失败（首次 CI 红灯就是这个）。
+     代价是新增测试文件要手动登记，所以这里用机器检查兜住"漏登记"，
+     否则会出现"文件加了但 CI 从不跑它"的静默缺口。 */
+  const testScript = (PKG && PKG.scripts && PKG.scripts.test) || '';
+  const listed = [...testScript.matchAll(/test\/([A-Za-z0-9._-]+\.test\.js)/g)].map((m) => m[1]);
+  const missing = testFiles.filter((f) => !listed.includes(f));
+  const extra = listed.filter((f) => !testFiles.includes(f));
+  if (!listed.length) {
+    fail('package.json 的 test 脚本没有逐个列出测试文件：' + testScript,
+      '必须写成 node --test test/01-xxx.test.js test/02-xxx.test.js …（Node 20 不支持 glob）');
+  } else if (missing.length || extra.length) {
+    fail('test 脚本与 test/ 目录不一致'
+      + (missing.length ? '；未登记：' + missing.join('、') : '')
+      + (extra.length ? '；登记了不存在的文件：' + extra.join('、') : ''),
+      '把 test/ 下的 *.test.js 全部写进 package.json 的 test 脚本');
+  } else {
+    ok('test 脚本已逐个登记全部 ' + testFiles.length + ' 个测试文件（Node 20 兼容）');
+  }
 }
 
 if (!exist('scripts/check-project.js')) fail('scripts/check-project.js 不在（自我检查）');
@@ -661,12 +683,19 @@ try {
 if (!remoteUrl) {
   fail('读不到 git remote origin（不在 git 仓库里？）');
 } else {
-  const m = /github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteUrl);
+  /* 接受四种等价写法（都指向同一个仓库）：
+       https://github.com/<owner>/<repo>.git
+       git@github.com:<owner>/<repo>.git
+       ssh://git@github.com[:port]/<owner>/<repo>.git
+       ssh://git@ssh.github.com:443/<owner>/<repo>.git   ← 本机在用这条（HTTPS 被墙时走 443 的 SSH）
+     ⚠ 最后一种不是"另一个仓库"，别把它判成不一致。 */
+  const m = /^(?:https?:\/\/github\.com\/|git@github\.com:|ssh:\/\/(?:git@)?(?:ssh\.github\.com|github\.com)(?::\d+)?\/)([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteUrl);
   if (!m) {
     fail('origin 不是 GitHub 地址：' + remoteUrl);
   } else if (m[1] !== 'ikun1946' || m[2] !== 'DreamFlow') {
     fail('origin 指向 ' + m[1] + '/' + m[2] + '，与声明（ikun1946/DreamFlow）不一致',
-      '方案 A（推荐）：git remote set-url origin https://github.com/ikun1946/DreamFlow.git；'
+      '方案 A（推荐）：git remote set-url origin https://github.com/ikun1946/DreamFlow.git'
+      + '（或 ssh://git@ssh.github.com:443/ikun1946/DreamFlow.git）；'
       + '方案 B：改文档承认旧仓库名 —— 二选一，别让两者继续漂移');
   } else {
     ok('origin 与声明一致：' + m[1] + '/' + m[2]);

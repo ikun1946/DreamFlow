@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.28.1`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.28.2`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.28.1`**
+当前版本：**`0.28.2`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -449,6 +449,16 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.28.2` — 2026-09-22（修复 CI 首跑红灯：`npm test` 的 glob 在 Node 20 上不成立）
+
+**背景**：本仓库的 CI 在 2026-09-22 首次真正跑起来（`.github/workflows/ci.yml` 推上去之后），两个 job 都停在「自动化测试」这一步。本地却全绿 —— 差别在 **Node 版本**：本地 Node 24，CI 固定 Node 20。
+
+**根因**：`node --test "test/*.test.js"` 里的 glob 是 **Node 21+ 才支持**的写法。Node 20 的测试运行器只接受**文件或目录路径**（官方文档原文：*one or more paths can be provided*），拿到字面量 `test/*.test.js` 会当成不存在的路径直接失败。而 Node 21+ 又取消了目录参数（只认 glob）—— 所以「目录」和「glob」都不是两边通吃的写法（两条路都实测过）。
+
+**修法**：`npm test` 改为**逐个列出测试文件**（`node --test test/01-… test/02-… test/03-…`）—— 文件路径在 Node 20 与 21+ 上都成立。代价是新增测试文件要手动登记，因此 `scripts/check-project.js` 加了一项机器校验：**`test/` 下的每个 `*.test.js` 都必须出现在 test 脚本里**，漏登记会让 `npm run check` 直接失败（否则会出现"文件加了、CI 从不跑它"的静默缺口）。
+
+> 教训：本地 Node 比 CI 新时，`node --test` 的**参数写法**本身就是一个兼容性陷阱 —— "本地全绿"证明不了"CI 会绿"。
 
 #### `0.28.1` — 2026-09-21（仓库改为公开后的文档与文案收口）
 
