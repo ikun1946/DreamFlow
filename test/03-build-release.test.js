@@ -500,8 +500,12 @@ describe('preload —— 桥面形状（行为型，P0-3）', () => {
     };
     const Module = require('module');
     const orig = Module._load;
+    /* ⚠ 拦截的不只是 'electron'，而是所有以 'electron' 开头或等于 'electron' 的请求 —
+       electron 子包（'electron/main' 之类）在新版本里会被解构 require 出来，
+       漏拦就会让 Windows CI 的"重下 electron 二进制"逻辑被触发（node_modules/electron/index.js
+       没有 path.txt 时会去拉二进制，把整个测试进程卡在网络里）。 */
     Module._load = function (request) {
-      if (request === 'electron') return stub;
+      if (request === 'electron' || /^electron\//.test(request)) return stub;
       return orig.apply(this, arguments);
     };
     const target = path.join(REPO, 'desktop', 'preload.js');
