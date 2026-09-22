@@ -560,6 +560,19 @@ describe('版本一致性（P0-4 / P2-14 相关）', () => {
     assert.match(yml, /CSC_KEY_PASSWORD/, '应说明 CSC_KEY_PASSWORD 用法');
     assert.match(yml, /timeStampServer|rfc3161TimeStampServer/, '应配置时间戳服务（证书过期后签名仍有效）');
 
+    /* ⚠ 2026-09-22 回归：签名配置必须**缩进在 win: 之下**。
+       electron-builder 26 的 schema 只认 win.signAndEditExecutable / win.signtoolOptions，
+       写在顶层会直接中止构建（报 "configuration has an unknown property ..."）——
+       CI 首次跑红就是这个。这是"文件形状"断言：改打包配置时必须同步这里。 */
+    assert.match(yml, /^ {2}signAndEditExecutable:\s*true\s*$/m,
+      '★ signAndEditExecutable 必须缩进在 win: 之下');
+    assert.match(yml, /^ {2}signtoolOptions:\s*$/m,
+      '★ signtoolOptions 必须缩进在 win: 之下');
+    assert.doesNotMatch(yml, /^signAndEditExecutable:/m,
+      '★ 不得写在顶层 —— electron-builder 26 会拒绝构建');
+    assert.doesNotMatch(yml, /^signtoolOptions:/m,
+      '★ 不得写在顶层 —— electron-builder 26 会拒绝构建');
+
     const gi = fs.readFileSync(path.join(REPO, '.gitignore'), 'utf8');
     for (const pat of ['*.pem', '*.key', '*.p12']) {
       assert.ok(gi.includes(pat), '★ .gitignore 必须忽略 ' + pat);

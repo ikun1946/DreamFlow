@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.28.2`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.28.3`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -436,7 +436,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.28.2`**
+当前版本：**`0.28.3`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -449,6 +449,17 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 
 ### 变更记录
+
+#### `0.28.3` — 2026-09-22（修 CI 双红灯：electron-builder 签名配置形状 + e2e 审计断言竞态）
+
+**CI 第一次真正跑起来后暴露出的两个真实缺陷**（0.28.2 修掉了"自动化测试"那一步，剩下两个 job 各自的红灯）：
+
+- **`npm run pack` / `npm run dist` 一直是坏的**（`electron-builder.yml`）：签名配置 `signAndEditExecutable` / `signtoolOptions` 原先写在**顶层**，而 electron-builder 26 的 schema 只认 `win.*` —— 它会在启动时直接报 `configuration has an unknown property` 并中止。**本地实测复现**：修前 `npm run pack` 立刻失败；把两个键缩进到 `win:` 之下后打包成功（`release/win-unpacked/JimengConsole.exe` 246 MB，无证书时正确跳过签名，exit 0）。这也解释了"0.27.0 那批加固改了打包配置却没人发现"——CI 从未跑过、pack 也没人再跑过。
+  - 新增两道护栏：`scripts/check-project.js` 加"签名配置嵌套正确"检查（0.1 秒拦住"要跑几分钟打包才炸"的错），`test/03` 加同形状断言。
+- **e2e 的审计断言有竞态**（`scripts/e2e-flow.js` + `server/projects.js`）：整条 e2e 只跑 ~50 ms，而 store 的常规写盘是 **200 ms 防抖合并写** —— 断言在防抖触发前就读了 `db.json`，于是"审计留痕"两条稳定失败；再叠上 Windows 的 `SIGTERM` 是**强制终止**（handler 不执行、退出前的 flush 等不到），进程一被杀审计就永远不落盘。
+  - 产品侧：**彻底删除的审计改为 `store.flush()` 立即落盘** —— 不可逆动作的留痕不该停在防抖窗口里。
+  - 测试侧：断言改为**轮询等待**（最多 3 秒），不再把结果绑死在"某次改动恰好是同步写"上。
+- **新增 `test/04-routes.test.js`（路由层行为测试，对应流程文档阶段 2.1）**：真起服务 + 真打 HTTP，覆盖跨项目越权（父子不匹配 404 且不泄露数据）、路径段优先于查询串、未知路径 / 方法不匹配 40400、幂等回放（同 key 同路径回放、同 key 跨项目各自执行）、上传体积上限（40001 且不落库）。用例总数 89 → 95。
 
 #### `0.28.2` — 2026-09-22（修复 CI 首跑红灯：`npm test` 的 glob 在 Node 20 上不成立）
 

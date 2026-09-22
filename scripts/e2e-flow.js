@@ -495,7 +495,18 @@ const PNG_1x1 = Buffer.from(
     else fail('重复删除未返回 40400，实际 ' + JSON.stringify(delMissing.env && delMissing.env.code));
 
     // 9d. 审计留痕（写进 db.logs 的项目级 key，含归档路径）
-    const dbText = fs.existsSync(dbFile) ? fs.readFileSync(dbFile, 'utf8') : '';
+    /* ⚠ 轮询等待，而不是"读一次就断言"：store 的常规写盘是 **200ms 防抖合并写**，
+       而整条 e2e 只跑几十毫秒 —— 立刻读会稳定读到"还没落盘"的旧内容
+       （2026-09-22 实测踩到：断言失败 + Windows 上 SIGTERM 是强制终止，
+        进程被杀时连退出前的 flush 都等不到）。
+       硬删除那条审计已经改成 flush 立即落盘；这里再叠一层轮询，
+       是为了不把断言绑死在"某次改动恰好是同步写"上。 */
+    const readDbText = () => (fs.existsSync(dbFile) ? fs.readFileSync(dbFile, 'utf8') : '');
+    let dbText = readDbText();
+    for (let i = 0; i < 30 && !/项目被彻底删除/.test(dbText); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      dbText = readDbText();
+    }
     if (/项目被彻底删除/.test(dbText)) pass('审计日志已落库（含"项目被彻底删除"）');
     else fail('db.json 里找不到审计留痕');
     if (/已归档到/.test(dbText)) pass('审计日志含归档路径（可追溯）');

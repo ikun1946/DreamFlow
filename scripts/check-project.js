@@ -186,9 +186,9 @@ if (missingIcons.length) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 4. electron-builder.yml 引用的图标存在
+// 4. electron-builder.yml：图标引用与签名配置形状
 // ════════════════════════════════════════════════════════════════
-head('[4] electron-builder.yml 图标引用');
+head('[4] electron-builder.yml 形状');
 
 const yml = read('electron-builder.yml');
 if (yml === null) {
@@ -212,6 +212,23 @@ if (yml === null) {
   } else {
     ok('artifactName 与 updater 白名单同形状');
   }
+
+  /* ⚠ 2026-09-22 加的：签名配置必须缩进在 `win:` 之下。
+     electron-builder 26 的 schema 只认 win.signAndEditExecutable / win.signtoolOptions，
+     写在**顶层**会让它直接中止构建（"configuration has an unknown property ..."）——
+     CI 首次跑红就是这个，而本地 `npm run check` 当时完全查不出来（只有真跑 pack 才炸）。
+     这一项把"要跑几分钟打包才能发现"的错，提前成一条 0.1 秒的门禁。 */
+  const nestedOk = /^ {2}signAndEditExecutable:\s*true\s*$/m.test(yml) && /^ {2}signtoolOptions:\s*$/m.test(yml);
+  const topLevelBad = /^signAndEditExecutable:/m.test(yml) || /^signtoolOptions:/m.test(yml);
+  if (topLevelBad) {
+    fail('签名配置写在顶层 —— electron-builder 26 会拒绝构建',
+      '把 signAndEditExecutable / signtoolOptions 缩进到 win: 之下（见 yml 内注释）');
+  } else if (!nestedOk) {
+    fail('yml 里找不到 win: 之下的签名配置（signAndEditExecutable / signtoolOptions）',
+      'P0-5 要求发布前有签名卡点；若确实要移除，请同步更新本检查与 test/03');
+  } else {
+    ok('签名配置嵌套正确（win.signAndEditExecutable / win.signtoolOptions）');
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -222,14 +239,32 @@ head('[5] 不该入库的文件');
 const FORBIDDEN = [
   { p: 'server/data/db.json', why: '运行态数据库（含用户真实数据）' },
   { p: 'server/data', why: '运行态数据目录' },
-  { p: 'release', why: '安装包产物（上百 MB，可随时重建）' },
+  /* allowLocal：本地跑过 npm run pack / dist 时，release/ **本来就该存在**（已在 .gitignore 里）。
+     这一项要拦的是"被提交进版本库"，不是"磁盘上存在" —— 否则开发者每次打完包都得先删掉
+     release/ 才能过 check（2026-09-22 实测踩到：验证打包修复后 check 立刻误报）。 */
+  { p: 'release', why: '安装包产物（上百 MB，可随时重建）', allowLocal: true },
   { p: '.env', why: '环境变量文件' },
   { p: 'desktop-config.json', why: '桌面端本机配置' },
   { p: 'desktop-state.json', why: '桌面端本机状态' }
 ];
 let forbiddenHit = 0;
 for (const f of FORBIDDEN) {
-  if (exist(f.p)) { fail('存在 ' + f.p + '（' + f.why + '），不应入库', '确认 .gitignore 生效并删除'); forbiddenHit++; }
+  if (!exist(f.p)) continue;
+  if (f.allowLocal) {
+    let tracked = [];
+    try {
+      tracked = require('child_process')
+        .execFileSync('git', ['ls-files', f.p], { cwd: ROOT, encoding: 'utf8' })
+        .split('\n').map((x) => x.trim()).filter(Boolean);
+    } catch (e) { /* 非 git 环境（如解压出来的副本）：无从判断，跳过 */ }
+    if (!tracked.length) continue;   // 本地存在但未被跟踪 —— 正常，放行
+    fail(f.p + '/ 里有文件被 git 跟踪（' + tracked.slice(0, 3).join('、') + (tracked.length > 3 ? ' 等' : '') + '），不应入库',
+      '确认 .gitignore 生效，并用 git rm --cached 取消跟踪');
+    forbiddenHit++;
+    continue;
+  }
+  fail('存在 ' + f.p + '（' + f.why + '），不应入库', '确认 .gitignore 生效并删除');
+  forbiddenHit++;
 }
 if (!forbiddenHit) ok('未发现运行态数据 / 产物残留');
 

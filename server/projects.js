@@ -428,7 +428,13 @@ function hardDeleteProject(db, id) {
       + (stillThere ? '；⚠ 目录未能完全删除，仍有残留' : ''),
     ts: nowIso()
   });
-  save();
+  /* ⚠ 这里用 **flush（立即落盘）而不是 save（200ms 防抖）**：
+     彻底删除是不可逆动作，它的审计留痕不该停在防抖窗口里 ——
+     2026-09-22 实测：整条 e2e 流程只跑 ~50ms，防抖还没触发断言就读了 db.json；
+     而 Windows 上 `SIGTERM` 是**强制终止**（handler 不执行），
+     进程一旦在 200ms 内被杀，这条审计就永远不落盘了。
+     删除是低频动作，多花一次同步写完全值得。 */
+  store.flush();
 
   return {
     deleted: p.id, hard: true, name: p.name,

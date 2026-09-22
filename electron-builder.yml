@@ -52,6 +52,22 @@ win:
   requestedExecutionLevel: asInvoker
   # 可执行文件名（开始菜单/任务管理器里显示的名字）
   executableName: JimengConsole
+  # ⚠ 签名配置**必须在 win: 之下**（见上方"代码签名（P0-5）"注释块）。
+  # 2026-09-22 教训：这两个键原先写在顶层，electron-builder 26 的 schema 直接拒绝 ——
+  # 报 "configuration has an unknown property 'signAndEditExecutable' / 'signtoolOptions'"
+  # 并中止构建。顶层写法在旧版本上或许能过，但 26 只认 win.*（CI 首次跑红即此因）。
+  signAndEditExecutable: true
+  signtoolOptions:
+    # 只签安装器与主程序（+ 卸载器），不签每个 dll —— 减少签名次数与耗时
+    signingHashAlgorithms:
+      - sha256
+    # 发布者名称。与证书 Subject 的 CN 一致即可；留空则由证书决定。
+    # 若填了但与证书不符，signtool 会报错，属于有意为之的护栏。
+    publisherName: ikun1946
+    # RFC3161 时间戳服务。列表按顺序尝试；全失败则构建报警告但不中断，
+    # 便于内网 / 离线环境也能出包。
+    rfc3161TimeStampServer: http://timestamp.digicert.com
+    timeStampServer: http://timestamp.digicert.com
 
 # ============================================================
 # 代码签名（P0-5）
@@ -83,22 +99,10 @@ win:
 # 时间戳（timestamping）必须开：否则证书过期后已分发安装包的签名会失效，
 # 用户会重新看到警告。这里锁 RFC3161 服务，并允许回退。
 # ============================================================
-# 说明：electron-builder 通过 win.signtoolOptions 暴露统一签名配置；
-# 若你的 electron-builder 版本较旧（< 26），会自动回落到顶层强制读取
-# CSC_LINK / CSC_KEY_PASSWORD，无需改动本文件。
-signAndEditExecutable: true
-
-signtoolOptions:
-  # 只签安装器与主程序（+ 卸载器），不签每个 dll —— 减少签名次数与耗时
-  signingHashAlgorithms:
-    - sha256
-  # 发布者名称。与证书 Subject 的 CN 一致即可；留空则由证书决定。
-  # 若填了但与证书不符，signtool 会报错，属于有意为之的护栏。
-  publisherName: ikun1946
-  # RFC3161 时间戳服务。列表按顺序尝试；全失败则构建报警告但不中断，
-  # 便于内网 / 离线环境也能出包。
-  rfc3161TimeStampServer: http://timestamp.digicert.com
-  timeStampServer: http://timestamp.digicert.com
+# ⚠ 真正的签名配置写在下面的 `win:` 块里（`win.signAndEditExecutable` / `win.signtoolOptions`）——
+#   electron-builder 26 的 schema **不接受顶层写法**，写在顶层会直接中止构建（2026-09-22 CI 首次跑红即此因）。
+#   凭据来源不变：`CSC_LINK` / `CSC_KEY_PASSWORD` 由 electron-builder 自己从环境变量读取，无需在此声明。
+# ============================================================
 
 nsis:
   # 非一键安装：让用户能看到装到哪、能改路径
