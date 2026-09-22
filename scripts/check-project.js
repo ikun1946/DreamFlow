@@ -102,13 +102,17 @@ if (!PKG) {
       ok('README 当前版本与 package.json 一致：' + V);
     }
 
-    // README 是否包含当前版本的变更记录
-    const hasEntry = readme.includes('#### `' + V + '`') || readme.includes('## ' + V) || readme.includes('### ' + V);
+    // README 是否包含当前版本的变更记录 —— 0.29.2 起**全部**搬到 docs/CHANGELOG.md。
+    // 0.29.0 / 0.29.1 的条目同时在 README 末尾的指针与 CHANGELOG.md 里（搬迁后
+    // 仍带 #### `V` 标记），所以两处都能命中；这里兼容两种形态。
+    const changelog = read('docs/CHANGELOG.md') || '';
+    const hasEntry = readme.includes('#### `' + V + '`') || readme.includes('## ' + V) || readme.includes('### ' + V) ||
+                    (changelog.includes('#### `' + V + '`') || changelog.includes('## ' + V));
     if (!hasEntry) {
-      fail('README 缺少 ' + V + ' 的变更记录',
-        '在版本历史里加一节，形如「#### `' + V + '` — <日期>」');
+      fail('README / docs/CHANGELOG.md 缺少 ' + V + ' 的变更记录',
+        '在 docs/CHANGELOG.md（0.29.2 起）或 README 历史段（0.29.0 / 0.29.1 兼容）里加一节「#### `' + V + '` — <日期>」');
     } else {
-      ok('README 含 ' + V + ' 的变更记录');
+      ok('当前版本 ' + V + ' 的变更记录存在（README 或 docs/CHANGELOG.md）');
     }
   }
 
