@@ -1074,6 +1074,42 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .drawer-head{display:flex;align-items:center;gap:12px;height:68px;padding:0 24px 0 32px;flex:none}
 .drawer-body{padding:24px 32px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:14px}
 .drawer-foot{display:flex;align-items:center;gap:10px;height:76px;padding:0 32px;background:var(--pearl);border-top:1px solid var(--divider);flex:none}
+
+/* ============ 设置窗口的两种形态（2026-09-23 新增居中态） ============
+   默认仍是**抽屉态**（右侧滑出，480px）—— 分镜表里用它，不打断表格的横向视线。
+   首页/项目墙改用**居中弹窗态**（.center）：那里页面本来就空，贴边抽屉显得突兀；
+   居中弹出能与分镜表的抽屉一眼区分开，宽度也从 480px 放到 820px，
+   四组设置不必全挤在一列里上下滚。
+
+   ⚠ 三个必须写清的点（都踩得到）：
+   1. `:not(.inline)` 是**互斥保险**。就地模式（项目页的「设置」页签）会给抽屉加 .inline，
+      而 .inline 只复位了 position/inset/transform/width/box-shadow，
+      **盖不掉** opacity / max-height / border-radius。
+      两者若同时生效，就地设置面板会变成"全透明 + 被限高 88vh"。
+      JS 侧也会在三处显式清掉 .center（openSettings / mountInlinePanel / unmountInlinePanel），
+      这里再用 :not() 兜一层 —— 这类"类名泄漏"本仓库已经踩过 4 次（见 1332 行那条注释）。
+   2. `opacity:0` + `pointer-events:none` 是**关掉之后的安全网**。
+      抽屉态藏起来靠的是 translateX(100%)（挪出视口外），而居中态关掉后**仍停在屏幕正中**：
+      少了这两条，一个完全透明的窗口会照常吃掉首页项目卡片上的点击，
+      而且看不出是谁挡的（排查成本极高）。纯 CSS 声明，不依赖 JS 记得设 hidden。
+   3. 遮罩要同步抬到 66（见下面的 #settingsMask.center）：首页 .pageview 是 z-index:65，
+      高于默认遮罩的 60。不抬的话遮罩被压在首页底下 —— 弹窗悬空、背景不压暗，
+      底下的卡片也照旧可点。 */
+.drawer.center:not(.inline){
+  top:50%;left:50%;right:auto;bottom:auto;
+  width:min(820px,calc(100vw - 48px));
+  max-height:88vh;
+  border:1px solid var(--hairline);
+  border-radius:18px;box-shadow:var(--shadow-2);overflow:hidden;
+  opacity:0;pointer-events:none;
+  transform:translate(-50%,-50%) scale(.97);
+  transition:transform .2s cubic-bezier(.2,.9,.3,1.08),opacity .18s ease;
+}
+.drawer.center:not(.inline).open{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+/* 居中态的遮罩：抬到首页（.pageview = 65）之上、抽屉自身（68）之下。
+   id 选择器保证压过 .mask 的 60，且不影响抽屉态。 */
+.mask#settingsMask.center{z-index:66}
+
 /* ---------------------------- 设置抽屉 · 分组卡片 ----------------------------
    原先是 9 段平铺，层级只靠字号和 .hr / 临时 margin-top 硬撑，"状态"与它的"操作按钮"还隔着几十行。
    改为「卡片 → 子块 → 行」三级：标题与说明归 .scard-hd，控件归 .scard-bd，同属一个 CLI 的状态与操作收进一个 .sblock。 */

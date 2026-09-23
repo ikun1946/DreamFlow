@@ -1980,13 +1980,14 @@
          会盖掉浏览器默认的 [hidden]{display:none}（见 styles.css 的 .drawer[hidden]）。 */
     const dr = $('#settingsDrawer');
     if (dr) {
-      dr.classList.remove('inline', 'open');
+      /* 一并摘掉 .center（首页弹窗形态）：它泄漏到抽屉态会让窗口停在屏幕正中 */
+      dr.classList.remove('inline', 'open', 'center');
       dr.hidden = true;
       dr.setAttribute('aria-hidden', 'true');
       if (dr.parentElement !== document.body) document.body.appendChild(dr);
     }
     const mk = $('#settingsMask');
-    if (mk) mk.hidden = true;
+    if (mk) { mk.hidden = true; mk.classList.remove('center'); }
     S.settingsDirty = false;
   }
 
@@ -2004,8 +2005,14 @@
     el.setAttribute('aria-hidden', 'false');
     mount.appendChild(el);
     inlinePanel = which;
-    /* 就地模式不要遮罩：遮罩会把项目页的头与导航一起压暗，正是要避免的效果 */
-    if (which === 'settings') { const m = $('#settingsMask'); if (m) m.hidden = true; }
+    /* 就地模式不要遮罩：遮罩会把项目页的头与导航一起压暗，正是要避免的效果。
+       同时摘掉 .center（首页弹窗形态）—— .inline 复位不了 opacity / max-height，
+       留着会让就地设置面板变成"全透明 + 被限高 88vh"（见 styles.css 的 .drawer.center 注释）。 */
+    if (which === 'settings') {
+      const m = $('#settingsMask');
+      if (m) { m.hidden = true; m.classList.remove('center'); }
+      el.classList.remove('center');
+    }
   }
 
   function renderProjTabs() {
@@ -2344,8 +2351,11 @@
     on('#homeRefresh', () => loadProjects());
     /* 首页也要能进设置（2026-09-21 用户反馈：此前只有进了项目页才够得着设置，
        而"刚装完还没建项目、正要去装创作 CLI"恰恰是最需要设置的场景）。
-       抽屉本身对空库是安全的：openSettings 里三个请求各自 catch，取不到就渲染占位。 */
-    on('#homeSettings', () => openSettings());
+       设置面板本身对空库是安全的：openSettings 里三个请求各自 catch，取不到就渲染占位。
+       ⚠ 形态与分镜表**刻意不同**（2026-09-23）：首页用居中弹窗（{center:true}），
+         分镜表仍用右侧抽屉。首页页面本来就空，贴边抽屉显得突兀；
+         居中弹出能与分镜表的抽屉一眼区分开。见 styles.css 的 .drawer.center。 */
+    on('#homeSettings', () => openSettings({ center: true }));
     on('#projBack', () => enterHome());
     on('#projNewWs', () => onNewWorkspace());
     on('#projRename', () => { if (S.cur.project) onRenameProject(S.cur.project.id, S.cur.project.name); });
@@ -4786,16 +4796,35 @@
      再**并发**（不是串行）拉最新值，到位后原地重渲染。 */
   async function openSettings(o) {
     const inline = !!(o && o.inline);
+    const center = !inline && !!(o && o.center);
+    /* 形态在"显形之前"定好：首页/项目墙用居中弹窗（center），分镜表用右侧抽屉。
+       ⚠ inline 与 center 互斥：就地模式绝不能带 .center，原因见 styles.css 那段注释。 */
+    const dr = $('#settingsDrawer');
+    const mk = $('#settingsMask');
+    /* ⚠ 换形态时必须先把窗口摘出布局（hidden）再改类，这是本段最关键的一步。
+       两个形态的"关闭位置"差了整整一个屏幕宽（抽屉 = translateX(480px) 视口外；
+       居中 = 屏幕正中）。若不摘布局就改类，浏览器会把这次类变更当成一次**过渡**，
+       于是首次从首页打开设置时，窗口会从右侧抽屉位横扫到屏幕中央 —— 实测可见。
+       摘成 display:none 后，类变更不产生过渡，位置直接落定。 */
+    if (dr.classList.contains('center') !== center) dr.hidden = true;
+    dr.classList.toggle('center', center);
+    mk.classList.toggle('center', center);
     if (inline) mountInlinePanel('settings');
-    else $('#settingsMask').hidden = false;
+    else mk.hidden = false;
     renderSettings();
     /* ⚠ 必须显式清掉 hidden：抽屉原来只靠 transform 藏到屏幕外，hidden 从来没被设过，
        所以 openSettings 一直没管它。自从补了 `.drawer[hidden]{display:none}`、
        且就地模式卸载时会把 hidden 置 true 之后，**不还原 hidden 就再也打不开抽屉**了
        （从项目页进过设置、再回控制台点设置，抽屉会是 display:none）。 */
-    $('#settingsDrawer').hidden = false;
-    $('#settingsDrawer').classList.add('open');
-    $('#settingsDrawer').setAttribute('aria-hidden', 'false');
+    dr.hidden = false;
+    /* 强制一次重排再挂 .open：hidden=false 与 .open 若在同一帧生效，
+       display:none → flex 之间没有可过渡的起点，入场动画不会跑（窗口"啪"地出现）。
+       统一补这一次，抽屉态与居中态就都能从各自的"关闭位置"正常起步 ——
+       上面那次摘布局也让抽屉态重新有了 translateX 起点。
+       ⚠ 这里只强制布局、不触发绘制，所以不会闪出"关闭态"的中间帧。 */
+    void dr.offsetWidth;
+    dr.classList.add('open');
+    dr.setAttribute('aria-hidden', 'false');
     try {
       /* 三个请求**各自独立失败**：任何一个挂掉都不该让整个抽屉停在半渲染状态。
          ⚠ 实测（2026-09-20）：空库（还没建项目）时 getSettings 会返回
@@ -4846,6 +4875,16 @@
     $('#settingsMask').hidden = true;
     $('#settingsDrawer').classList.remove('open');
     $('#settingsDrawer').setAttribute('aria-hidden', 'true');
+    /* 居中态关掉时顺手 hidden 掉（抽屉态不置，保持原有的滑出动画）。
+       两个理由，都不是"动画好不好看"：
+       1. **可聚焦性**。居中态的关闭位置就在屏幕正中，只靠 opacity:0 藏的话，
+          元素仍在布局里、仍在 Tab 序里 —— 键盘用户会把焦点 Tab 进一个看不见的面板。
+          display:none 直接把它移出布局与焦点链。（抽屉态靠 translateX 挪出视口，
+          同样可聚焦，但那是既有行为，本次不动它。）
+       2. 位置语义干净：居中态不该在"已关闭"时还占着屏幕中央。
+       ⚠ 换形态时的位移动画由 openSettings 负责（那边先摘布局再改类），
+         这里不承担那个职责，别把两处混在一起看。 */
+    if ($('#settingsDrawer').classList.contains('center')) $('#settingsDrawer').hidden = true;
     S.settingsDirty = false;
   }
 
@@ -5783,7 +5822,10 @@
     $('#importClose').addEventListener('click', closeImport);
     $('#importCancel').addEventListener('click', closeImport);
     $('#importMask').addEventListener('click', (e) => { if (e.target.id === 'importMask') closeImport(); });
-    $('#btnSettings').addEventListener('click', openSettings);
+    /* 分镜表顶栏的「设置」→ 抽屉态（不传 center）。
+       ⚠ 这里刻意包一层箭头函数，不直接把 openSettings 当 handler：
+       直接传会让 MouseEvent 变成参数 o，形态就只能靠"事件对象恰好没有 center 属性"来保证。 */
+    $('#btnSettings').addEventListener('click', () => openSettings());
     $('#settingsClose').addEventListener('click', closeSettings);
     $('#settingsMask').addEventListener('click', closeSettings);
     $('#detailClose').addEventListener('click', closeDetail);
