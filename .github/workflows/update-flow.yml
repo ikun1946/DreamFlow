@@ -101,7 +101,8 @@ jobs:
 
       # ── ③ 无论成败都留痕 ─────────────────────────────────────
       # report.json 里有每一步的机器可读记录（含 db.json 更新前后的 sha256），
-      # 失败时这是唯一的现场。
+      # 失败时这是唯一的现场。脚本已改为**每记一步就落盘**，所以即使这一步
+      # 被 job 超时掐掉，前 N 步的证据也在。
       - name: 上传回归报告
         if: always()
         uses: actions/upload-artifact@v4
@@ -110,5 +111,9 @@ jobs:
           path: |
             .test-tmp/update-flow-*/report.json
             .test-tmp/update-flow-*/logs/*.log
+          # ⚠ 必须显式打开：产物在 `.test-tmp/` 下，而这是**点开头的隐藏目录**，
+          #   upload-artifact@v4 默认 `include-hidden-files: false` —— 首次 CI 运行时
+          #   就因此报了 "No files were found"，把唯一的现场丢掉了。
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

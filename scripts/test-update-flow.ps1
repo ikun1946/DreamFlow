@@ -81,12 +81,47 @@ $report  = [ordered]@{
 $script:stepNum = 0
 # Fail 里要靠它收掉残留的 Electron 进程（见 Fail 的注释）
 $script:electronProc = $null
+function Save-Report() {
+  # ⚠ 2026-09-23 补：**每记一步就落盘一次**，而不是等 Pass/Fail 才写。
+  #   为什么：首次 CI 运行里脚本 16 步全跑完、断言全过，但那一步仍被 job 超时
+  #   掐掉，而 report.json 是在最后才写的 —— 于是**现场全丢**，只剩一行
+  #   "No files were found"（而且 .test-tmp 是隐藏目录，artifact 默认不收）。
+  #   改成增量落盘后，无论后面卡在哪，前 16 步的证据都在磁盘上。
+  #   用 -Compress 且限制深度：这里每步都要写，必须快；报告是给机器读的，不需要缩进。
+  try {
+    $reportPath = Join-Path $runDir 'report.json'
+    ($script:report | ConvertTo-Json -Compress -Depth 8) | Set-Content -Path $reportPath -Encoding UTF8
+  } catch {
+    Write-Host ('[warn] 写 report.json 失败（已忽略）: ' + $_.Exception.Message)
+  }
+}
 function Record($name, $data = @{}) {
   $script:stepNum++
   $entry = [ordered]@{ n = $script:stepNum; name = $name; data = $data }
   $script:report.steps += $entry
   $json = $data | ConvertTo-Json -Compress -Depth 5
   Write-Host ("[step {0:D2}] {1} {2}" -f $script:stepNum, $name, $json)
+  Save-Report
+}
+# 还原 package.json 的降级改动（幂等：多调几次无害）。
+# ⚠ 为什么 Pass/Fail 里也必须调：它们用 [Environment]::Exit **立即终止进程**，
+#   会跳过 finally —— 若 Fail 是在 try 内部被调用的（例如"Electron 超时未退出"），
+#   finally 里的还原就跑不到，仓库会留下一个版本号被降级的 package.json。
+#   这不是假想：2026-09-22 真实发生过一次（版本被退成 0.28.9，见 docs/CHANGELOG.md）。
+$script:pkgPath = $null
+$script:pkgOriginal = $null
+$script:pkgRestored = $false
+function Restore-PackageJson() {
+  if ($script:pkgRestored) { return }
+  try {
+    if ($script:pkgPath -and $script:pkgOriginal) {
+      [System.IO.File]::WriteAllText($script:pkgPath, $script:pkgOriginal)
+      $script:pkgRestored = $true
+      Write-Host '[info] 已还原 package.json'
+    }
+  } catch {
+    Write-Host ('[warn] 还原 package.json 失败 —— 请手工检查该文件！: ' + $_.Exception.Message)
+  }
 }
 function Fail($why) {
   $script:report.ok = $false
@@ -104,17 +139,21 @@ function Fail($why) {
       Write-Host '[info] 已终止残留的 Electron 进程'
     }
   } catch { Write-Host ('[warn] 终止 Electron 失败（已忽略）: ' + $_.Exception.Message) }
-  $reportPath = Join-Path $runDir 'report.json'
-  ConvertTo-Json $script:report -Depth 10 | Set-Content -Path $reportPath -Encoding UTF8
-  Write-Host "[info] Report written to: $reportPath"
-  exit 1
+  Restore-PackageJson      # 见其上方注释：硬退出会跳过 finally，必须在这里兜一次
+  Save-Report
+  Write-Host ("[info] Report written to: " + (Join-Path $runDir 'report.json'))
+  # ⚠ 用 [Environment]::Exit 而不是 exit：前者**立即终止进程**，不经过 PS 的退出流程。
+  #   后者在有未释放的 Start-Process 重定向句柄时可能不返回 —— 实测首次 CI 运行里
+  #   脚本 16 步全跑完、断言全过，却卡在收尾不返回，最终撞 20 分钟 job 超时。
+  [Environment]::Exit(1)
 }
 function Pass() {
   $script:report.ok = $true
-  $reportPath = Join-Path $runDir 'report.json'
-  ConvertTo-Json $script:report -Depth 10 | Set-Content -Path $reportPath -Encoding UTF8
-  Write-Host "[OK] All steps passed; report: $reportPath" -ForegroundColor Green
-  exit 0
+  # 先打标记再落盘：万一下面出问题，日志里至少能看到"断言已全过"。
+  Write-Host '[OK] All steps passed' -ForegroundColor Green
+  Save-Report
+  Write-Host ("[info] Report written to: " + (Join-Path $runDir 'report.json'))
+  [Environment]::Exit(0)
 }
 
 New-Item -ItemType Directory -Path $runDir, $logsDir, $oldData, $newData, $updSrc, $exeDir -Force | Out-Null
@@ -273,11 +312,11 @@ Record 'set-update-source' @{ cfg = $newCfgPath; provider = 'local'; dir = $updS
 #   —— 2026-09-22 真实发生过一次：版本被退成 0.28.9（**正是本脚本 $OldVersion 的默认值**），
 #      直到次日核对文档口径时才发现。这正是"改仓库文件前先想清楚失败路径"的实例。
 #   改用正则替换 + 无 BOM 写回，原有格式逐字节保留。
-$pkgOriginal = Get-Content 'package.json' -Raw -Encoding UTF8
-$pkgPath = (Resolve-Path 'package.json').Path
+$script:pkgOriginal = Get-Content 'package.json' -Raw -Encoding UTF8
+$script:pkgPath = (Resolve-Path 'package.json').Path
 try {
-  $pkgPatched = $pkgOriginal -replace '("version"\s*:\s*")[^"]+(")', ('${1}' + $OldVersion + '${2}')
-  [System.IO.File]::WriteAllText($pkgPath, $pkgPatched)
+  $pkgPatched = $script:pkgOriginal -replace '("version"\s*:\s*")[^"]+(")', ('${1}' + $OldVersion + '${2}')
+  [System.IO.File]::WriteAllText($script:pkgPath, $pkgPatched)
   Record 'downgrade-package-json' @{ asIfVersion = $OldVersion }
 
   $env:JC_DATA_DIR = $newData
@@ -310,6 +349,21 @@ try {
   $code = $proc.ExitCode
   Record 'electron-exit' @{ exitCode = $code; log = $logFile }
 
+  # ⚠ 2026-09-23 补：等 `electron.cmd` 退出 ≠ Electron 整棵进程树退出。
+  #   Electron 会派生 GPU / utility / crashpad 等子进程，它们可能比主进程活得久；
+  #   而 CI 的一步要等**整棵进程树**结束才算完 —— 实测首次 CI 运行里脚本 16 步
+  #   全跑完、断言全过，这一步却仍挂着直到 20 分钟 job 超时。
+  #   按可执行文件路径收敛：只收本次仓库里的 electron，不误伤本机其它 Electron 应用。
+  try {
+    $repoEsc = [regex]::Escape($repo)
+    $left = @(Get-Process -Name 'electron' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Path -and $_.Path -match $repoEsc })
+    if ($left.Count) {
+      Write-Host ('[info] 回收 ' + $left.Count + ' 个残留的 Electron 子进程')
+      $left | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+  } catch { Write-Host ('[warn] 回收 Electron 子进程失败（已忽略）: ' + $_.Exception.Message) }
+
   $body = Get-Content $logFile -Raw
   $m = [regex]::Match($body, '\[update-flow\] (\{[^\n]+\})')
   if (-not $m.Success) { Fail "No [update-flow] JSON line in electron output; see $logFile" }
@@ -338,7 +392,7 @@ try {
 finally {
   # 无 BOM 写回：原 `Set-Content -Encoding UTF8` 在 5.1 下会写入 BOM，
   # 与仓库里无 BOM 的 package.json 产生伪差异；WriteAllText 默认无 BOM。
-  [System.IO.File]::WriteAllText($pkgPath, $pkgOriginal)
+  Restore-PackageJson
   Record 'restore-package-json' @{}
 }
 

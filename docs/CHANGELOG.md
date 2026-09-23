@@ -13,6 +13,57 @@
 
 ---
 
+#### `0.35.10` — 2026-09-23（更新链路回归在 CI 上**跑通了**；收尾三处问题修掉）
+
+**背景**：0.35.9 修完三处缺陷后重新触发 CI，拿到完整日志。**结果比预期好得多** —— 脚本 **16 步全部记录，所有断言通过**：
+
+```
+[step 12] electron-exit   exitCode=0
+[step 13] flow-report     ok:true  version=0.28.9
+          source   : provider=github  dir=null  repo=DreamFlow
+          check    : ok=true  latest=0.35.6  hasUpdate=true
+          download : ok=true  bytes=112334764
+[step 14] assert-source   provider=github  dir=null
+[step 16] assert-data     dbSha256 / assetSha256 与更新前**逐字节一致**
+```
+
+也就是说：**无头驱动真的跑起来了、固定源生效、应用能查到 0.35.6、107 MB 安装包下载并校验通过、用户数据在整条链路后逐字节未变** —— 这正是 P2-7 / 3.2 要验的那件事。
+
+**但那次运行仍被记为 `cancelled`**（job 超时）。收尾有三处问题：
+
+**① 报告只写在最后 → 现场全丢**
+
+`report.json` 原先只在 `Pass`/`Fail` 里写一次。脚本被掐掉时它还没生成，于是只剩一行 "No files were found"。改为 **`Record` 每记一步就落盘一次**（`Save-Report`），无论后面卡在哪，前 N 步的证据都在磁盘上。
+
+**② `.test-tmp/` 是隐藏目录，artifact 默认不收**
+
+`upload-artifact@v4` 默认 `include-hidden-files: false`（CI 日志里能看到这一项），而产物路径在点开头的 `.test-tmp/` 下 —— 即使文件存在也传不上去。加 `include-hidden-files: true`。
+
+**③ 脚本收尾不返回，把"测试通过"变成"job 超时"**
+
+两处一起修：
+
+- `exit 0/1` 改为 **`[Environment]::Exit()`** —— 前者在有未释放的 `Start-Process` 重定向句柄时可能不返回（PS 会走完自己的退出流程），后者是立即终止进程。
+- 等 `electron.cmd` 退出 **≠** Electron 整棵进程树退出：它会派生 GPU / utility / crashpad 等子进程，而 CI 的一步要等整棵进程树结束。新增**按可执行文件路径收敛**的回收（只收本次仓库里的 electron，不误伤本机其它 Electron 应用）。
+
+**⚠ 顺带堵一个数据破坏隐患**：改用 `[Environment]::Exit` 会**跳过 `finally`** —— 若 `Fail` 在 `try` 内部被调用（例如"Electron 超时未退出"），`finally` 里还原 `package.json` 的那步就跑不到，仓库会留下版本号被降级的 `package.json`。这不是假想：**2026-09-22 真实发生过一次**（版本被退成 `0.28.9`）。因此新增幂等的 `Restore-PackageJson()`，`Fail`/`Pass` 在硬退出前都先调一次，`finally` 保留为兜底。
+
+**验证**
+
+| 项 | 结果 |
+|---|---|
+| 脚本 PS 语法解析 | ✔ **0 语法错误**；6 处改动全部就位 |
+| 工作流 YAML | ✔ `include-hidden-files: true` 已就位；结构校验通过 |
+| `npm run check` | ✔ 45/45（见下注） |
+| `npm run lint` / `npm test` / `node build.js` | ✔ 7/7 · 173/173 · 构建通过 |
+| CI 实跑 | ⏳ 提交后重新触发 |
+
+> ⚠ **`check` 在本会话出现过间歇性失败**：`读不到 git remote origin（不在 git 仓库里？）`。根因是**环境故障**，不是仓库问题 —— 实测该会话中 Node 创建**任何**子进程都报 `EBUSY`（连同解释器 `node -e 0`、`cmd.exe`、绝对路径、`detached` 全部失败），而 shell 直接调 git 正常。该检查用 `execFileSync` 调 git，故在故障窗口内必然失败；故障恢复后即 45/45。
+
+**版本** `0.35.9` → `0.35.10`（PATCH：CI 收尾与开发工具链，**对使用者零可见影响，故不发 Release**）。
+
+---
+
 #### `0.35.9` — 2026-09-23（CI 首次运行暴露三处缺陷：无头驱动失效、失败不收尾、临时文件残留）
 
 **背景**：0.35.8 把更新链路回归接进 CI 后手动触发了一次。那次运行**没跑完** —— 前 5 步全成功（含 `npm run verify:release` 通过），到「更新链路回归」这一步被 **20 分钟 job 超时**掐掉（`12:12:01` 启动 → `12:32:24` 结束，GitHub 记为 `cancelled`）。顺带在更早的 CI 历史里发现 `test/03-build-release.test.js` 的 updater 校验用例**间歇性失败**（`7ec18c6` 与 `041c33d` 两次都中，而 `2edf39e` 通过；更早的 `dc840f7` 也失败过）。
