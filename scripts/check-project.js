@@ -257,6 +257,17 @@ if (yml === null) {
     }
   }
 
+  // nsis.installDir：electron-builder 26 **不支持**这个配置项 —— 写进 yml 会被 schema
+  // 直接拒绝并中止构建（"does not match the API schema"，2026-09-23 实测）。
+  // 这条门禁把"要跑几分钟打包才会暴露"的失败提前成 0.1 秒。安装目录的真实推导逻辑
+  // （升级继承注册表 + 追加应用名）写在 electron-builder.yml 的注释里。
+  if (/^ {2}installDir:/m.test(yml)) {
+    fail('yml 写了 nsis.installDir —— electron-builder 26 不支持该项，会导致打包中止',
+      '删掉它：安装目录由 NSIS 推导，详见 yml 内注释');
+  } else {
+    ok('yml 未写不支持的 nsis.installDir');
+  }
+
   /* ⚠ 2026-09-22 加的：签名配置必须缩进在 `win:` 之下。
      electron-builder 26 的 schema 只认 win.signAndEditExecutable / win.signtoolOptions，
      写在**顶层**会让它直接中止构建（"configuration has an unknown property ..."）——

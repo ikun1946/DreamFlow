@@ -137,6 +137,18 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   allowElevation: true
+  # ⚠ 安装目录**无法通过配置指定**（2026-09-23 实测结论，别重试）。
+  #   electron-builder 26 的 NsisOptions 共 42 项，**不含任何安装目录属性**；
+  #   写 `installDir:` 会被 schema 直接拒绝并中止构建（"does not match the API schema"）。
+  #   目录实际由两段 NSIS 逻辑推导：
+  #     ① multiUser.nsh —— 升级时优先继承注册表 HKCU\Software\{GUID}\InstallLocation 的旧路径；
+  #     ② assistedInstaller.nsh 的 instFilesPre —— 路径不含**当前**应用名时再追加一层。
+  #   对新用户的结果就是 %LOCALAPPDATA%\Programs\<executableName>（本来就正确）；
+  #   只有"从旧应用名升级"的老用户会多一层（实测 0.25.0 → 0.32.0 落到
+  #   Programs\JimengConsole\DreamFlow），且**只发生一次** —— 此后 InstallLocation 已含新名，
+  #   两段逻辑都不再改动它，是稳定的原地升级。
+  #   若确需强制统一路径，唯一途径是 `nsis.include` 注入自定义 .nsh 改写 $INSTDIR ——
+  #   但那会把老用户的应用再迁一次，收益不足，故有意不做。
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: 即梦批量生成控制台

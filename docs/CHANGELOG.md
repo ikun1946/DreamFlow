@@ -13,6 +13,66 @@
 
 ---
 
+#### `0.33.0` — 2026-09-23（查清安装目录机制 + 一条防错门禁）
+
+**本版对使用者零影响** —— 无界面、功能、数据变更，也没有必须出新安装包的理由（见文末）。
+
+**背景**：0.32.0 换名后实测安装目录落在 `%LOCALAPPDATA%\Programs\JimengConsole\DreamFlow`，
+比预期多一层。查清成因后试图用配置固定它 —— **结论是做不到**，本版记录机制并补一条门禁。
+
+**① 嵌套的成因：两段 NSIS 逻辑叠加**（都在 `app-builder-lib/templates/nsis/`）：
+
+- **`multiUser.nsh:26-28`** —— 升级时优先继承注册表 `HKCU\Software\{GUID}\InstallLocation` 的旧路径：
+  ```nsis
+  ReadRegStr $perUserInstallationFolder HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${if} $perUserInstallationFolder != ""
+    StrCpy $INSTDIR $perUserInstallationFolder      # 非空即用旧路径
+  ${else}
+    StrCpy $INSTDIR "$0\${APP_FILENAME}"            # 只有新装才用 Programs\<exe名>
+  ${endif}
+  ```
+- **`assistedInstaller.nsh:32-38`** —— 路径里不含**当前**应用名时再追加一层：
+  ```nsis
+  # sanitize ... to make sure it has a application name sub-folder
+  ${StrContains} $0 "${APP_FILENAME}" $INSTDIR
+  ${If} $0 == ""
+    StrCpy $INSTDIR "$INSTDIR\${APP_FILENAME}"
+  ${EndIf}
+  ```
+
+0.25.0 时 exe 叫 `JimengConsole`、装在 `Programs\JimengConsole`；升到 0.32.0 时读到该旧路径、
+且它**不含**新名 `DreamFlow` → 补一层。两段逻辑各自的初衷都合理（① 保证升级装在原地，
+② 防止用户手选目录时把程序散装在根目录），只有"升级 + 改名"同时发生才会叠加。
+
+**关键结论：只发生一次。** 0.32.0 安装后 `InstallLocation` 已更新为含 `DreamFlow` 的路径
+（实测 `…\Programs\JimengConsole\DreamFlow`），两段逻辑此后都不再改动它 —— **原地升级，路径稳定**。
+
+**② 试图用配置固定：做不到（实测）**
+
+在 `electron-builder.yml` 写 `nsis.installDir` 会让构建**直接中止**：
+```
+Invalid configuration object. configuration.nsis should be one of these: null
+```
+查 `scheme.json` 的 `NsisOptions`：共 **42 项，不含任何安装目录属性**（既无 `installDir`，
+也无 `perUserInstallationFolder`）。已把这条写进 yml 注释，避免后人重试。
+
+> 真要强制统一路径，唯一途径是 `nsis.include` 注入自定义 `.nsh`，在 `customPageAfterChangeDir`
+> 里改写 `$INSTDIR`。**有意不做**：它会把老用户的应用再迁一次，而现状**对新用户本来就正确**
+> （无旧注册表记录 → 直接落到 `Programs\DreamFlow`），收益不足。
+
+**③ 新增一条门禁（44 → 45 项）**
+
+`check-project.js` §4：**yml 里一旦出现 `installDir:` 就 FAIL** —— 把"要跑几分钟打包才暴露"
+的构建中止提前到 0.1 秒。与既有的同类门禁同源（`signAndEditExecutable` 缩进是 0.29.4 加的、
+CI 主程序名是 0.32.0 加的）。
+
+**验证**：`npm run check` **45/45**；回退后 `npm run dist` 恢复正常（实测走过
+`building target=nsis` 与 blockmap 两步）。
+
+**要不要发版**：本版没有任何使用者可感知的变化，**不必发** —— 留给下一次有实质功能的版本一并带走。
+
+---
+
 #### `0.32.0` — 2026-09-23（安装包换前缀·第二步：正式改名 DreamFlow）
 
 **这一步做完，安装包与主程序的名字终于与项目名统一了。**
