@@ -675,9 +675,13 @@ describe('preload —— 桥面形状（行为型，P0-3）', () => {
     assert.equal(api.isDesktop, true);
     assert.equal(typeof api.platform, 'string', 'platform 应是字符串，不是 process 对象');
     for (const k of ['info', 'openDataDir', 'openLogs', 'showItemInFolder', 'openExternal',
-      'updateStatus', 'updateCheck', 'updateDownload', 'updateInstall', 'updateSetSource', 'onUpdateState']) {
+      'updateStatus', 'updateCheck', 'updateDownload', 'updateInstall', 'onUpdateState']) {
       assert.equal(typeof api[k], 'function', '应暴露 ' + k);
     }
+    /* ★ 2026-09-23：「更新源设置」功能移除后，桥面不得再暴露能改写配置的入口。
+       反向断言 —— 防止后来者"顺手加回来"却没恢复对应的界面与安全说明。 */
+    assert.equal(api.updateSetSource, undefined,
+      '★ update:setSource 已随「更新源设置」移除，桥面不应再暴露改写更新源的入口');
     const keys = JSON.stringify(Object.keys(api));
     assert.ok(!/ipcRenderer|require|process/.test(keys), '★ 桥面上不得挂 Electron / Node 对象');
   });
@@ -693,12 +697,10 @@ describe('preload —— 桥面形状（行为型，P0-3）', () => {
     await api.updateCheck();
     await api.updateDownload();
     await api.updateInstall();
-    await api.updateSetSource({ provider: 'url' });
     assert.deepEqual(calls.invoke.map((c) => c.ch),
       ['app:info', 'app:openDataDir', 'app:openLogs', 'shell:showItem', 'shell:openExternal',
-        'update:status', 'update:check', 'update:download', 'update:install', 'update:setSource']);
+        'update:status', 'update:check', 'update:download', 'update:install']);
     assert.deepEqual(calls.invoke[3].rest, ['C:\\x\\y.mp4'], '路径参数应原样透传（主进程侧再校验）');
-    assert.deepEqual(calls.invoke[9].rest, [{ provider: 'url' }], '更新源补丁应原样透传');
   });
 
   test('★ onUpdateState 只订阅固定 channel update:state，且退订移除同一个 handler', () => {

@@ -701,31 +701,26 @@ const updateStates = updateStateMod.makeUpdateState({
   onReject: (action, st) => console.warn('[desktop] 更新互斥：拒绝 ' + action + '（当前 ' + st + '）')
 });
 
-/* ---------------- 更新源（配置读写） ----------------
-   ⚠ 2026-09-22 修复：这三个函数在 163e62d（0.27.0 那批加固）里被**误删**了定义，
-   而调用点（updateStatusPayload / doCheckUpdates / doDownloadUpdate / update:setSource）
+/* ---------------- 更新源（只读） ----------------
+   ⚠ 2026-09-22 修复：`updateSource` / `publicSource` 在 163e62d（0.27.0 那批加固）里
+   被**误删**了定义，而调用点（updateStatusPayload / doCheckUpdates / doDownloadUpdate）
    全部留着 —— 于是整个应用内更新链路一调用就抛
    `ReferenceError: publicSource is not defined`。渲染进程那边 `.catch(() => null)` 吞掉了，
    界面表现为"更新卡片永远是空的"，静默失效，直到本轮写更新流回归脚本时才暴露。
 
    教训：**"功能没被任何测试调用"的代码，删掉了也没人知道**。这就是 P2-7 / 3.2
-   （更新链路无自动化回归）真正的代价 —— 本轮的回归脚本就是为了不再让这类事发生。 */
+   （更新链路无自动化回归）真正的代价 —— 本轮的回归脚本就是为了不再让这类事发生。
+
+   ⚠ 2026-09-23：`setUpdateSource`（写配置）已随「更新源设置」功能移除。
+   更新源现在是**只读**的：读本机 `desktop-config.json` 的 `updates` 段，缺省 github。
+   要换源只能手改那个文件 —— 应用不再提供界面入口，也不再暴露改写它的 IPC。 */
 function updateSource() {
   const c = (paths && paths.config && paths.config.updates) || {};
   return updaterMod.resolveSource(c);
 }
 
-function setUpdateSource(patch) {
-  if (!paths) return null;                     // 还没 boot 完就调用：直接忽略，别抛
-  const cur = (paths.config && paths.config.updates) || {};
-  const next = Object.assign({}, cur, patch || {});
-  rpaths.saveConfig(paths, { updates: next });
-  if (paths.config) paths.config.updates = next;
-  return next;
-}
-
 /* 给渲染进程看的更新源：**不含令牌本身**，只说"配没配"。
-   界面需要让用户能设置令牌，但没必要把已存的密钥回传给页面。 */
+   界面仍会显示当前更新源，只是不再提供修改入口。 */
 function publicSource() {
   const s = updateSource();
   return {
@@ -915,22 +910,15 @@ ipcMain.handle('shell:showItem', (e, p) => {
 });
 ipcMain.handle('shell:openExternal', (e, u) => { openExternalSafely(u); return true; });
 
-/* 应用自更新。⚠ 令牌**只进不出**：update:setSource 接受它，
-   但 update:status / setSource 的返回值都只给 hasToken 布尔值，
-   不把已存的令牌回传给页面。 */
+/* 应用自更新。⚠ 令牌**只进不出**：配置文件里可以放它，
+   但 update:status 的返回值只给 hasToken 布尔值，不把已存的令牌回传给页面。
+   ⚠ 2026-09-23：`update:setSource` 已随「更新源设置」功能移除 —— 更新源不再由
+   界面配置，改为只读本机 `desktop-config.json` 的 `updates` 段（缺省 github）。
+   界面仍会**显示**当前更新源（publicSource），只是不再提供修改入口。 */
 ipcMain.handle('update:status', () => updateStatusPayload());
 ipcMain.handle('update:check', () => doCheckUpdates());
 ipcMain.handle('update:download', () => doDownloadUpdate());
 ipcMain.handle('update:install', () => doInstallUpdate());
-ipcMain.handle('update:setSource', (e, patch) => {
-  /* 白名单：渲染进程只能改这几个键，避免往配置文件里塞任意内容 */
-  const allow = {};
-  ['provider', 'owner', 'repo', 'token', 'url', 'dir'].forEach((k) => {
-    if (patch && patch[k] !== undefined) allow[k] = String(patch[k]);
-  });
-  const next = setUpdateSource(allow);
-  return next ? publicSource() : null;
-});
 
 /* ---------------- 生命周期 ---------------- */
 const gotLock = app.requestSingleInstanceLock();

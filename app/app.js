@@ -4841,11 +4841,11 @@
       if (ci) S.cliInfo = ci;
       /* 应用更新状态（只有桌面版有）。和上面几项一样单独失败即可 ——
          任何一项取不到都不该让整个设置抽屉打不开。
-         合并时保留本地 UI 状态（showCfg / busy / error），只覆盖主进程给的字段。 */
+         合并时保留本地 UI 状态（busy / error），只覆盖主进程给的字段。 */
       const J = window.JCDesktop;
       if (J && J.updateStatus) {
         const us = await J.updateStatus().catch(() => null);
-        if (us) S.appUpdate = Object.assign({ showCfg: false }, S.appUpdate || {}, us);
+        if (us) S.appUpdate = Object.assign({}, S.appUpdate || {}, us);
       }
       /* 抽屉这时已经可交互了：如果用户在等待期间改过任何设置项，就别拿服务端的旧值盖回去，
          否则他的修改会当场回退（"先显示、后刷新"必须配这个守卫）。 */
@@ -4937,7 +4937,7 @@
       return '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
         '<span><b>已安装，但未登录</b>' +
         '<span class="hint-sm" style="display:block">' +
-        'CLI 已经就位，只差一次浏览器授权。点「创作 CLI 登录」，按提示在浏览器里完成即可。' +
+        'CLI 已经就位，只差一次浏览器授权。点下面的「登录账号」，按提示在浏览器里完成即可。' +
         '</span></span></div>';
     }
 
@@ -5008,7 +5008,7 @@
     } else if (u.error) {
       state = '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
         '<span>' + esc(u.error) +
-        (u.needsToken ? '<span class="hint-sm" style="display:block">读取 release 失败（可能需要令牌）。本仓库已公开、正常无需令牌；若你用的是私有库或自建源，请在下面的「更新源设置」里填只读访问令牌，或改用本地目录 / 自定义 URL。</span>' : '') +
+        (u.needsToken ? '<span class="hint-sm" style="display:block">读取 release 失败（可能需要令牌）。本仓库已公开、匿名即可读取，正常无需令牌 —— 若持续失败，请先确认本机能访问 GitHub，再检查本机配置文件里的更新源设置。</span>' : '') +
         '</span></div>';
     } else if (u.lastCheck && u.lastCheck.ok) {
       state = u.lastCheck.hasUpdate
@@ -5036,46 +5036,8 @@
             : '') +
           '</span></div>' +
         state +
-        '<div class="cli-actions">' + btns +
-          '<button class="btn-mini" data-updact="togglecfg">' + (u.showCfg ? '收起更新源设置' : '更新源设置…') + '</button>' +
-        '</div>' +
-        (u.showCfg ? appUpdateCfgHTML(src) : '') +
+        '<div class="cli-actions">' + btns + '</div>' +
       '</div></section>';
-  }
-
-  /* 更新源设置。⚠ 令牌输入框**永远不回填已存的值**：主进程只回传 hasToken，
-     所以这里只提示"已配置/未配置"，用户想换就重新粘一个 —— 不把密钥在页面上再写一遍。
-     状态行同理「配了才显示」：公开仓库匿名即可用，未配置时不显示"未配置令牌"，
-     避免被误读成缺了配置（0.34.1 修正）。 */
-  function appUpdateCfgHTML(src) {
-    const s = src || {};
-    const opt = (v, label) => '<option value="' + v + '"' + (s.provider === v ? ' selected' : '') + '>' + label + '</option>';
-    let fields = '';
-    if (s.provider === 'url') {
-      fields = '<div class="srow"><label>更新源地址</label>' +
-        '<input id="updUrl" type="text" placeholder="https://example.com/updates" value="' + esc(String(s.url || '')) + '">' +
-        '<p class="hint-sm">该地址下要有 <code>latest.yml</code> 和安装包（就是 <code>npm run dist</code> 在 <code>release/</code> 里产出的那两个文件）。必须是 https。</p></div>';
-    } else if (s.provider === 'local') {
-      fields = '<div class="srow"><label>本地目录</label>' +
-        '<input id="updDir" type="text" placeholder="D:\\jimeng-release" value="' + esc(String(s.dir || '')) + '">' +
-        '<p class="hint-sm">指向一个含 <code>latest.yml</code> 和安装包的目录 —— 适合离线/内网，或者"我刚打完包，让装好的应用直接升级"。</p></div>';
-    } else {
-      fields = '<div class="srow"><label>仓库</label>' +
-        '<input id="updOwner" type="text" placeholder="owner" value="' + esc(String(s.owner || '')) + '" style="max-width:150px">' +
-        '<input id="updRepo" type="text" placeholder="repo" value="' + esc(String(s.repo || '')) + '" style="max-width:190px"></div>' +
-        '<div class="srow"><label>访问令牌</label>' +
-        '<input id="updToken" type="password" placeholder="' + (s.hasToken ? '已配置（留空则不修改）' : '私有库必填；公有库可留空') + '">' +
-        '<p class="hint-sm">本仓库已公开、匿名即可读取 release，一般无需令牌；仅私有库或自建源才需要。建议用<b>细粒度 PAT</b>：只勾这一个仓库的 <code>Contents: Read</code>。令牌只存在本机配置文件里，不会进安装包。</p></div>';
-    }
-    return '<div class="sblock" style="margin-top:10px">' +
-      '<div class="sblock-hd"><b>更新源设置</b></div>' +
-      '<div class="srow"><label>更新源</label><select id="updProvider">' +
-        opt('github', 'GitHub Releases') + opt('url', '自定义 URL') + opt('local', '本地目录') +
-      '</select></div>' +
-      fields +
-      '<div class="cli-actions"><button class="btn-mini" data-updact="savecfg">保存更新源</button>' +
-      '<button class="btn-mini" data-updact="recheck">保存并检查更新</button></div>' +
-      '</div>';
   }
 
   /* 按钮：按"当前该做什么"决定给哪几个 —— 没装就只给安装，别拿登录按钮干扰 */
@@ -5098,14 +5060,22 @@
         (busy === 'install' ? '更新中…（约 30 MB，请勿关闭）' : '更新创作 CLI') + '</button>');
     }
 
-    /* 登录 / 切换账号只在 CLI 确实存在时才有意义 */
+    /* 登录 / 切换账号：**合并为同一个入口**（2026-09-23）。
+       为什么合并：两个按钮并排时，未登录的人会看到「切换账号」（他根本没账号可切），
+       已登录的人会看到「登录」（容易误以为要再授权一次）。现在按状态只显示一个：
+       未登录 → 「登录账号」；已登录 → 「切换账号」。
+       ⚠ 判据用 `ok`（= dInfo.available，CLI 可用且登录态有效），**不能**用"有没有账号信息"
+       —— 后者在探测失败时为空，会把已登录的人误判成未登录、把入口显示成「登录账号」。 */
     if (installed !== false) {
-      out.push('<button class="btn-mini" data-cliact="dlogin"' + dis +
-        ' title="创作 CLI 登录：若本地登录态仍有效，CLI 会直接复用、不重新授权">' +
-        (busy === 'dlogin' ? '等待授权中…' : '创作 CLI 登录') + '</button>');
-      out.push('<button class="btn-mini" data-cliact="dswitch"' + dis +
-        ' title="切换创作 CLI 账号：会先退出当前账号再重新授权（有二次确认）">' +
-        (busy === 'dswitch' ? '切换中（先退出再授权）…' : '创作 CLI 切换账号') + '</button>');
+      if (ok) {
+        out.push('<button class="btn-mini" data-cliact="dswitch"' + dis +
+          ' title="切换账号：会先退出当前账号再重新授权（有二次确认）">' +
+          (busy === 'dswitch' ? '切换中（先退出再授权）…' : '切换账号') + '</button>');
+      } else {
+        out.push('<button class="btn-mini btn-mini-cta" data-cliact="dlogin"' + dis +
+          ' title="登录账号：若本地登录态仍有效，CLI 会直接复用、不重新授权">' +
+          (busy === 'dlogin' ? '等待授权中…' : '登录账号') + '</button>');
+      }
     }
     return out.join('');
   }
@@ -5233,34 +5203,6 @@
     const J = window.JCDesktop;
     if (!J || !J.updateCheck) return;
     const u = () => (S.appUpdate = S.appUpdate || {});
-
-    if (kind === 'togglecfg') { u().showCfg = !u().showCfg; renderSettings(); return; }
-
-    /* 保存更新源。⚠ 令牌留空 = **不修改**（不是清空）—— 界面不回填已存的密钥，
-       用户不重新粘贴就应当保持原样。要清空得显式删掉配置文件里那一项。 */
-    if (kind === 'savecfg' || kind === 'recheck') {
-      const prov = ($('#updProvider') && $('#updProvider').value) || 'github';
-      const patch = { provider: prov };
-      if (prov === 'github') {
-        if ($('#updOwner')) patch.owner = $('#updOwner').value.trim();
-        if ($('#updRepo')) patch.repo = $('#updRepo').value.trim();
-        const tk = $('#updToken') && $('#updToken').value.trim();
-        if (tk) patch.token = tk;
-      } else if (prov === 'url') {
-        if ($('#updUrl')) patch.url = $('#updUrl').value.trim();
-      } else {
-        if ($('#updDir')) patch.dir = $('#updDir').value.trim();
-      }
-      try {
-        const src = await J.updateSetSource(patch);
-        if (src) u().source = src;
-        u().error = null;
-        toast('更新源已保存', 'ok');
-      } catch (e) { u().error = errText(e); }
-      renderSettings();
-      if (kind === 'recheck') return runUpdateAction('check');
-      return;
-    }
 
     if (kind === 'check') {
       u().busy = 'check'; u().error = null; u().lastCheck = null; renderSettings();
@@ -5583,7 +5525,7 @@
             cliStateCardHTML(dreaminaProbing, dreaminaOk, dInfo, dAcct, dreaminaCredit, creditAt, dreaminaStale, S.cliInfo) +
             cliUpdateNoticeHTML(S.cliInfo) +
             '<p class="hint-sm">命令：<code>dreamina</code>　·　负责视频生成的全部链路（<code>--image</code> / <code>--audio</code> 混合参考）。' +
-              '下方按钮作用于创作 CLI 自己的 OAuth 登录态；' +
+              '下方按钮作用于创作 CLI 自己的 OAuth 登录态：<b>未登录时显示「登录账号」，已登录时显示「切换账号」</b>。' +
               '<b>「切换账号」会先退出现有账号</b>（CLI 的 <code>relogin</code> 语义），因此会先弹一次确认</p>' +
             '<div class="cli-actions">' + cliActionsHTML(S.cliInfo, dreaminaOk) + '</div>' +
           '</div>' +
@@ -5592,7 +5534,7 @@
             ? '<div class="statecard" style="background:var(--primary-bg);color:var(--ink80)">' + I.warn +
               '<span>创作 CLI 待完成授权：<a href="' + esc(dAuthUrl) + '" target="_blank" rel="noopener" style="color:var(--primary)">打开授权页 ↗</a>' +
               (dAuthCode ? '　设备码 <b>' + esc(dAuthCode) + '</b>' : '') +
-              '<span class="hint-sm" style="display:block">在浏览器里打开上面的链接并完成授权；本页会自动确认。若设备码已失效，重新点「创作 CLI 登录」。</span></span></div>'
+              '<span class="hint-sm" style="display:block">在浏览器里打开上面的链接并完成授权；本页会自动确认。若设备码已失效，重新点「登录账号」。</span></span></div>'
             : '') +
           cliMsgHTML() +
           /* 授权材料解析失败时，把 CLI 原始输出摆出来，用户仍可照着它手工完成授权 */
@@ -5963,20 +5905,6 @@
     });
     // 默认参数下拉：change 即改本地状态，「保存设置」时统一 PUT
     $('#settingsBody').addEventListener('change', (e) => {
-      /* 更新源下拉：切换后立即保存并重绘 —— 三种源的字段完全不同，
-         不重绘用户就看不到该填什么。 */
-      if (e.target.id === 'updProvider') {
-        const J = window.JCDesktop;
-        if (J && J.updateSetSource) {
-          S.appUpdate = S.appUpdate || {};
-          S.appUpdate.showCfg = true;
-          J.updateSetSource({ provider: e.target.value }).then((src) => {
-            if (src) S.appUpdate.source = src;
-            renderSettings();
-          }).catch(() => renderSettings());
-        }
-        return;
-      }
       const sel = e.target.closest('select[data-set]');
       if (!sel || !S.settings || !S.settings.defaults) return;
       const k = sel.dataset.set;
