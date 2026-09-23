@@ -32,6 +32,9 @@
       实测 `path.join('C:\\x\\tmp', 'a/../../evil.exe')` → `C:\x\evil.exe`，
       即带 `../` 的文件名能逃出目标目录、把文件写到任意位置（下载物随后会被执行）。
       所以解析完清单**立刻**净化，且 local 读取前、下载前各再校一次。
+   6. **网络请求一律走本文件内的传输层**（2026-09-23 补）。不要在别处再直接调
+      `https`，否则那段请求会同时绕开"读系统代理"与"连接级失败回退直连"两条能力 ——
+      表现是"更新又慢回去了"，而且从代码上很难看出是谁干的。
    ============================================================ */
 const fs = require('fs');
 const path = require('path');
@@ -212,36 +215,103 @@ function assertHttps(url) {
   return u;
 }
 
+/* ---------------- 传输层（可注入） ----------------
+   为什么要抽象（2026-09-23）：应用内更新的**大文件下载慢到不可用** —— 实测
+   Node https 直连 3.6 KB/s（112 MB 要 8 个多小时），而同一台机器上系统代理是好的
+   （1.24 MB/s，约 90 秒）。根因是 **Node 的 https 不读 Windows 系统代理**，
+   而 Chromium 的网络栈（Electron 的 `net`）会自动读，含 PAC / wpad / 代理认证。
+
+   于是把"发请求"抽成接口：
+     · 默认实现 = Node https（纯 Node 环境与现有测试完全不受影响）
+     · Electron 主进程在 app ready 之后注入 Chromium 实现（见 desktop/main.js）
+
+   ⚠ 默认实现必须**属性访问式**调用 `https.request(...)`，不能解构缓存 ——
+     test/03-build-release.test.js 的 withCapturedRequests 直接替换
+     `https.request` 来观察应用真正发出的请求头（"令牌只进不出"那条断言）。
+     解构会把替换绕过去，那条行为断言就静默失效了。
+
+   接口约定（两种传输同一套）：
+     request(url, opts, cb) -> req
+       opts.method / opts.headers / opts.timeoutMs
+       opts.onError(err) —— **连接级**失败。err.retryable === true 的含义是
+                            "已经把代理切成直连了，值得重发一次"
+       cb(res)           —— res 至少要有 statusCode / headers / resume() / pipe() / on()
+   跳转（3xx）**走 cb，不走 onError** —— 理由见 request() 上方注释。 */
+let transportOverride = null;
+
+/* 默认传输：Node https。 */
+function defaultTransport() {
+  return {
+    request(url, opts, cb) {
+      const o = opts || {};
+      const req = https.request(url, {
+        method: o.method || 'GET',
+        headers: Object.assign({ 'User-Agent': 'dreamflow-updater' }, o.headers || {})
+      }, cb);
+      if (o.timeoutMs) req.setTimeout(o.timeoutMs, () => req.destroy(new Error('请求超时')));
+      req.on('error', (e) => { if (typeof o.onError === 'function') o.onError(e); });
+      req.end();
+      return req;
+    }
+  };
+}
+
+function transport() { return transportOverride || defaultTransport(); }
+function setTransport(t) { transportOverride = t || null; }
+
+/* 一次性开关：第一次调用返回 true，之后恒为 false。
+   抽成一个可导出的小函数是为了能在**纯 Node 下测幂等性** —— 真正的调用方
+   （把 Electron session 切成直连）在 main.js 里，起不了 Electron 就测不到。 */
+function makeOnce() {
+  let used = false;
+  return () => { if (used) return false; used = true; return true; };
+}
+
+/* 发一个 GET。
+   ⚠ 跳转在**这一层**处理，不在传输层：传输层只把"服务器回了个 3xx"如实报上来
+     （走 cb，带上 statusCode 与 headers.location），"重发"与"跨域剥离 Authorization"
+     的决策留在这里 —— 这样无论底下是 Node https 还是 Electron net，
+     安全策略都只有**一份**实现，不会随传输方式被绕开。 */
 function request(url, opts, cb) {
   const o = opts || {};
   let settled = false;
   const done = (err, res) => { if (!settled) { settled = true; cb(err, res); } };
-  let req;
-  try {
-    assertHttps(url);
-    req = https.request(url, {
+
+  /* ① 只允许 https：必须在发请求**之前**，位置不能挪进传输层 */
+  try { assertHttps(url); } catch (e) { return done(e); }
+
+  const onResponse = (res) => {
+    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+      res.resume();
+      if ((o.redirects || 0) >= 5) return done(new Error('重定向次数过多'));
+      const next = new URL(res.headers.location, url).toString();
+      /* ⚠ 跨域重定向必须丢掉 Authorization：GitHub 的 asset 下载会 302 到
+         objects.githubusercontent.com，把令牌带过去等于把它交给第三方主机。 */
+      const crossOrigin = new URL(next).host !== new URL(url).host;
+      const headers = crossOrigin
+        ? Object.fromEntries(Object.entries(o.headers || {}).filter(([k]) => k.toLowerCase() !== 'authorization'))
+        : o.headers;
+      return request(next, Object.assign({}, o, { headers, redirects: (o.redirects || 0) + 1 }), done);
+    }
+    done(null, res);
+  };
+
+  /* 重发**最多一次**。只有传输层明确标了 retryable 才重发 ——
+     那个标记的含义是"代理已切成直连，刚才那次失败不算数"。
+     不设这个上限的话，"代理一直不可用"会变成无限重试。 */
+  const fire = (retried) => {
+    transport().request(url, {
       method: o.method || 'GET',
-      headers: Object.assign({ 'User-Agent': 'dreamflow-updater' }, o.headers || {})
-    }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        res.resume();
-        if ((o.redirects || 0) >= 5) return done(new Error('重定向次数过多'));
-        const next = new URL(res.headers.location, url).toString();
-        /* ⚠ 跨域重定向必须丢掉 Authorization：GitHub 的 asset 下载会 302 到
-           objects.githubusercontent.com，把令牌带过去等于把它交给第三方主机。 */
-        const crossOrigin = new URL(next).host !== new URL(url).host;
-        const headers = crossOrigin
-          ? Object.fromEntries(Object.entries(o.headers || {}).filter(([k]) => k.toLowerCase() !== 'authorization'))
-          : o.headers;
-        return request(next, Object.assign({}, o, { headers, redirects: (o.redirects || 0) + 1 }), done);
+      headers: o.headers,
+      timeoutMs: o.timeoutMs || META_TIMEOUT_MS,
+      onError: (e) => {
+        if (e && e.retryable === true && !retried) return fire(true);
+        done(e);
       }
-      done(null, res);
-    });
-  } catch (e) { return done(e); }
-  req.setTimeout(o.timeoutMs || META_TIMEOUT_MS, () => req.destroy(new Error('请求超时')));
-  req.on('error', done);
-  req.end();
-  return req;
+    }, onResponse);
+  };
+
+  try { fire(false); } catch (e) { return done(e); }
 }
 
 function readAll(stream, limitBytes, cb) {
@@ -299,11 +369,23 @@ function downloadTo(url, dest, opts) {
     let got = 0;
 
     /* headers 显式传参而不是闭包读 o.headers —— 跨域重定向时要换成"去掉令牌"的那份 */
-    const go = (u, redirects, headers) => {
-      let req;
+    const go = (u, redirects, headers, retried) => {
       try {
         assertHttps(u);
-        req = https.get(u, { headers: Object.assign({ 'User-Agent': 'dreamflow-updater' }, headers || o.headers || {}) }, (res) => {
+        transport().request(u, {
+          headers: headers || o.headers,
+          timeoutMs: DOWNLOAD_TIMEOUT_MS,
+          onError: (e) => {
+            /* 传输层把 session 从代理切成直连之后会标 retryable → 重发一次。
+               ⚠ 只有"一个字节都还没写"时才敢重发：`file` 流与 `hash` 都是跨 go()
+               复用的，半截数据再写一遍会把 sha512 算错、写入位置也错。
+               下载路径**也必须**有这个重试 —— 否则"代理坏掉"场景只靠"元数据请求
+               先失败并翻成直连"这个**隐式顺序**兜住，将来改动执行顺序就会踩雷。 */
+            if (e && e.retryable === true && !retried && got === 0) return go(u, redirects, headers, true);
+            cleanup();
+            done({ ok: false, error: '下载失败：' + ((e && e.message) || e) });
+          }
+        }, (res) => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             res.resume();
             if (redirects >= 5) { cleanup(); return done({ ok: false, error: '重定向次数过多' }); }
@@ -311,9 +393,9 @@ function downloadTo(url, dest, opts) {
             const nextUrl = new URL(res.headers.location, u).toString();
             if (new URL(nextUrl).host !== new URL(u).host) {
               const keep = Object.fromEntries(Object.entries(o.headers || {}).filter(([k]) => k.toLowerCase() !== 'authorization'));
-              return go(nextUrl, redirects + 1, keep);
+              return go(nextUrl, redirects + 1, keep, retried);
             }
-            return go(nextUrl, redirects + 1, headers);
+            return go(nextUrl, redirects + 1, headers, retried);
           }
           if (res.statusCode !== 200) {
             res.resume(); cleanup();
@@ -326,6 +408,11 @@ function downloadTo(url, dest, opts) {
             if (o.onProgress) { try { o.onProgress(got, total); } catch (e) { /* 进度回调不该影响下载 */ } }
           });
           res.on('error', (e) => { cleanup(); done({ ok: false, error: '下载中断：' + e.message }); });
+          /* ⚠ 连接中途被掐断时，Electron 的 IncomingMessage 报的是 `aborted`
+             而不是 `error`（Node 侧两种都会发，所以这里对两种传输都安全）。
+             不监听它，下载会**永远挂着**：传输层的看门狗在 response 到手那一刻
+             就已经解除了，没有第二道超时兜底 —— 换传输层时差点漏掉这个。 */
+          res.on('aborted', () => { cleanup(); done({ ok: false, error: '下载中断：连接被中断' }); });
           res.pipe(file);
           file.on('finish', () => {
             if (o.expectSize && got !== o.expectSize) {
@@ -341,10 +428,8 @@ function downloadTo(url, dest, opts) {
           });
         });
       } catch (e) { cleanup(); return done({ ok: false, error: e.message }); }
-      req.setTimeout(DOWNLOAD_TIMEOUT_MS, () => req.destroy(new Error('下载超时')));
-      req.on('error', (e) => { cleanup(); done({ ok: false, error: '下载失败：' + e.message }); });
     };
-    go(url, 0, o.headers);
+    go(url, 0, o.headers, false);
   });
 }
 
@@ -727,5 +812,7 @@ module.exports = {
   resolveSource, fetchManifest, DEFAULT_SOURCE,
   safeArtifactName, assertManifestFile, ARTIFACT_RE, ARTIFACT_PREFIX, ACCEPTED_PREFIXES,
   progressOf, check, download, install,
-  isDownloading, cleanupStaleTemp
+  isDownloading, cleanupStaleTemp,
+  /* 传输层：给 Electron 主进程注入 Chromium 实现用；makeOnce 供幂等性单测 */
+  setTransport, makeOnce
 };

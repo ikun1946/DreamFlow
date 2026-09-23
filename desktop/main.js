@@ -25,6 +25,7 @@ const rpaths = require('./runtime-paths');
 const toolsMod = require('./external-tools');
 const legacyMod = require('./legacy-import');
 const updaterMod = require('./updater');
+const transportMod = require('./updater-transport');   // Chromium 网络传输（纯逻辑，可单测）
 const updateStateMod = require('./update-state');   // 更新互斥状态机（纯逻辑，可单测）
 const runtime = require('../server/runtime');
 
@@ -570,6 +571,16 @@ async function boot() {
     console.warn('[desktop] 清理更新临时文件失败（不影响启动）：' + ((e && e.message) || e));
   }
 
+  /* 更新器的网络传输：注入 Chromium 网络栈，让更新走系统代理（2026-09-23）。
+     ⚠ 必须在 app ready 之后（`net` 在此之前使用会抛错）—— boot() 正在 whenReady 链上。
+     ⚠ 必须在任何更新动作之前（含下面的更新流回归驱动）。
+     ⚠ 失败**不能**影响启动：拿不到就保持默认的 Node https，即今天的行为。 */
+  try {
+    await setupUpdaterTransport();
+  } catch (e) {
+    console.warn('[desktop] 注入更新器传输失败，回退到 Node https：' + ((e && e.message) || e));
+  }
+
   const { loadConfig } = require('../server/config');
   const { createServer } = require('../server/server');
   cfg = loadConfig({
@@ -745,6 +756,84 @@ function publicSource() {
   const s = updateSource();
   return { provider: s.provider, owner: s.owner, repo: s.repo };
 }
+
+/* ---------------- 更新器的网络传输（Chromium 网络栈） ----------------
+   ★ 2026-09-23：为什么必须换成 Chromium 的 net。
+   Node 的 https **不读 Windows 系统代理**，而本机实测两者的差距是灾难级的：
+     直连 3.6 KB/s（112 MB ≈ 8.6 小时）   vs   系统代理 1.24 MB/s（≈ 90 秒）
+   更新下载原先走 https，于是出现"系统里明明开着代理，应用更新却慢到不可用"。
+   Electron 的 `net` 走 Chromium 网络栈，自动读系统代理 / PAC / wpad / 代理认证。
+
+   传输层本身是**可注入**的（见 updater.js）：默认仍是 Node https，所以
+   纯 Node 测试不依赖 Electron；注入失败也只是回到今天的行为，不会更差。
+
+   ⚠ `net` 只能在 app 触发 ready **之后**使用（官方明文：在此之前会抛错），
+     所以注入点放在 boot() 里，且整段 try/catch。 */
+let updaterSession = null;
+
+/* 一次性开关：代理切直连只做一次（见 disableProxyOnce）。
+   幂等逻辑用 updater.js 导出的 makeOnce —— 它能在**纯 Node 下写单测**，
+   而这里（main.js）起不了 Electron 就测不到。 */
+const claimDisableProxy = updaterMod.makeOnce();
+
+/* 更新器专用 session：**独立 partition**，不碰默认 session。
+   为什么隔离：回退要把代理切成 `direct`，改在默认 session 上会连带影响渲染进程
+   加载本机界面那条链路；隔离之后影响面只剩更新自己。
+   ⚠ `fromPartition` 的 options **只在该 partition 首次创建时生效**，
+     所以 `{ cache: false }` 必须这一次给对，之后改不了（官方明文）。 */
+async function setupUpdaterTransport() {
+  const { net, session } = require('electron');
+  updaterSession = session.fromPartition('dreamflow-updater', { cache: false });
+
+  /* 常态：让 Chromium 自己去读 OS 的代理配置（含 PAC / wpad / 代理认证）。
+     ⚠ 不走 `resolveProxy()` + `proxyRules: 'fixed_servers'` 那条更"直接"的路：
+       resolveProxy 返回的字符串格式**官方没有定义**（`PROXY host:port` / `DIRECT`
+       只是 Chromium 惯例，不是承诺）。靠解析一个未文档化的格式去拿代理，
+       失败模式是**静默退回直连** —— 也就是"修了半天还是很慢，却查不出原因"。
+       `mode: 'system'` 不需要任何解析。代价是拿不到 `direct://` 回退后缀，
+       所以回退改在应用层做（见 disableProxyOnce）。 */
+  await updaterSession.setProxy({ mode: 'system' });
+
+  /* 传输实现本身在 updater-transport.js（**不 require electron**）。
+     这样"跳转 / 超时 / 代理回退"这三条最容易静默失效的分支能在纯 Node 下单测，
+     不必起 Electron；这里只负责把 Electron 的 net 与 session 递进去。 */
+  updaterMod.setTransport(
+    transportMod.makeElectronTransport(net, updaterSession, { onConnectionFail: disableProxyOnce })
+  );
+  console.log('[desktop] 更新器已接入 Chromium 网络栈（自动使用系统代理，无则直连）');
+}
+
+/* 把 session 切成直连。返回**是否真的切过** —— 调用方据此决定"要不要重发一次"。
+   为什么需要回退：代理有两种坏法 —— "没开"（Chromium 走直连，正常）和
+   "开着但坏掉"。后者在 Chromium 里是**直接失败**，不是变慢。不做回退的话，
+   用户一旦把代理配置改坏，应用内更新就会从"慢"变成"彻底不可用"。
+   ⚠ 只切一次：切过之后本次进程内不再回头（代理中途修好也只影响下次启动）。
+     对"更新"这种一次性操作足够，也避免来回切换引起的请求风暴。 */
+async function disableProxyOnce() {
+  if (!claimDisableProxy()) return false;
+  const ses = updaterSession;
+  if (!ses) return false;
+  try {
+    await ses.setProxy({ mode: 'direct' });
+    /* 官方提示：切完必须关掉在途连接 —— 否则连接池里那些**走代理建立的** socket
+       会被后续请求复用，"已经切成直连"就只是设置上的假象，实际仍在走代理。 */
+    if (typeof ses.closeAllConnections === 'function') await ses.closeAllConnections();
+    console.log('[desktop] 系统代理不可用，更新器已切换为直连');
+    return true;
+  } catch (e) {
+    console.warn('[desktop] 切换直连失败：' + ((e && e.message) || e));
+    return false;
+  }
+}
+
+/* 把 Electron 的 net 适配成 updater.js 期望的传输接口 —— 实现已移到
+   ./updater-transport.js（2026-09-23）。
+
+   为什么不在这个文件里：main.js **必须**在 Electron 内才能加载（第一行就
+   require('electron') 拿 app / BrowserWindow），于是"跳转处理 / 超时看门狗 /
+   代理回退"这三条最需要测试的分支会**永远没有自动化覆盖** —— 而它们恰好是
+   "出错就静默失效"的类型（302 被当失败 → 下载直接挂；settle 后二次回调 → 状态错乱）。
+   抽成不依赖 electron 的模块后，那三条分支在纯 Node 下用一个假 net 就能测掉。 */
 
 /* 状态变化主动推给界面 */
 function broadcastUpdateState() {

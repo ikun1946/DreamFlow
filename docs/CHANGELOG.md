@@ -13,6 +13,47 @@
 
 ---
 
+#### `0.36.0` — 2026-09-23（应用内更新改走系统代理：107 MB 从 8.6 小时降到 42 秒）
+
+**现象**：应用内更新的大文件下载慢到不可用。实测同一台机器、同一条网络：
+
+| 路径 | 吞吐 | 107 MB 外推 |
+|---|---|---|
+| 直连（Node `https`） | 3.6 KB/s | **约 8.6 小时** |
+| 走系统代理 | **2.70 MB/s** | **约 42 秒** |
+
+（后者是在**真 Electron** 里用同一套传输层实测的：`mode:'system'` 12 秒收 33.2 MB；同一探针切 `mode:'direct'` 12 秒收 **0 字节**。`resolveProxy` 返回 `"PROXY 127.0.0.1:11304"`。）
+
+**根因**：`desktop/updater.js` 全部走 Node 内置 `https`，而 **Node 的 `https` 不读 Windows 系统代理**（Chromium / Electron 的 `net` 会读，`curl` 会读，Node 不会）。`git log -S "proxy" -- desktop/updater.js` 为空 —— 长期缺口，不是回归。
+
+**改法：传输层可注入。** 「发请求」抽成接口（`transport()` / `setTransport()`），默认实现仍是 Node `https`（纯 Node 测试不受影响），Electron 主进程在 `app` ready 之后注入 Chromium 的 `net`。注入点在 `boot()` 内、整段 `try/catch`：**拿不到就退回默认传输**，即旧行为，不会更差。
+
+**代理策略（两段式）**：常态 `session.fromPartition('dreamflow-updater', {cache:false})` + `setProxy({mode:'system'})`；请求**连接级失败**时切 `mode:'direct'` 并**重发一次**。
+
+- **不走 `resolveProxy()` + `fixed_servers`**：`resolveProxy` 的返回格式**官方未定义**（`PROXY h:p` / `DIRECT` 只是 Chromium 惯例）。解析未文档化格式的失败模式是**静默退回直连** —— "修了半天还是很慢却查不出原因"。`mode:'system'` 无需解析。
+- **回退是必需的**：代理"开着但坏掉"时 Chromium 是**直接失败**而非变慢；没有回退，用户把代理配置改坏就会让更新从"慢"变成"彻底不可用"。切完必须 `closeAllConnections()`，否则连接池里走代理建立的 socket 会被复用，"已切直连"只是假象。
+- **独立 partition**，不碰默认 session（回退会把代理切成 direct，不该影响渲染进程加载本机界面）。**一次性**：切过之后本进程内不回头。
+
+**★ 两处设计取舍（都影响正确性，改之前先读代码注释）**
+
+1. **跳转必须走 `cb`（交出合成的 3xx 响应），不能走 `onError`。** `updater.js` 两处既有跳转逻辑（`request()` / `downloadTo()`）都写在响应回调里、以 `res.statusCode` 为判据，从 error 通道进不去 —— 而 `downloadTo` 的 `onError` 会**删掉临时文件并判失败**，等于"下载一遇 302 就直接失败"。GitHub 附件下载**必经** 302，所以这条错了就是**必然**坏，不是"可能"坏。
+2. **`settle` 守卫不是保险，是必需。** `redirect:'manual'` 下不调 `followRedirect()` 时请求会被取消，取消很可能再冒一个 `error`；没有守卫，那次 error 被当成连接级失败 → **在第一次跳转时就把代理关掉**。
+
+**顺带修掉的两个真问题**
+
+- **`downloadTo` 原先没有重发能力**：`retryable` 重试原本只加在 `request()` 上，下载路径靠"元数据请求先失败并翻直连"这个**隐式执行顺序**兜住 —— 将来改顺序就踩雷。现在两条路各自都有（下载侧额外限制"一个字节都还没写"才重发，因为 `file` 流与 `hash` 跨 `go()` 复用，半截数据再写一遍会把 sha512 算错）。
+- **换传输层引入的挂死风险**：Electron 的 `IncomingMessage` 在连接被掐断时报的是 **`aborted`** 而不是 `error`，而传输层的看门狗在响应到手那刻就解除了 —— 只听 `error` 会让下载**永远挂着**。补了 `aborted` 监听（Node 侧同样会发，对两种传输都安全）。
+
+**文件划分**：Chromium 适配放在新增的 `desktop/updater-transport.js`，**它不 `require('electron')`**（`net` / `session` 由调用方传入）。`main.js` 必须在 Electron 内才能加载，留在那里意味着"跳转 / 超时 / 回退"这三条最易静默失效的分支**永远没有自动化覆盖**；抽出来之后用**假的 `net`** 在纯 Node 下就能全测掉。
+
+**测试**：`test/03-build-release.test.js` 新增 28 个用例（92 总计，原 64）—— `makeOnce` 幂等、传输可注入、`retryable` 恰好重发一次、**跨域跳转剥离 Authorization（`request` 与 `downloadTo` 两条路）**、同域保留令牌、重定向上限、假 `net` 下的"跳转走 cb / settle 后忽略 error / 连接级失败标 retryable / 回退链抛错不吞请求 / 超时 abort / 响应到手解除看门狗"，外加 `main.js` 与 `updater-transport.js` 的源码侧接线断言。**已做变异测试**：把跳转改成走 `onError` → 2 个用例失败；去掉 `settle` 守卫 → 1 个用例失败（两次均已还原，源码无残留）。
+
+**验证**：`npm run verify` —— `check` 45/45（用例口径已同步为 201）、`lint` 7/7（31 个文件）、`test` **201/201**、`build:web` 通过。另在**真 Electron** 里实测代理生效：`mode:'system'` 12 秒收 33.2 MB（≈2.70 MB/s），同一探针 `mode:'direct'` 12 秒收 **0 字节**；`resolveProxy` 返回 `"PROXY 127.0.0.1:11304"`。
+
+**回滚**：本版是**加法**。不调用 `setupUpdaterTransport()`（或 `setTransport(null)`）即刻回到旧的直连行为。**无数据格式变更、无需迁移。**
+
+**版本**：`0.35.10 → 0.36.0`（MINOR：新增网络能力；无接口变更、无数据结构变更、无迁移）。⚠ **对使用者可见**（更新速度），应发 Release。
+
 #### `0.35.10` — 2026-09-23（更新链路回归在 CI 上**跑通了**；收尾三处问题修掉）
 
 **背景**：0.35.9 修完三处缺陷后重新触发 CI，拿到完整日志。**结果比预期好得多** —— 脚本 **16 步全部记录，所有断言通过**：

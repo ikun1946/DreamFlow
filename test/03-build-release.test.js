@@ -1060,4 +1060,398 @@ describe('仓库形状（刻意保留的文本断言）', () => {
   });
 });
 
+/* ════════════════════════════════════════════════════════════════
+   更新器传输层 —— 方案 A「更新走系统代理」（2026-09-23）
+   背景：Node 的 https 不读 Windows 系统代理。实测直连 3.6 KB/s
+   （112 MB ≈ 8.6 小时）vs 系统代理 1.24 MB/s（≈ 90 秒）。于是把"发请求"
+   抽成可注入的传输层，Electron 主进程注入 Chromium 的 net。
+   ════════════════════════════════════════════════════════════════ */
+describe('updater —— 传输层（方案 A：可注入 + 跳转 + 回退）', () => {
+  const { EventEmitter } = require('events');
+  const { Readable } = require('stream');
+  const crypto = require('crypto');
+  const transportMod = require(path.join(REPO, 'desktop', 'updater-transport.js'));
+
+  /** 200 响应。用**真 Readable**：downloadTo 会 res.pipe(file)，EventEmitter 顶不住。 */
+  function res200(buf) {
+    const res = Readable.from([Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf), 'utf8')]);
+    res.statusCode = 200;
+    res.headers = { 'content-length': String(buf.length) };
+    return res;
+  }
+
+  const redirectTo = (url) => transportMod.makeRedirectResponse(302, url, {});
+
+  /** 假传输：按脚本依次交出结果，并记录每次收到的 url / headers。 */
+  function fakeTransport(script) {
+    const calls = [];
+    let i = 0;
+    return {
+      calls,
+      request(url, opts, cb) {
+        const step = script[Math.min(i, script.length - 1)];
+        i++;
+        calls.push({ url, headers: Object.assign({}, (opts && opts.headers) || {}), timeoutMs: opts && opts.timeoutMs });
+        const req = new EventEmitter();
+        req.abort = function () { };
+        setImmediate(function () {
+          if (step.kind === 'error') { if (opts && opts.onError) opts.onError(step.error); return; }
+          cb(step.res);
+        });
+        return req;
+      }
+    };
+  }
+
+  /* ── 幂等开关（代理切直连只做一次） ───────────────────────────
+     这段逻辑的调用方在 main.js（起不了 Electron 就测不到），所以本体抽到
+     updater.js 的 makeOnce，这里做真正的行为测试。 */
+  test('makeOnce：第一次 true，之后恒 false（代理只切一次）', () => {
+    const once = updater.makeOnce();
+    assert.equal(once(), true, '第一次应放行');
+    assert.equal(once(), false, '第二次必须拒绝');
+    assert.equal(once(), false, '第三次仍是拒绝');
+  });
+
+  test('两个 makeOnce 互不影响（不是共享的全局状态）', () => {
+    const a = updater.makeOnce();
+    const b = updater.makeOnce();
+    assert.equal(a(), true);
+    assert.equal(b(), true, '另一个开关应是独立的');
+    assert.equal(a(), false);
+    assert.equal(b(), false);
+  });
+
+  /* ── 可注入 ─────────────────────────────────────────────── */
+  test('注入假传输后 fetchText 真的走它（默认实现被整体替换）', async () => {
+    const t = fakeTransport([{ kind: 'res', res: res200('hello') }]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.fetchText('https://example.com/x', {});
+      assert.equal(r.ok, true, '应成功：' + (r.error || ''));
+      assert.equal(r.text, 'hello');
+      assert.equal(t.calls.length, 1, '假传输应被调用一次');
+      assert.equal(t.calls[0].url, 'https://example.com/x');
+    } finally { updater.setTransport(null); }
+  });
+
+  test('注入假传输后 downloadTo 真的走它，且 sha512 校验仍然生效', async () => {
+    const payload = Buffer.from('DreamFlow installer payload', 'utf8');
+    const sha = crypto.createHash('sha512').update(payload).digest('base64');
+    const dir = H.freshDir('dl-transport');
+    const t = fakeTransport([{ kind: 'res', res: res200(payload) }]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.downloadTo('https://example.com/a.exe', path.join(dir, 'a.exe'),
+        { expectSha512: sha, expectSize: payload.length });
+      assert.equal(r.ok, true, '下载应成功：' + (r.error || ''));
+      assert.equal(t.calls.length, 1, '假传输应被调用');
+      assert.equal(r.sha512, sha, '哈希应边下边算并返回');
+    } finally { updater.setTransport(null); }
+  });
+
+  test('注入假传输后哈希不符仍然拒绝（换传输层不许放松校验）', async () => {
+    const dir = H.freshDir('dl-hash');
+    const t = fakeTransport([{ kind: 'res', res: res200('tampered') }]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.downloadTo('https://example.com/a.exe', path.join(dir, 'a.exe'),
+        { expectSha512: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' });
+      assert.equal(r.ok, false, '哈希不符必须失败');
+      assert.match(r.error, /sha512|校验/);
+      assert.ok(!fs.existsSync(path.join(dir, 'a.exe.part-' + process.pid)), '失败后不得留下 .part 残骸');
+    } finally { updater.setTransport(null); }
+  });
+
+  /* ── retryable：代理切直连后的补偿 ───────────────────────── */
+  test('★ retryable 时重发一次（代理已切直连 → 那次失败不算数）', async () => {
+    const e = new Error('ERR_PROXY_CONNECTION_FAILED');
+    e.retryable = true;
+    const t = fakeTransport([{ kind: 'error', error: e }, { kind: 'res', res: res200('after-retry') }]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.fetchText('https://example.com/x', {});
+      assert.equal(r.ok, true, '重发后应成功：' + (r.error || ''));
+      assert.equal(r.text, 'after-retry');
+      assert.equal(t.calls.length, 2, '应恰好重发一次');
+    } finally { updater.setTransport(null); }
+  });
+
+  test('retryable 也只重发一次（代理一直坏 → 不能无限重试）', async () => {
+    const mk = () => { const e = new Error('ERR_PROXY_CONNECTION_FAILED'); e.retryable = true; return e; };
+    const t = fakeTransport([
+      { kind: 'error', error: mk() }, { kind: 'error', error: mk() }, { kind: 'res', res: res200('不该到这') }
+    ]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.fetchText('https://example.com/x', {});
+      assert.equal(r.ok, false, '两次都失败应报错');
+      assert.equal(t.calls.length, 2, '恰好两次（原请求 + 一次重发）');
+    } finally { updater.setTransport(null); }
+  });
+
+  test('不标 retryable 的错误不重发（普通网络错误不该白试一次）', async () => {
+    const t = fakeTransport([{ kind: 'error', error: new Error('boom') }, { kind: 'res', res: res200('x') }]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.fetchText('https://example.com/x', {});
+      assert.equal(r.ok, false);
+      assert.equal(t.calls.length, 1, '不该重发');
+    } finally { updater.setTransport(null); }
+  });
+
+  /* ★ 安全不变量②：这是本方案最容易踩坏的一条 ───────────────
+     换成 Chromium 传输时若用默认的 redirect:'follow'，跳转会在 Chromium 内部
+     完成，下面这段剥离逻辑永远不会被触发 → 令牌被送到第三方主机。 */
+  test('★ 跨域跳转必须剥离 Authorization（不变量②：换传输后仍生效）', async () => {
+    const t = fakeTransport([
+      { kind: 'res', res: redirectTo('https://objects.githubusercontent.com/abc') },
+      { kind: 'res', res: res200('ok') }
+    ]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.fetchText('https://api.github.com/repos/x/y/releases/assets/1',
+        { Authorization: 'Bearer SECRET', Accept: 'application/octet-stream' });
+      assert.equal(r.ok, true, '跳转后应成功：' + (r.error || ''));
+      assert.equal(t.calls.length, 2, '应发两次请求（原请求 + 跳转后）');
+      assert.equal(t.calls[0].headers.Authorization, 'Bearer SECRET', '首次请求应带令牌');
+      assert.equal(t.calls[1].headers.Authorization, undefined,
+        '★ 跨域跳转后**绝不能**再带 Authorization —— 那是把令牌交给第三方主机');
+      assert.equal(t.calls[1].headers.Accept, 'application/octet-stream', '其余请求头应保留');
+      assert.equal(t.calls[1].url, 'https://objects.githubusercontent.com/abc');
+    } finally { updater.setTransport(null); }
+  });
+
+  test('同域跳转保留 Authorization（别把该带的令牌也剥了）', async () => {
+    const t = fakeTransport([
+      { kind: 'res', res: redirectTo('https://api.github.com/other') },
+      { kind: 'res', res: res200('ok') }
+    ]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.fetchText('https://api.github.com/a', { Authorization: 'Bearer SECRET' });
+      assert.equal(r.ok, true, '同域跳转应成功：' + (r.error || ''));
+      assert.equal(t.calls[1].headers.Authorization, 'Bearer SECRET', '同域应保留令牌');
+    } finally { updater.setTransport(null); }
+  });
+
+  test('★ downloadTo 的跳转同样剥离 Authorization（大文件路径必经 302）', async () => {
+    const payload = Buffer.from('x'.repeat(64), 'utf8');
+    const sha = crypto.createHash('sha512').update(payload).digest('base64');
+    const dir = H.freshDir('dl-redirect');
+    const t = fakeTransport([
+      { kind: 'res', res: redirectTo('https://release-assets.githubusercontent.com/f') },
+      { kind: 'res', res: res200(payload) }
+    ]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.downloadTo('https://github.com/o/r/releases/download/v1/a.exe',
+        path.join(dir, 'a.exe'), { headers: { Authorization: 'Bearer SECRET' }, expectSha512: sha });
+      /* ⚠ 这一条正是"把 302 当连接级失败"会挂掉的那条路：
+         那种实现下 downloadTo 的 onError 会先 cleanup() 再判失败。 */
+      assert.equal(r.ok, true, '★ 跳转后下载必须成功：' + (r.error || ''));
+      assert.equal(t.calls.length, 2);
+      assert.equal(t.calls[0].headers.Authorization, 'Bearer SECRET');
+      assert.equal(t.calls[1].headers.Authorization, undefined, '跨域后必须剥掉令牌');
+    } finally { updater.setTransport(null); }
+  });
+
+  test('跳转次数过多会被拦（防重定向环）', async () => {
+    const t = fakeTransport([{ kind: 'res', res: redirectTo('https://a.example.com/loop') }]);
+    updater.setTransport(t);
+    try {
+      const r = await updater.fetchText('https://a.example.com/loop', {});
+      assert.equal(r.ok, false);
+      assert.match(r.error, /重定向/);
+      assert.ok(t.calls.length <= 6, '应在 5 次后停下，实得 ' + t.calls.length);
+    } finally { updater.setTransport(null); }
+  });
+
+  test('默认传输仍是 Node https，且是属性访问式调用', () => {
+    const src = fs.readFileSync(path.join(REPO, 'desktop', 'updater.js'), 'utf8');
+    assert.match(src, /https\.request\(url,\s*\{/, '默认传输必须调用 https.request(url, {...})');
+    assert.ok(!/const\s*\{[^}]*\brequest\b[^}]*\}\s*=\s*require\('https'\)/.test(src),
+      '不得解构 https.request —— 那会让 withCapturedRequests 的替换式断言静默失效');
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════
+   updater-transport.js —— Chromium 传输的三条关键分支
+   刻意用一个**假的 net** 在纯 Node 下测：这段逻辑如果留在 main.js 里
+   （必须 require electron），就只能靠人工跑一遍下载来验。
+   ════════════════════════════════════════════════════════════════ */
+describe('updater-transport —— 假 net 下的跳转 / 回退 / 超时', () => {
+  const { EventEmitter } = require('events');
+  const transportMod = require(path.join(REPO, 'desktop', 'updater-transport.js'));
+  const TSRC = fs.readFileSync(path.join(REPO, 'desktop', 'updater-transport.js'), 'utf8');
+
+  /* 造一个假的 net + 一个可手动 emit 事件的假 req */
+  function fakeNet() {
+    const req = new EventEmitter();
+    req.aborted = false;
+    req.abort = function () { req.aborted = true; };
+    req.ended = false;
+    req.end = function () { req.ended = true; };
+    const state = { opts: null };
+    return {
+      req,
+      state,
+      net: { request: function (opts) { state.opts = opts; return req; } }
+    };
+  }
+
+  const tick = () => new Promise((r) => setTimeout(r, 15));
+
+  test('必须 redirect: manual（默认 follow 会在 Chromium 内跳转、绕过剥离令牌）', () => {
+    assert.match(TSRC, /redirect:\s*'manual'/,
+      '★ net.request 必须显式 redirect: manual —— 否则 302 在 Chromium 内部完成，跨域剥离逻辑永不触发');
+  });
+
+  test('★ redirect 事件必须走 cb 交出 3xx 响应（不能当错误抛）', async () => {
+    const f = fakeNet();
+    const t = transportMod.makeElectronTransport(f.net, {}, { onConnectionFail: async () => false });
+    let gotRes = null;
+    let gotErr = null;
+    t.request('https://api.github.com/a', {}, function (res) { gotRes = res; });
+    assert.equal(f.state.opts.redirect, 'manual');
+    f.req.emit('redirect', 302, 'GET', 'https://objects.githubusercontent.com/b', { 'Content-Type': ['text/plain'] });
+    assert.ok(gotRes, '★ 跳转必须走 cb 交出响应对象');
+    assert.equal(gotRes.statusCode, 302);
+    assert.equal(gotRes.headers.location, 'https://objects.githubusercontent.com/b');
+    assert.equal(gotRes.headers['content-type'], 'text/plain', '数组型响应头应取首值');
+    assert.equal(typeof gotRes.resume, 'function', 'resume 必须存在（updater.js 会调它）');
+    assert.equal(gotErr, null);
+  });
+
+  test('★ 跳转之后冒出的 error 必须被忽略（302 的取消不能触发关代理）', async () => {
+    let switchCalls = 0;
+    let errCalls = 0;
+    const f = fakeNet();
+    const t = transportMod.makeElectronTransport(f.net, {}, {
+      onConnectionFail: async () => { switchCalls++; return true; }
+    });
+    t.request('https://api.github.com/a', { onError: function () { errCalls++; } }, function () { });
+    f.req.emit('redirect', 302, 'GET', 'https://objects.githubusercontent.com/b', {});
+    /* manual 模式下不调 followRedirect()，该请求会被取消 —— Chromium 很可能
+       再冒一个 error 出来。没有 settle 守卫，那次 error 会被当成连接级失败。 */
+    f.req.emit('error', new Error('request was cancelled'));
+    await tick();
+    assert.equal(switchCalls, 0, '★ 绝不能因为 302 的取消就去关代理（否则下载会退回 3.6 KB/s 直连）');
+    assert.equal(errCalls, 0, '跳转不是失败，不该报错');
+  });
+
+  test('连接级失败 → 先切直连，再标 retryable 交给上层重发', async () => {
+    let switchCalls = 0;
+    let gotErr = null;
+    const f = fakeNet();
+    const t = transportMod.makeElectronTransport(f.net, {}, {
+      onConnectionFail: async () => { switchCalls++; return true; }   // true = 这次真的切了
+    });
+    t.request('https://api.github.com/a', { onError: function (e) { gotErr = e; } }, function () { });
+    f.req.emit('error', new Error('ERR_PROXY_CONNECTION_FAILED'));
+    await tick();
+    assert.equal(switchCalls, 1, '应尝试切直连');
+    assert.ok(gotErr, '应把错误交给上层');
+    assert.equal(gotErr.retryable, true, '切过直连 → 必须标 retryable，上层才会重发');
+  });
+
+  test('没切成直连（已切过 / 切换失败）→ 不标 retryable', async () => {
+    let gotErr = null;
+    const f = fakeNet();
+    const t = transportMod.makeElectronTransport(f.net, {}, { onConnectionFail: async () => false });
+    t.request('https://api.github.com/a', { onError: function (e) { gotErr = e; } }, function () { });
+    f.req.emit('error', new Error('boom'));
+    await tick();
+    assert.ok(gotErr);
+    assert.notEqual(gotErr.retryable, true, '没切就不该标 retryable，否则会白重发一次');
+  });
+
+  test('onConnectionFail 抛错也要把错误报上去（不能把请求吞了）', async () => {
+    let gotErr = null;
+    const f = fakeNet();
+    const t = transportMod.makeElectronTransport(f.net, {}, {
+      onConnectionFail: async () => { throw new Error('setProxy 失败'); }
+    });
+    t.request('https://api.github.com/a', { onError: function (e) { gotErr = e; } }, function () { });
+    f.req.emit('error', new Error('原始错误'));
+    await tick();
+    assert.ok(gotErr, '★ 回退链抛错不能把请求结果吞掉，否则下载会永远挂着');
+    assert.match(gotErr.message, /原始错误/);
+  });
+
+  test('超时看门狗：abort 且报"请求超时"', async () => {
+    let gotErr = null;
+    const f = fakeNet();
+    const t = transportMod.makeElectronTransport(f.net, {}, { onConnectionFail: async () => false });
+    t.request('https://api.github.com/a', { timeoutMs: 5, onError: function (e) { gotErr = e; } }, function () { });
+    await tick();
+    assert.ok(gotErr, '超时应报错');
+    assert.equal(gotErr.message, '请求超时');
+    assert.equal(f.req.aborted, true, '必须 abort，否则连接会一直挂着');
+  });
+
+  test('正常响应到手后，超时看门狗被解除（不会事后误报超时）', async () => {
+    let errCalls = 0;
+    const f = fakeNet();
+    const t = transportMod.makeElectronTransport(f.net, {}, { onConnectionFail: async () => false });
+    const res = new EventEmitter();
+    t.request('https://api.github.com/a', { timeoutMs: 5, onError: function () { errCalls++; } }, function () { });
+    f.req.emit('response', res);
+    await tick();
+    assert.equal(errCalls, 0, '响应到手后不该再报超时（否则会把成功当失败）');
+    assert.equal(f.req.aborted, false, '不该 abort 已拿到响应的请求');
+  });
+
+  test('makeRedirectResponse：location 必须是字符串（不能用数组形态的响应头）', () => {
+    const r = transportMod.makeRedirectResponse(302, 'https://x/y', {
+      'Location': ['https://wrong/'], 'X-Extra': ['a'], 'Y-Empty': []
+    });
+    assert.equal(typeof r.headers.location, 'string', '★ responseHeaders 的值是数组，直接取会拿到数组');
+    assert.equal(r.headers.location, 'https://x/y');
+    assert.equal(r.headers['x-extra'], 'a', '其余响应头应归一为字符串并统一小写');
+    assert.equal(r.headers['y-empty'], undefined, '空数组应归一为 undefined（而不是 0/空串）');
+    assert.equal(r.resume(), undefined, 'resume 应是可调用的空操作');
+    assert.equal(r.destroy(), undefined, 'destroy 应是可调用的空操作');
+  });
+});
+
+describe('main.js —— 更新器传输接线（源码侧；入口依赖 electron，起不了就跑不了）', () => {
+  const src = fs.readFileSync(path.join(REPO, 'desktop', 'main.js'), 'utf8');
+
+  test('boot 里注入了更新器传输，且失败不影响启动', () => {
+    assert.match(src, /await setupUpdaterTransport\(\)/);
+    assert.match(src, /catch[\s\S]{0,160}注入更新器传输失败/,
+      '注入必须包 try/catch —— 拿不到就回退默认传输，不能让应用起不来');
+  });
+
+  test('用独立 partition 的 session，不碰默认 session', () => {
+    assert.match(src, /session\.fromPartition\('dreamflow-updater'/);
+    assert.ok(!/defaultSession/.test(src), '不得改默认 session 的代理（会影响渲染进程加载本机界面）');
+  });
+
+  test('常态用 mode: system —— 让 Chromium 自己读 OS 代理（不解析 resolveProxy 的未定义格式）', () => {
+    assert.match(src, /setProxy\(\{\s*mode:\s*'system'\s*\}\)/);
+    /* ⚠ 只查**调用点**（`.resolveProxy(`），不查字面词 —— 上面那段注释里
+       解释"为什么不用它"时确实提到了这个名字，查词会误报。 */
+    assert.ok(!/\.resolveProxy\s*\(/.test(src),
+      '不得依赖 resolveProxy 的返回格式（官方未定义，解析失败会静默退回直连）');
+  });
+
+  test('回退直连时必须 closeAllConnections（否则连接池仍复用代理 socket）', () => {
+    assert.match(src, /closeAllConnections/);
+    assert.match(src, /mode:\s*'direct'/, '回退要显式切成 direct');
+  });
+
+  test('传输实现来自 updater-transport（不在 main.js 内联，否则无法单测）', () => {
+    assert.match(src, /require\('\.\/updater-transport'\)/);
+    assert.match(src, /transportMod\.makeElectronTransport/);
+    assert.ok(!/net\.request\(/.test(src), 'net.request 的适配应在 updater-transport.js 里');
+  });
+
+  test('投影到界面的更新源仍是三个字段（接线没被改动）', () => {
+    assert.match(src, /function publicSource\(\)/);
+    assert.match(src, /provider:\s*s\.provider,\s*owner:\s*s\.owner,\s*repo:\s*s\.repo/);
+  });
+});
+
 after(() => { H.rmrf(SANDBOX); });
