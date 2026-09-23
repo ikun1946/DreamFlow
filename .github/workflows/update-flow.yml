@@ -1,0 +1,114 @@
+# ============================================================
+# update-flow.yml —— 更新链路回归
+#
+# 为什么单独一个工作流、而不是塞进 ci.yml：
+#   这条链路**要联网**（打真实 GitHub Release），且默认会下载一个
+#   ~107 MB 的安装包 —— 放在每次 push 上跑既慢又浪费。
+#   它真正该被触发的时机是**每次发布之后**：确认"这次发布真的能被应用装上、
+#   且没有毁掉用户数据"。
+#
+# 它补的是 ci.yml 两个 job 都覆盖不到的那一段：
+#   · check   （Linux）—— 纯 Node 逻辑，不碰 Electron 更新链路
+#   · package （Windows）—— 只验"能打出包来 + 起得来"
+#   而"装旧版 → 检查更新 → 下载 → 校验 → 装新版 → 用户数据逐字节不变"
+#   只有这个工作流能验。
+#
+# ⚠ 为什么这条链路非有自动化不可（2026-09-23 补记）：
+#   提交 163e62d 曾误删 desktop/main.js 里三个更新源函数的**定义**，而调用点
+#   全留着 —— 整条链路一调用就抛 ReferenceError，渲染进程的 .catch 又把它
+#   吞掉，界面表现为"更新卡片永远空白"，静默失效好几个版本没人发现。
+#   根因就是"这条链路当时没有任何自动化测试，只能靠人点界面验证"。
+#
+# ⚠ 脚本本身需要 PS 7+：GitHub 的 windows-latest runner 自带 PS 7，
+#   所以这里能跑通；开发机若只有 Windows 自带的 5.1，会在"启动 Electron"
+#   那步失败（Start-Process 继承环境时报 PATH / Path 大小写冲突）。
+# ============================================================
+name: 更新链路回归
+
+on:
+  # 每次发布之后自动跑 —— 这是它最有价值的触发点
+  release:
+    types: [published]
+  # 也允许手动触发，并可选择是否真的调安装器
+  workflow_dispatch:
+    inputs:
+      install:
+        description: '是否真的调用安装器（会实际安装并重启应用，耗时更长）'
+        type: boolean
+        default: false
+      skip_build:
+        description: '跳过 npm run build:web（dist/ 已是最新时可用）'
+        type: boolean
+        default: false
+
+# 同一分支只保留最新一次；但**不要**取消 release 触发的那次 ——
+# 它对应一次真实发布，结果要留档。
+concurrency:
+  group: update-flow-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update-flow:
+    name: 更新链路（Windows / Node 20）
+    runs-on: windows-latest
+    # 默认 6 小时太长：下载 + 校验 + 可选安装，20 分钟足够暴露挂死
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # 脚本要用 node_modules/.bin/electron 起真实应用，所以必须装依赖
+      - name: 安装依赖
+        run: npm ci
+
+      # ── ① 发布后验收（不需要下载安装包，先跑，快） ──────────────
+      # 断言：更新源固定 / 应用能查到该版本 / 附件齐全（含 latest.yml）/
+      #       附件字节与本地产物一致 / 版本对齐。
+      # ⚠ 与下面的链路回归分工不同：这一步验"发布本身对不对"，
+      #   下面验"装得上、且不毁数据"。
+      - name: 发布后验收（verify:release）
+        run: npm run verify:release
+
+      # ── ② 更新链路回归 ────────────────────────────────────────
+      # 默认路径：检查 → 下载 → 校验（不调安装器）。
+      # ⚠ 变量名刻意避开 `$args` —— 那是 PS 的自动变量，赋值会被拒。
+      - name: 更新链路回归
+        if: ${{ !inputs.install }}
+        shell: pwsh
+        run: |
+          $psArgs = @()
+          if ($env:SKIP_BUILD -eq '1') { $psArgs += '-SkipBuild' }
+          pwsh -File scripts/test-update-flow.ps1 @psArgs
+        env:
+          SKIP_BUILD: ${{ inputs.skip_build && '1' || '0' }}
+
+      # 可选路径：连安装器一起调 —— 这才是"用户数据会不会被删"的真正考验。
+      - name: 更新链路回归（含安装）
+        if: ${{ inputs.install }}
+        shell: pwsh
+        run: |
+          $psArgs = @('-Install')
+          if ($env:SKIP_BUILD -eq '1') { $psArgs += '-SkipBuild' }
+          pwsh -File scripts/test-update-flow.ps1 @psArgs
+        env:
+          SKIP_BUILD: ${{ inputs.skip_build && '1' || '0' }}
+
+      # ── ③ 无论成败都留痕 ─────────────────────────────────────
+      # report.json 里有每一步的机器可读记录（含 db.json 更新前后的 sha256），
+      # 失败时这是唯一的现场。
+      - name: 上传回归报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-flow-report
+          path: |
+            .test-tmp/update-flow-*/report.json
+            .test-tmp/update-flow-*/logs/*.log
+          if-no-files-found: warn
+          retention-days: 30

@@ -20,6 +20,12 @@
 #
 # Exit code: 0=pass, 1=fail
 #
+# ⚠ 需要**联网**（2026-09-23 起）：本脚本实际打的是**在线 GitHub 源**，
+#   会真的下载一个上百 MB 的安装包。两个原因见下方 "set-update-source" 段的注释
+#   （① 配置注入从未生效；② 0.35.6 起更新源已固定为 github）。
+#   它在 .github/workflows/update-flow.yml 里由 Windows runner 执行 ——
+#   runner 自带 PS 7 且有网络，所以那边跑得通。
+#
 # ⚠ 需要 PowerShell 7+（pwsh）。在 Windows PowerShell 5.1 下会于「启动 Electron」那一步失败：
 #   Start-Process 继承环境时报「已添加项。字典中的关键字:"PATH"所添加的关键字:"Path"」
 #   —— 5.1 枚举环境变量是大小写敏感的，而系统里同时存在 PATH / Path 两个键。
@@ -217,19 +223,34 @@ $nCopied = (Get-ChildItem $newData -Recurse -File).Count
 Write-Host ("[probe] nCopied=" + $nCopied + ' newData=' + $newData)
 Record 'simulate-data-copy' @{ from = $oldData; to = $newData; nFiles = $nCopied }
 
+# ⚠ 2026-09-23：下面这段「把更新源写进配置」**已经失效，保留只为留痕**。
+#   两个独立原因：
+#     ① 写错了位置 —— 这里写的是 <newData>/desktop-config.json，而应用读的是
+#        app.getPath('userData') 下的那一份（desktop/runtime-paths.js 的
+#        `configPath = path.join(userData, CONFIG_FILE)`，与 JC_DATA_DIR 无关）。
+#        实测证据：本机真实配置 %APPDATA%\即梦批量生成控制台\desktop-config.json
+#        的键**只有 legacyImportChecked**，从未出现过 updates —— 即这一步
+#        **从来没有生效过**。
+#     ② 更新源已改为**固定**（0.35.6）：desktop/main.js 的 updateSource() 恒返回
+#        内置的 github/ikun1946/DreamFlow，不再读任何配置文件。
+#   ⇒ 本脚本实际跑的是**在线 GitHub 源**：需要联网，且会真的下载一个上百 MB 的
+#     安装包（把 package.json 降级成 $OldVersion 后，线上必有更新可下）。
+#   上面构造的 mock 更新源（$updSrc）因此也不再被读取 —— 一并保留，
+#   将来若要做离线模式（给 updateSource 加一个受测试标志双键门控的后门）可直接复用。
+#
+#   ⚠ 注意：应用侧对"实际用了哪个源"有断言（见本文件末 assert-source），
+#     所以这里即使再写错，也会在断言处暴露，而不是静默换个源跑完。
 $newCfgPath = Join-Path $newData 'desktop-config.json'
 Write-Host ('[probe] newCfgPath=' + $newCfgPath + ' exists=' + (Test-Path $newCfgPath))
 if (-not (Test-Path $newCfgPath)) { Fail "desktop-config.json missing after copy: $newCfgPath" }
 $cfgRaw = Get-Content $newCfgPath -Raw -Encoding UTF8
-Write-Host ('[probe] cfgRaw len=' + $cfgRaw.Length)
 $cfg = $cfgRaw | ConvertFrom-Json
-Write-Host ('[probe] cfg keys=' + (($cfg.PSObject.Properties | ForEach-Object { $_.Name }) -join ','))
 $cfg.dataDir = $newData
 $cfg | Add-Member -NotePropertyName 'updates' -NotePropertyValue ([PSCustomObject]@{
   provider = 'local'; dir = $updSrc
 }) -Force
 ConvertTo-Json $cfg -Depth 5 | Set-Content -Path $newCfgPath -Encoding UTF8
-Record 'set-update-source' @{ cfg = $newCfgPath; provider = 'local'; dir = $updSrc }
+Record 'set-update-source' @{ cfg = $newCfgPath; provider = 'local'; dir = $updSrc; effective = $false; why = '配置写到了应用不读的路径；且 0.35.6 起更新源已固定' }
 
 # ⚠ 只替换 version 那一行的值，**不做整份 JSON 的重新序列化**（2026-09-23 修）。
 #   原写法 `ConvertFrom-Json | ConvertTo-Json | Set-Content` 会把整份 package.json 重排
@@ -279,6 +300,23 @@ try {
   if (-not $m.Success) { Fail "No [update-flow] JSON line in electron output; see $logFile" }
   $flowReport = $m.Groups[1].Value | ConvertFrom-Json
   Record 'flow-report' $flowReport
+
+  # ★ 断言"实际用的是哪个更新源"，应为固定的 github。
+  #   为什么单独断言：本脚本上方那段"写配置换源"是失效的（见其上方注释），
+  #   而**静默地用了另一个源**正是最难发现的那类问题 —— 回归跑了、绿了，
+  #   却根本没测到你以为在测的那条路。将来若有人把更新源改回可配置，
+  #   这里会立刻红，而不是无声地换个源跑完。
+  $srcStep = @($flowReport.steps | Where-Object { $_.name -eq 'source' })[0]
+  if (-not $srcStep) {
+    Fail "flow report 里没有 source 步骤，无法确认实际使用的更新源"
+  }
+  Record 'assert-source' @{ provider = $srcStep.provider; dir = $srcStep.dir; repo = $srcStep.repo }
+  if ($srcStep.provider -ne 'github') {
+    Fail ("更新源应为固定的 github，实际为 '" + $srcStep.provider + "' —— 请检查 desktop/main.js 的 updateSource()")
+  }
+  if ($srcStep.provider -eq 'local' -or $srcStep.dir) {
+    Fail "更新源仍带本地目录，说明配置注入意外生效了 —— 与 0.35.6 的固定源设计不符"
+  }
 
   if (-not $flowReport.ok) { Fail ("update-flow self-check ok=false: error=" + $flowReport.error) }
 }
