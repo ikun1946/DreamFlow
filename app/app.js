@@ -4993,7 +4993,7 @@
         '<div class="statecard">' + I.check +
           '<span>当前版本 <b>' + esc(String(u.version || '?')) + '</b>　·　更新源 ' + esc(provName) +
           (src.provider === 'github'
-            ? '（<code>' + esc(String(src.owner || '') + '/' + String(src.repo || '')) + '</code>' + (src.hasToken ? '，已配置令牌' : '，<b>未配置令牌</b>') + '）'
+            ? '（<code>' + esc(String(src.owner || '') + '/' + String(src.repo || '')) + '</code>' + (src.hasToken ? '，已配置令牌' : '') + '）'
             : '') +
           '</span></div>' +
         state +
@@ -5005,7 +5005,9 @@
   }
 
   /* 更新源设置。⚠ 令牌输入框**永远不回填已存的值**：主进程只回传 hasToken，
-     所以这里只提示"已配置/未配置"，用户想换就重新粘一个 —— 不把密钥在页面上再写一遍。 */
+     所以这里只提示"已配置/未配置"，用户想换就重新粘一个 —— 不把密钥在页面上再写一遍。
+     状态行同理「配了才显示」：公开仓库匿名即可用，未配置时不显示"未配置令牌"，
+     避免被误读成缺了配置（0.34.1 修正）。 */
   function appUpdateCfgHTML(src) {
     const s = src || {};
     const opt = (v, label) => '<option value="' + v + '"' + (s.provider === v ? ' selected' : '') + '>' + label + '</option>';
