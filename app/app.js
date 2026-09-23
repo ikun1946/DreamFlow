@@ -5157,10 +5157,19 @@
       if (kind === 'install') {
         try { S.cliInfo = await Api.getCliStatus(); } catch (e) { /* 拉不到就保留旧值 */ }
       }
-      /* 后端流程结束时会回收链接，这里用本地已捕获的值兜底：
-         只要流程中出现过链接就不丢 —— 否则用户会看到"等待授权"却没有任何可点的链接。 */
-      S.dCliUrl = res.authUrl || S.dCliUrl || null;
-      S.dCliCode = res.userCode || S.dCliCode || null;
+      /* 后端流程结束时的链接处理：成功 → 已回收（返回 authUrl: null）；失败 → 保留在库里供手工完成。
+         ⚠ 不能无条件用 `res.authUrl || S.dCliUrl` 兜底 —— 成功时那会把轮询期间捕获的
+         旧链接"救"回来：切换成功后界面仍显示「待完成授权」，还会与「创作 CLI 登录成功」
+         拼成自相矛盾的一行（2026-09-23 使用者实测）。改为按结果分流：
+         成功 → 以后端返回值为准（null 即清空）；失败 → 返回值优先、轮询捕获值兜底
+         （材料阶段失败时后端已尽力发布链接，轮询大多已捕获）。 */
+      if (okFlag) {
+        S.dCliUrl = res.authUrl || null;
+        S.dCliCode = res.userCode || null;
+      } else {
+        S.dCliUrl = res.authUrl || S.dCliUrl || null;
+        S.dCliCode = res.userCode || S.dCliCode || null;
+      }
       /* 失败时把 CLI 原始输出摆出来：解析不到授权材料时，用户还能照着原文手工完成授权 */
       S.cliRaw = res.raw || null;
       /* 后端给出的"下一步怎么办"（如手工执行 dreamina relogin）—— 缺了它，失败提示对用户不可行动 */
