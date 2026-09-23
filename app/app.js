@@ -4992,7 +4992,9 @@
     const busy = u.busy || null;
     const dis = busy ? ' disabled' : '';
     const src = u.source || {};
-    const provName = { github: 'GitHub Releases', url: '自定义 URL', local: '本地目录' }[src.provider] || src.provider || '—';
+    /* 更新源已**固定**为 GitHub Releases（2026-09-23）—— 不再有"自定义 URL / 本地目录"
+       两种可选来源，故这里不再做 provider → 名称的映射，也不再显示令牌状态。 */
+    const provName = 'GitHub Releases';
     const p = u.progress;
 
     let state = '';
@@ -5008,7 +5010,7 @@
     } else if (u.error) {
       state = '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
         '<span>' + esc(u.error) +
-        (u.needsToken ? '<span class="hint-sm" style="display:block">读取 release 失败（可能需要令牌）。本仓库已公开、匿名即可读取，正常无需令牌 —— 若持续失败，请先确认本机能访问 GitHub，再检查本机配置文件里的更新源设置。</span>' : '') +
+        (u.needsToken ? '<span class="hint-sm" style="display:block">读取 release 失败。本仓库是公开库、匿名即可读取，正常不需要任何凭据 —— 请先确认本机能访问 GitHub（公司网络 / 代理 / 防火墙常是原因），稍后再试。</span>' : '') +
         '</span></div>';
     } else if (u.lastCheck && u.lastCheck.ok) {
       state = u.lastCheck.hasUpdate
@@ -5032,7 +5034,7 @@
         '<div class="statecard">' + I.check +
           '<span>当前版本 <b>' + esc(String(u.version || '?')) + '</b>　·　更新源 ' + esc(provName) +
           (src.provider === 'github'
-            ? '（<code>' + esc(String(src.owner || '') + '/' + String(src.repo || '')) + '</code>' + (src.hasToken ? '，已配置令牌' : '') + '）'
+            ? '（<code>' + esc(String(src.owner || '') + '/' + String(src.repo || '')) + '</code>）'
             : '') +
           '</span></div>' +
         state +

@@ -611,8 +611,15 @@ async function boot() {
        JC_UPDATE_FLOW_TEST=1 JC_UPDATE_FLOW_INSTALL=1   再真的调安装器（会退出应用）
      输出：一行 `[update-flow] {json}`（机器读）+ 人类可读日志；退出码 0=通过 1=失败。
 
-     ⚠ 更新源由脚本写进 desktop-config.json 的 `updates` 字段（local 模式指向新版目录），
-       这里不额外做参数注入 —— 走"配置文件"这条路才是真实用户的路径。 */
+     ⚠ 2026-09-23 更正：这里原写「更新源由脚本写进 desktop-config.json 的 `updates` 字段」，
+       但**那个写入从来没生效过** —— 脚本写的是 `<runDir>/new-data/desktop-config.json`，
+       而应用读的 configPath 是 `app.getPath('userData')` 下的那一份（`runtime-paths.js`），
+       两者不是同一个文件。也就是说这个脚本实际跑的是**在线 GitHub 源**
+       （把版本降级成 $OldVersion 后，GitHub 上必有更新可下），**需要联网**，
+       且会真的下载一个上百 MB 的安装包。
+       本地源（`local`）这条路径的覆盖在 `test/03-build-release.test.js` 里，走 `updater.download` 直测。
+       现在更新源已**固定**（见 updateSource 上方注释），脚本里的 `set-update-source` 步骤
+       更是彻底失效 —— 留着它只会让人以为"本地源被测过了"。 */
   if (process.env.JC_UPDATE_FLOW_TEST === '1') {
     /* Electron 在没有真实显示器时 createWindow 会卡死（Win32 create 等待 compositor）——
        测试场景下不弹窗，只跑 boot 链 + 更新流。 */
@@ -701,7 +708,7 @@ const updateStates = updateStateMod.makeUpdateState({
   onReject: (action, st) => console.warn('[desktop] 更新互斥：拒绝 ' + action + '（当前 ' + st + '）')
 });
 
-/* ---------------- 更新源（只读） ----------------
+/* ---------------- 更新源（固定，不可配置） ----------------
    ⚠ 2026-09-22 修复：`updateSource` / `publicSource` 在 163e62d（0.27.0 那批加固）里
    被**误删**了定义，而调用点（updateStatusPayload / doCheckUpdates / doDownloadUpdate）
    全部留着 —— 于是整个应用内更新链路一调用就抛
@@ -711,22 +718,20 @@ const updateStates = updateStateMod.makeUpdateState({
    教训：**"功能没被任何测试调用"的代码，删掉了也没人知道**。这就是 P2-7 / 3.2
    （更新链路无自动化回归）真正的代价 —— 本轮的回归脚本就是为了不再让这类事发生。
 
-   ⚠ 2026-09-23：`setUpdateSource`（写配置）已随「更新源设置」功能移除。
-   更新源现在是**只读**的：读本机 `desktop-config.json` 的 `updates` 段，缺省 github。
-   要换源只能手改那个文件 —— 应用不再提供界面入口，也不再暴露改写它的 IPC。 */
+   ⚠ 2026-09-23：更新源改为**固定**，不再读任何使用者可写的位置。
+   为什么不能只把界面入口拿掉：`desktop-config.json` 是纯文本、就在使用者自己的
+   `%APPDATA%` 下，任何人手改 `updates` 段仍能把它指向别的 https 地址或本地目录 ——
+   而更新链路的终点是「下载并执行一个安装器」。**把来源钉死，这条攻击面才真正消失。**
+   于是：`updates` 配置段**不再被读取**（保留在文件里只为不破坏旧配置，已失效）。 */
 function updateSource() {
-  const c = (paths && paths.config && paths.config.updates) || {};
-  return updaterMod.resolveSource(c);
+  return updaterMod.resolveSource(null);   // 恒为 DEFAULT_SOURCE：github / ikun1946 / DreamFlow
 }
 
-/* 给渲染进程看的更新源：**不含令牌本身**，只说"配没配"。
-   界面仍会显示当前更新源，只是不再提供修改入口。 */
+/* 给渲染进程看的更新源。来源已固定，所以这里不再有 hasToken ——
+   令牌只对私有库 / 自建源有意义，而这两种来源现在都进不来。 */
 function publicSource() {
   const s = updateSource();
-  return {
-    provider: s.provider, owner: s.owner, repo: s.repo,
-    url: s.url, dir: s.dir, hasToken: !!s.token
-  };
+  return { provider: s.provider, owner: s.owner, repo: s.repo };
 }
 
 /* 状态变化主动推给界面 */

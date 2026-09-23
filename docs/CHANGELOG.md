@@ -13,6 +13,44 @@
 
 ---
 
+#### `0.35.6` — 2026-09-23（更新源改为**固定**：把「不让用户更改」这件事真正做实）
+
+**背景（一次需求理解的纠偏）**：使用者在看到 0.35.5 后指出 —— 「我说的不是移除更新源设置这个界面，我的意思是不让用户自己更改更新源」。
+
+**这个纠偏是对的，而且指出了一处实质缺口。** 0.35.5 只拿掉了界面入口，**没有切断配置路径**：
+
+| | 0.35.5 之后 | 0.35.6 之后 |
+|---|---|---|
+| 界面入口 | 已移除 ✔ | 已移除 ✔ |
+| `desktop-config.json` 的 `updates` 段 | **仍被读取** ✘ —— 手改文件仍能改源 | **不再读取** ✔ |
+| 环境变量 | 本来就不读 ✔ | 不读 ✔ |
+
+也就是说：0.35.5 是"锁了门却留着窗"。`desktop-config.json` 是纯文本、就躺在使用者自己的 `%APPDATA%` 下，任何人手改 `updates` 段仍能把更新指向别的 https 地址或本地目录 —— **而更新链路的终点是「下载并执行一个安装器」**。
+
+**改动**
+
+| 位置 | 改动 |
+|---|---|
+| `desktop/main.js` | `updateSource()` 由「读 `paths.config.updates`」改为 `updaterMod.resolveSource(null)` —— 恒返回内置 `DEFAULT_SOURCE`（`github` / `ikun1946` / `DreamFlow`）。`paths.config` 不再参与更新源推导 |
+| `desktop/main.js` | `publicSource()` 去掉 `url` / `dir` / `hasToken` —— 来源固定后这三项恒为空/假，留着只会让人以为还能配 |
+| `app/app.js` | `provName` 不再做 provider → 名称映射（没有可选来源了）；状态行去掉「已配置令牌」；`needsToken` 提示改为「确认本机能访问 GitHub」而不再指向已不存在的配置入口 |
+
+**保留**：`updater.resolveSource()` 的三种 provider 支持与四条安全闸（https-only / sha512 校验 / `/S --updated --force-run` / 令牌只进不出）。它们仍被 `test/03-build-release.test.js` 直接覆盖 —— **只是应用不再把使用者可控的值喂进去**。
+
+**顺带查实一个既有缺陷（未修，见下）**：`scripts/test-update-flow.ps1` 的 `set-update-source` 步骤**从来没生效过**。脚本把 `updates` 写进 `<runDir>/new-data/desktop-config.json`，而应用读的 `configPath` 是 `app.getPath('userData')` 下的那一份（`runtime-paths.js`）—— **两者不是同一个文件**。证据：① 静态分析（`resolvePaths` 里 `configPath = path.join(userData, CONFIG_FILE)`，与 `JC_DATA_DIR` 无关）；② 本机真实配置 `%APPDATA%\即梦批量生成控制台\desktop-config.json` 的键**只有 `legacyImportChecked`**，从未出现过 `updates`。所以这个脚本实际跑的是**在线 GitHub 源**（把版本降级成 `$OldVersion` 后 GitHub 上必有更新可下），需要联网并会真下载一个上百 MB 的安装包。已在 `desktop/main.js` 的 `JC_UPDATE_FLOW_TEST` 注释里更正原说法（原注释称"更新源由脚本写进 desktop-config.json"）。
+
+> ⚠ **未修的原因**：修它要动一个 PowerShell 回归脚本，而本机 PowerShell 工具链输出不稳定、该脚本单次运行需联网并下载上百 MB，不适合在本次一并改完再验证。**留作待办**：要么让它明确只测在线路径（并断言 provider 为 github），要么为本地源引入一个与 `JC_UPDATE_FLOW_TEST` 双键门控的测试后门。本地源的现有覆盖在 `test/03-build-release.test.js`（直测 `updater.download`）。
+
+**文档同步**：`docs/项目文档.md` §5.6（更新源固定 + 为什么不能只删界面 + 脚本离线能力的代价）、§6.5 配置表（`updates` 键标注失效）。
+
+**验证**：`node build.js` 重建 dist（493.1 KB）；`check` 45/45 · `lint` 7/7 · `test` 173/173。全仓检索确认 `paths.config.updates` 已无读取点。
+
+**版本** `0.35.5` → `0.35.6`（PATCH：行为收紧，不涉及接口与数据格式）。
+
+> ⚠ 与 0.35.5 一样是**使用者可见的变更**（更新源不再可改），应发 Release 才能真正到达使用者。
+
+---
+
 #### `0.35.5` — 2026-09-23（移除「更新源设置」；创作 CLI 的登录与切换账号合并为同一入口）
 
 **背景**：使用者提出两项界面调整 —— ① 应用端移除「更新源设置」功能；② 把创作 CLI 的「登录」与「切换账号」合并为同一个入口（未登录显示「登录账号」，已登录显示「切换账号」）。
