@@ -875,6 +875,38 @@ ipcMain.handle('app:info', () => ({
 }));
 ipcMain.handle('app:openDataDir', () => (paths ? shell.openPath(paths.dataDir) : null));
 ipcMain.handle('app:openLogs', () => (paths ? shell.openPath(paths.logsDir) : null));
+
+/* 选目录（2026-09-23 新增，为设置里的「数据目录」服务）。
+   ⚠ 只回传用户在系统对话框里**亲手选中**的路径 —— 页面无法指定任意路径进来。 */
+ipcMain.handle('app:chooseDirectory', async (_e, defaultPath) => {
+  const parent = (win && !win.isDestroyed()) ? win : null;
+  const opts = {
+    title: '选择数据目录',
+    buttonLabel: '用这个目录',
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: (typeof defaultPath === 'string' && defaultPath) ? defaultPath : undefined
+  };
+  try {
+    const r = parent ? await dialog.showOpenDialog(parent, opts) : await dialog.showOpenDialog(opts);
+    if (r.canceled || !r.filePaths || !r.filePaths.length) return { canceled: true, path: null };
+    return { canceled: false, path: r.filePaths[0] };
+  } catch (e) {
+    console.warn('[desktop] 打开目录选择器失败：' + ((e && e.message) || e));
+    return { canceled: true, path: null, error: (e && e.message) || '打开目录选择器失败' };
+  }
+});
+
+/* 重启应用。改数据目录后**必须重启才生效**（见 server/data-dir.js 的说明）。
+   ⚠ 这里用 app.exit 而不是 app.quit：刻意绕开 before-quit 里"有任务在跑就拦一下"
+   的交互 —— 用户是在设置面板里**明确点了重启**，再弹一次确认只会让人困惑。
+   安全性来自两点：db.json 的写入是同步的（store 走 writeFileSync + 原子改名），
+   直接退出不会丢数据；而"有活动任务"的情形在**服务端就被拦住了**（data-dir.change）。
+   app.relaunch() 只登记"稍后重新拉起"，与以何种方式退出无关。 */
+ipcMain.handle('app:relaunch', () => {
+  console.log('[desktop] 用户请求重启应用（数据目录已变更）');
+  app.relaunch();
+  app.exit(0);
+});
 ipcMain.handle('shell:showItem', (e, p) => {
   /* 只允许"在文件夹中显示"数据目录里的文件：渲染进程传来的路径一律不信任 */
   if (!insideDataDir(p)) { console.warn('[desktop] 拒绝显示数据目录之外的路径'); return false; }

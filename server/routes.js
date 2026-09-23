@@ -22,6 +22,7 @@
 const store = require('./store');
 const S = require('./services');
 const P = require('./projects');
+const DD = require('./data-dir');
 const { ERR, ApiError, ok, readBody, nowIso } = require('./util');
 
 function queryOf(url) {
@@ -108,6 +109,11 @@ function makeRouter(cfg, adapter) {
        install 是长请求：要下 ~30 MB，慢网下可能几十秒 —— 前端必须给加载态，
        不能让用户以为按钮没反应（实测本机 2.2 秒，但那不是普遍情况）。 */
     ['GET', /^\/system\/cli$/, async (ctx) => ok(ctx.res, await S.cliStatus(adapter))],
+
+    /* 数据目录（2026-09-23 新增）。系统级、不带作用域 —— 它决定的是"库放在哪"，
+       与项目/工作区无关。POST 会写配置文件，**必须重启应用才生效**（见 data-dir.js 注释）。 */
+    ['GET', /^\/runtime\/paths$/, async (ctx) => ok(ctx.res, DD.describe())],
+    ['POST', /^\/runtime\/data-dir$/, async (ctx) => ok(ctx.res, DD.change(ctx.db, ctx.body))],
     ['POST', /^\/system\/cli\/install$/, async (ctx) => ok(ctx.res, await S.cliInstall(adapter))],
     // CLI 账户操作（长耗时：check 秒级；登录/切换含轮询等待，受 loginTimeoutMs 约束）
     // 画布 CLI 已移除，故不再有 /system/adapter/login 与 /switch 两个画布专用入口。

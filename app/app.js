@@ -93,6 +93,9 @@
     proj: { loading: false, error: null, tab: 'pages', workspaces: [], assets: [], assetTab: 'character', assetKeyword: '' },
 
     list: [], stats: null, options: null, adapter: null, settings: null,
+    /* 数据目录状态（2026-09-23 新增）。只有桌面版可改，且状态需要一次额外请求，
+       所以由设置面板懒加载并缓存（见 renderSettings / ensurePaths）。 */
+    paths: null, pathsError: null, pathsBusy: false,
     sel: new Set(), filter: 'all', keyword: '',
     panelTab: 'character', panelKeyword: '', assets: [], assetCounts: { currentShot: 0, library: 0 },
     /* 全库「素材名(小写) → 类型」索引：给提示词里的素材名着色用。
@@ -5299,7 +5302,72 @@
     return '创作 CLI';
   }
 
+  /* ---------------------------------------------------------- 数据目录（2026-09-23 新增）
+     为什么单列一张卡片：数据根决定"项目 / 素材 / 产物存在哪"，是**全库级**设置，
+     与生成参数、分隔符这些内容偏好性质不同；而且一旦切换就必须重启，
+     属低频高风险操作 —— 按本面板惯例放在最后。
+
+     三种状态都如实呈现，而不是只画一个输入框：
+       · 可改            → 输入框 + 浏览 + 两个动作
+       · 被环境变量锁定  → 说明 JC_DATA_DIR 优先级更高、改配置不生效
+       · 网页版          → 说明没有持久化机制
+     canChange=false 时**不给控件** —— 让用户改了却毫无效果，比不给入口更糟。 */
+  function dataDirCardHTML() {
+    const p = S.paths;
+    const head = '<div class="scard-hd"><div class="scard-hd-t">' +
+      '<h3>数据目录</h3><p>项目、素材与生成产物的存放位置</p></div></div>';
+
+    if (!p) {
+      return '<section class="scard">' + head + '<div class="scard-bd"><p class="hint-sm">' +
+        esc(S.pathsError || '读取中…') + '</p></div></section>';
+    }
+
+    const rows = [];
+    rows.push('<div class="srow"><span class="k">当前位置</span>' +
+      '<code style="word-break:break-all">' + esc(p.dataDir) + '</code></div>');
+
+    if (!p.canChange) {
+      rows.push('<p class="hint-sm">' + esc(p.reason || '当前模式不支持更改数据目录') + '</p>');
+      return '<section class="scard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
+    }
+
+    rows.push('<div class="srow"><span class="k">新的位置</span>' +
+      '<input class="input-sm" id="ddInput" style="flex:1;min-width:200px" placeholder="例如 D:\\JimengData（迁移要求空目录）">' +
+      (window.JCDesktop && window.JCDesktop.chooseDirectory
+        ? '<button class="btn-outline" data-ddact="pick">浏览…</button>' : '') +
+      '</div>');
+    rows.push('<div class="cli-actions">' +
+      '<button class="btn-primary" data-ddact="move"' + (S.pathsBusy ? ' disabled' : '') + '>迁移并切换</button>' +
+      '<button class="btn-outline" data-ddact="switch"' + (S.pathsBusy ? ' disabled' : '') + '>仅切换（不搬数据）</button>' +
+      '<button class="btn-outline" data-ddact="open">打开当前目录</button>' +
+      '</div>');
+    rows.push('<p class="hint-sm">' +
+      '<b>迁移并切换</b>：把库复制到新目录再改指向；原目录<b>保留</b>作为回退，确认无误后可自行删除。目标目录必须是空的。' +
+      '<br><b>仅切换</b>：只改指向、不搬任何文件 —— 适合你已经手动搬好数据，或想从空库重新开始。' +
+      '<br>⚠ <b>两种方式都要重启应用才生效</b>：当前进程已经打开了旧目录的数据库，继续用会把它写回旧位置。' +
+      '</p>');
+    if (window.JCDesktop && window.JCDesktop.relaunch) {
+      rows.push('<div class="cli-actions"><button class="btn-outline" data-ddact="restart">立即重启应用</button></div>');
+    }
+
+    return '<section class="scard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
+  }
+
+  /* 数据目录状态只请求一次；失败也记下来，避免每次重绘都重试。 */
+  function ensurePaths() {
+    if (S.paths || S.pathsError || S.pathsBusy) return;
+    S.pathsBusy = true;
+    Api.getRuntimePaths().then((p) => {
+      S.paths = p; S.pathsBusy = false;
+      renderSettings();          // 面板若正开着，立刻补上真实状态
+    }).catch((e) => {
+      S.pathsError = (e && e.message) || '读取数据目录状态失败';
+      S.pathsBusy = false;
+    });
+  }
+
  function renderSettings() {
+    ensurePaths();          // 数据目录状态懒加载（只请求一次，见 ensurePaths）
     const s = S.settings || Api.META && { delimiter: { type: 'custom', value: ';;' }, defaults: {}, queue: {}, adapter: {} };
     const o = opts();
     const dur = o.duration;
@@ -5479,7 +5547,10 @@
         '</div>' +
         /* —— 应用更新：只有桌面版渲染（网页版没有应用内更新）—— */
         appUpdateHTML() +
-      '</section>';
+      '</section>' +
+      /* —— 卡片 6 · 数据目录（2026-09-23 新增）。全库级设置、切完必须重启，
+             按本面板"低频高风险放最后"的惯例收尾。 —— */
+      dataDirCardHTML();
   }
 
   /* ---------------------------------------------------------- 详情 / 预览 */
@@ -5878,6 +5949,66 @@
         if (ex) ex.textContent = '镜头推进' + (e.target.value || '↵') + '雨滴落在玻璃窗';
       }
     });
+    /* 数据目录卡片的交互（2026-09-23 新增）。刻意**独立成一个监听**，
+       不去动上面那个既有分派 —— 它的分支已经很多，混进去容易碰坏既有行为。 */
+    $('#settingsBody').addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-ddact]');
+      if (!b || b.disabled) return;
+      const act = b.dataset.ddact;
+
+      if (act === 'open') {
+        if (window.JCDesktop && window.JCDesktop.openDataDir) window.JCDesktop.openDataDir();
+        return;
+      }
+      if (act === 'restart') {
+        if (window.JCDesktop && window.JCDesktop.relaunch) window.JCDesktop.relaunch();
+        return;
+      }
+      if (act === 'pick') {
+        if (!(window.JCDesktop && window.JCDesktop.chooseDirectory)) return;
+        try {
+          const r = await window.JCDesktop.chooseDirectory((S.paths && S.paths.dataDir) || '');
+          const inp = $('#ddInput');
+          if (r && r.path && inp) inp.value = r.path;
+        } catch (err) { toast((err && err.message) || '打开目录选择器失败', 'warn'); }
+        return;
+      }
+      if (act !== 'move' && act !== 'switch') return;
+
+      const inp = $('#ddInput');
+      const dir = inp ? String(inp.value || '').trim() : '';
+      if (!dir) { toast('请先选择或填写新的数据目录', 'warn'); return; }
+
+      /* 二次确认。文案必须把「会发生什么」和「不会发生什么」都讲明 ——
+         用户在这里最担心的就是"我的项目会不会没了"。 */
+      const lines = act === 'move'
+        ? ['把数据复制到：' + dir,
+           '原目录会保留（可作为回退），确认无误后可自行删除。',
+           '目标目录必须为空，否则会被拒绝。',
+           '完成后需要重启应用才生效。']
+        : ['把数据目录指向：' + dir,
+           '不会搬动任何文件。',
+           '如果新目录里没有数据，重启后你会看到空库 —— 旧数据仍在原目录。',
+           '完成后需要重启应用才生效。'];
+      const head = act === 'move' ? '迁移并切换数据目录？' : '仅切换数据目录？';
+      if (!window.confirm(head + '\n\n' + lines.map((x) => '· ' + x).join('\n'))) return;
+
+      S.pathsBusy = true; renderSettings();
+      try {
+        const rep = await Api.setDataDir(dir, act);
+        S.paths = await Api.getRuntimePaths();
+        S.pathsBusy = false; renderSettings();
+        if (act === 'move') {
+          toast('已迁移 ' + ((rep && rep.moved) || []).join('、') + '（' + fmtBytes((rep && rep.bytes) || 0) + '）并切换；重启后生效', 'ok');
+        } else {
+          toast('已切换数据目录（未搬动数据）；重启后生效', 'ok');
+        }
+      } catch (err) {
+        S.pathsBusy = false; renderSettings();
+        toast((err && err.message) || '切换失败', 'warn');
+      }
+    });
+
     $('#settingsSave').addEventListener('click', async () => {
       try {
         S.settings = await Api.putSettings(S.settings);

@@ -17,6 +17,12 @@ const api = {
   info: () => ipcRenderer.invoke('app:info'),
   openDataDir: () => ipcRenderer.invoke('app:openDataDir'),
   openLogs: () => ipcRenderer.invoke('app:openLogs'),
+  /* 选目录与重启（2026-09-23 新增，为设置里的"数据目录"服务）。
+     ⚠ 这两个动作只在**主进程**执行，页面拿不到任意路径/句柄：
+       chooseDirectory 只回传用户在系统对话框里**亲自选中**的那个路径；
+       relaunch 不带任何参数，页面无法借它执行别的命令。 */
+  chooseDirectory: (defaultPath) => ipcRenderer.invoke('app:chooseDirectory', defaultPath),
+  relaunch: () => ipcRenderer.invoke('app:relaunch'),
   showItemInFolder: (p) => ipcRenderer.invoke('shell:showItem', p),
   openExternal: (u) => ipcRenderer.invoke('shell:openExternal', u),
   /* 应用自更新。同样是具名动作：页面不能借它做别的事。

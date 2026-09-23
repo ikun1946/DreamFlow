@@ -206,6 +206,12 @@
        request() 没有超时，所以慢网下它会一直等，不会中途被掐断。 */
     getCliStatus: ()          => request('GET', '/system/cli'),
     installCli:   ()          => request('POST', '/system/cli/install'),
+    /* 数据目录（系统级，2026-09-23 新增）。
+       ⚠ setDataDir 只负责"校验 + 搬数据 + 写配置"，**改动要重启应用才生效** ——
+       当前进程的 store 已经把旧目录的 db.json 读进内存了（见 server/data-dir.js 注释）。
+       mode: 'move' = 迁移并切换 / 'switch' = 仅切换。 */
+    getRuntimePaths: ()        => request('GET', '/runtime/paths'),
+    setDataDir:   (dir, mode)  => request('POST', '/runtime/data-dir', { body: { dir, mode } }),
     /* 画布 CLI 已移除：原先的 /system/adapter/login 与 /switch 两个画布专用入口随之删除 */
     dreaminaLogin: ()         => request('POST', '/system/adapter/dreamina/login'),
     dreaminaSwitch:()         => request('POST', '/system/adapter/dreamina/switch'),
