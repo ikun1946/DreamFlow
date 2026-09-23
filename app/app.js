@@ -5552,11 +5552,15 @@
             '此项为即时生效的显示偏好，保存在本机（<code>localStorage</code> 的 <code>jmc.theme</code>），不写入服务端配置。</p>' +
         '</div>' +
       '</section>' +
-      /* —— 卡片 5 · 生成引擎与账号（全局的「检测」升到卡片头，两个 CLI 各自成组） —— */
+      /* —— 卡片 5 · 生成引擎与账号（全局的「检测」升到卡片头）——
+         ⚠ 2026-09-18 画布 CLI 移除后只剩创作 CLI 一个引擎，所以这里只有**一个**子块。
+           原注释写「两个 CLI 各自成组」、正文写「两个 CLI 的登录态彼此独立」，
+           都是画布时代残留 —— 与 server/models.js 的 enginesFor()（恒返回 ['dreamina']）
+           以及 server/services.js「不再有"一次检测两个 CLI"这回事」自相矛盾。2026-09-23 一并清掉。 */
       '<section class="scard">' +
         '<div class="scard-hd">' +
           '<div class="scard-hd-t"><h3>生成引擎与账号</h3>' +
-            '<p>引擎随所选模型自动匹配，无需手动切换；含音频绑定的分镜自动使用创作 CLI。两个 CLI 的登录态彼此独立。</p></div>' +
+            '<p>引擎随所选模型自动匹配，无需手动切换。本项目只有创作 CLI（dreamina）一个生成引擎。</p></div>' +
           '<button class="btn-mini" data-cliact="check"' + (S.cliBusy ? ' disabled' : '') + ' title="强探创作 CLI：读取登录态、账号与最新积分（强制重探，不受缓存影响）">' + (S.cliBusy === 'check' ? '检测中…' : '检测连接状态') + '</button>' +
         '</div>' +
         '<div class="scard-bd">' +
@@ -5565,7 +5569,7 @@
               '<span>默认模型 <b>' + esc(labelOf(o.models, s.defaults.model) || s.defaults.model) + '</b> → <b>' + esc(engineLabelOf(o, s.defaults.model, false)) + '</b>　·　<b>当前不可用</b>：' + esc(dmNotice.message) +
               '<span class="hint-sm" style="display:block">你的选择已被<b>原样保留</b>（系统不会自动改写默认模型）。新分镜仍会使用它，等该引擎恢复可用后即可正常生成；若想立刻出片，请在上方「默认模型」里改选一个当前可用的模型。</span></span></div>'
             : '<div class="statecard ok">' + I.check +
-              '<span>默认模型 <b>' + esc(labelOf(o.models, s.defaults.model) || s.defaults.model) + '</b> → <b>' + esc(engineLabelOf(o, s.defaults.model, false)) + '</b>　·　模型按各自归属执行，列表已标注可用引擎</span>' +
+              '<span>默认模型 <b>' + esc(labelOf(o.models, s.defaults.model) || s.defaults.model) + '</b> → <b>' + esc(engineLabelOf(o, s.defaults.model, false)) + '</b>　·　全部可用模型均由创作 CLI 执行</span>' +
               (dmNotice && dmNotice.reason === 'invalid'
                 ? '<span class="hint-sm" style="display:block">' + esc(dmNotice.message) + '</span>' : '') +
               '</div>') +
@@ -5739,7 +5743,7 @@
       ? '提交时会自动在提示词<b>最前面</b>追加下面的区块：把每条参考素材指定到具体主体 / 角色。原文一字不改。' +
         '本次绑定了 ' + what.join(' 与 ') + '。'
       : (imgs.length
-          ? '本分镜绑定了 ' + imgs.length + ' 张图，但按模型归属会走<b>画布</b>链路 —— 画布命令不带 --image，图片与区块都不会发出。要真正用上参考素材，请换用「创作 CLI」的型号。'
+          ? '本分镜绑定了 ' + imgs.length + ' 张图，但本次提交<b>不会</b>把参考图发出 —— 素材区块未组装成功。'
           : '尚未绑定任何参考素材。')) + '</span></div>';
 
     if (imgs.length) {

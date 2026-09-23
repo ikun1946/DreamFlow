@@ -395,7 +395,7 @@ function getStoryboard(db, id, cfg, scope) {
       imgBlock: blocks.imgBlock, // 分开给，前端可以分节展示
       audioBlock: blocks.audBlock,
       promptWithLock,
-      injected,                 // 本次提交是否真的会注入（画布链路不注入）
+      injected,                 // 本次提交是否真的会注入（素材区块未组装成功时不注入）
       issues: lockIssues
     },
     logs: (db.logs[s.id] || []).slice(-20)
