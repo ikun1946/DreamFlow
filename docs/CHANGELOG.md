@@ -13,6 +13,65 @@
 
 ---
 
+#### `0.31.0` — 2026-09-23（安装包换前缀·第一步：先放开校验）
+
+**背景**：项目 0.27.0 已更名 **DreamFlow**（仓库名 / clone 文件夹 / npm 包名 / User-Agent / 文档全改），
+但**安装包文件名一直是 `JimengConsole-*`** —— 那是更名时刻意保留的「应用身份」（理由见 0.27.0 与 0.30.0 两节）。
+
+现在要换成 `DreamFlow-*`，但**不能只改 `electron-builder.yml`**：
+
+> 已装 ≤0.30.0 的用户，其应用内的更新器是**旧版代码**，产物名白名单是严格单前缀的：
+> `/^JimengConsole-\d+\.\d+\.\d+-x64-Setup\.exe$/`。
+> 新版若把 latest.yml 指向 `DreamFlow-*.exe`，这些用户会走完
+> 「找到更新 → 下载完成 → **校验拒绝**」，然后**永远升不上来**（先有鸡还是先有蛋）。
+
+**所以分两步，顺序不可颠倒**：
+
+| 步 | 版本 | 做什么 |
+|---|---|---|
+| **① 本版** | `0.31.0` | **只放开校验**（同时接受两种前缀），**产物名不变**。这一版被消化后，用户手上的白名单就变成「双前缀」。 |
+| ② 下一步 | （待发） | 改 `artifactName` → `DreamFlow-${version}-x64-Setup.${ext}`、`executableName` → `DreamFlow`，并把 `ARTIFACT_PREFIX` 改成 `'DreamFlow-'`。 |
+
+**改法**（`desktop/updater.js`）：
+
+1. 新增 `ACCEPTED_PREFIXES = ['JimengConsole-', 'DreamFlow-']`（第一项＝**当前产物前缀**，须与 yml 一致），
+   由它生成 `ARTIFACT_RE` 与 `ARTIFACT_VERSION_RE`，两者**同源** —— 避免"白名单放过了、版本却读不出"的错配。
+2. `safeArtifactName` 的错误提示改为列出全部可接受前缀（原先只写死一个）。
+3. **`cleanupStaleTemp` 的 `.part-` 清理改用「任一可接受前缀」判断**（原先只认 `ARTIFACT_PREFIX`）。
+   否则换名后，老用户机器上残留的 `JimengConsole-*.part-*`（每个 100+ MB）会**永远清不掉** ——
+   这处最容易漏，因为它不报错、只是慢慢吃磁盘。
+4. 导出新增 `ACCEPTED_PREFIXES`。
+
+**门禁与脚本同步**（不做则换名当天撞车）：
+
+5. **`scripts/check-project.js` §4 的 artifactName 检查改为「从源码提取 `ARTIFACT_PREFIX` 再比对」**。
+   原先把 `'JimengConsole-'` 写死在门禁里 —— 换名时它只会一直报"形状变了"，答不出"两处到底一不一致"。
+   现在换名时门禁**自动跟随**，同时仍**强制 yml 与 updater 一起改**（漏改任一处即 FAIL）。
+6. `scripts/check-signing.js` 的主程序 exe 匹配改为同时认 `JimengConsole.exe` / `DreamFlow.exe`。
+
+**刻意保留未改**（B 级方案的范围边界）：
+
+- **数据目录**（`runtime-paths.js` 的 `DATA_FOLDER_NAME`）→ 仍是 `%USERPROFILE%\Videos\JimengConsole\`。
+  改了会让用户打开新版时以为"项目全没了"。**这是唯一会碰真实数据的改动，排除在本次之外。**
+- **`appId`**（`com.ikun1946.jimengconsole`）→ 不变。它决定 Windows 能否认出"这是同一个应用"、
+  能否原地升级；改了会让新旧版本并存。
+- **`productName`**（中文「即梦批量生成控制台」）→ 不变。它决定 userData 目录 `%APPDATA%\即梦批量生成控制台\`。
+
+> ⚠ 换名第二步会**迁移安装目录**：实测 0.25.0 装在 `%LOCALAPPDATA%\Programs\JimengConsole\`
+> （该目录名由 `executableName` 决定，不是 `productName`），换名后变成 `Programs\DreamFlow\`。
+> NSIS 靠 `appId` 生成的 GUID 识别已装实例，**不会并存**，但会走"先卸后装"：快捷方式重建、
+> 用户手动固定的任务栏项可能失效。用户数据在 `Videos\` 下不受影响（`deleteAppDataOnUninstall: false`）。
+
+**测试**：`npm run check` **43/43**、`npm run lint` **7/7**、`npm test` **156/156**（新增 1 条双前缀用例）。
+新用例带**反向断言** —— 放宽不等于放开：`Evil-*`、`DreamFlowx-*`、`dreamflow-*`（小写）、`xDreamFlow-*`、
+拼接后缀、版本段不完整这六种写法仍须被拒，且**新前缀的版本一致性校验同样生效**（否则换名等于丢掉这层护栏）。
+
+**为下一步准备**：换名第二步只需改 **4 处** —— `electron-builder.yml` 的 `artifactName`（nsis / portable 各一）
+与 `executableName`、`desktop/updater.js` 的 `ARTIFACT_PREFIX`、以及 `test/03-build-release.test.js` 里
+对产物名形状的两处断言。**门禁会自动跟随，不需要改。**
+
+---
+
 #### `0.30.0` — 2026-09-23（更新流回归 + lint no-undef 兜底）
 
 **背景**：0.29.5 修的 `Accept` 头缺陷之所以能潜伏好几个版本，根因是**更新链路只能靠人点界面验证** ——

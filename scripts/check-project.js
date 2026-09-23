@@ -213,13 +213,25 @@ if (yml === null) {
     else ok('yml 引用的 ' + uniq.length + ' 个图标均存在：' + uniq.join('、'));
   }
 
-  // artifactName 与 updater 的白名单必须同形状（否则更新器会拒掉自己的产物）
-  const m = /artifactName:\s*JimengConsole-\$\{version\}-x64-Setup\.\$\{ext\}/.exec(yml);
-  if (!m) {
-    fail('yml 的 artifactName 形状变了，但 updater.js 的白名单正则是写死的',
-      '须同时更新 desktop/updater.js 的 ARTIFACT_RE');
+  // artifactName 与 updater 的**当前产物前缀**必须一致（否则更新器会拒掉自己的产物）
+  // 2026-09-23 改：原先把 'JimengConsole-' 写死在门禁里 —— 换名（DreamFlow-）时它只会
+  // 一直报"形状变了"，答不出"两处到底一不一致"。改为从 updater.js 源码提取
+  // ARTIFACT_PREFIX 再比对：换名时门禁自动跟随，同时仍强制 yml 与 updater 一起改。
+  // 注意：updSrc 在本节之后（§9）才定义，这里须自己读一次，不能复用。
+  const ymlArt = /artifactName:\s*([A-Za-z0-9_.-]+)-\$\{version\}-x64-Setup\.\$\{ext\}/.exec(yml);
+  const updPref = /^const ARTIFACT_PREFIX = '([^']+)';$/m.exec(read('desktop/updater.js') || '');
+  if (!ymlArt) {
+    fail('yml 里找不到 nsis 的 artifactName: <前缀>-${version}-x64-Setup.${ext}',
+      '更新器的白名单靠它对齐，缺了会拒掉自己的产物');
+  } else if (!updPref) {
+    fail('读不到 desktop/updater.js 的 ARTIFACT_PREFIX',
+      '门禁靠它比对 yml 的 artifactName 前缀');
+  } else if (ymlArt[1] + '-' !== updPref[1]) {
+    fail('yml 的 artifactName 前缀（' + ymlArt[1] + '-）与 updater.js 的 ARTIFACT_PREFIX（'
+      + updPref[1] + '）不一致',
+      '换名/改名时这两处必须同时改（见 updater.js 的「产物名换前缀」注释）');
   } else {
-    ok('artifactName 与 updater 白名单同形状');
+    ok('artifactName 前缀与 updater 的 ARTIFACT_PREFIX 一致：' + updPref[1]);
   }
 
   /* ⚠ 2026-09-22 加的：签名配置必须缩进在 `win:` 之下。

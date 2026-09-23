@@ -117,9 +117,41 @@ function parseLatestYml(text) {
 
    ⚠ 改打包配置（artifactName / productName / executableName）时，
      ARTIFACT_RE 必须同步改 —— 否则更新会把合法安装包也拒掉。
-     回归测试在 test/updater.test.js 里。 */
+     回归测试在 test/03-build-release.test.js 里。
+
+   ---------------- 产物名换前缀：必须分两步（2026-09-23，0.31.0） ----------------
+   项目 0.27.0 已更名 DreamFlow，但**安装包文件名仍是 JimengConsole-***（更名时刻意不动
+   应用身份，见 CHANGELOG 0.27.0 / 0.30.0）。要把它换成 DreamFlow-* 时，不能只改
+   electron-builder.yml —— 已装 ≤0.30.0 的用户，其本文件是**旧版本**，正则严格单前缀：
+
+       /^JimengConsole-\d+\.\d+\.\d+-x64-Setup\.exe$/
+
+   新版若把 latest.yml 指向 DreamFlow-*.exe，这些用户会走完
+   「找到更新 → 下载完成 → 校验拒绝」，然后**永远升不上来**（先有鸡还是先有蛋）。
+
+   所以分两步，**顺序不可颠倒**：
+     第一步（本版 0.31.0）：放开校验、同时接受两种前缀，**产物名不变**。
+       这一版一发布，能自动更新的用户就会升上来，他们手上的正则从此是"双前缀"。
+     第二步（下一版）：yml 的 artifactName + executableName 改 DreamFlow-*，
+       同步把 ARTIFACT_PREFIX 改成 'DreamFlow-'。此时所有还在自动更新链路上的
+       用户都已能接受新前缀。
+
+   ACCEPTED_PREFIXES 是**校验可接受**的前缀集合；ARTIFACT_PREFIX 是**本版产物实际使用**
+   的前缀（必须与 electron-builder.yml 的 artifactName 一致，门禁 §4 会比对这两处）。 */
 const ARTIFACT_PREFIX = 'JimengConsole-';
-const ARTIFACT_RE = /^JimengConsole-\d+\.\d+\.\d+-x64-Setup\.exe$/;
+
+/* 第一项是"当前产物前缀"，其余是过渡期仍须接受的历史前缀。换第二步时：
+   把 'DreamFlow-' 挪到第一位、ARTIFACT_PREFIX 同步改，'JimengConsole-' 保留在列表里
+   ——老用户机器上可能还残留 JimengConsole-*.part-* 临时文件，清理逻辑要靠它。 */
+const ACCEPTED_PREFIXES = ['JimengConsole-', 'DreamFlow-'];
+
+/* 前缀进正则要转义（当前两个前缀无需转义，但别给未来留坑）。 */
+const reEscape = (s) => String(s).replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+const PREFIX_ALT = ACCEPTED_PREFIXES.map(reEscape).join('|');
+
+const ARTIFACT_RE = new RegExp('^(?:' + PREFIX_ALT + ')\\d+\\.\\d+\\.\\d+-x64-Setup\\.exe$');
+/* 版本提取与上面的白名单必须同源 —— 否则会出现"白名单放过、版本读不出"的错配。 */
+const ARTIFACT_VERSION_RE = new RegExp('^(?:' + PREFIX_ALT + ')(\\d+\\.\\d+\\.\\d+)-x64-Setup\\.exe$');
 
 function safeArtifactName(name, expectVersion) {
   const value = String(name == null ? '' : name);
@@ -131,15 +163,15 @@ function safeArtifactName(name, expectVersion) {
   if (value.includes('/') || value.includes('\\')) throw new Error('更新文件名不得包含路径分隔符：' + value);
   if (value === '.' || value === '..') throw new Error('更新文件名非法：' + value);
 
-  /* ② 白名单正则 */
+  /* ② 白名单正则（接受 ACCEPTED_PREFIXES 里的任一前缀 —— 过渡期两种都放行） */
   if (!ARTIFACT_RE.test(value)) {
-    throw new Error('更新文件名不符合本项目安装包命名（应为 '
-      + ARTIFACT_PREFIX + '<version>-x64-Setup.exe）：' + value);
+    throw new Error('更新文件名不符合本项目安装包命名（应为 <前缀><version>-x64-Setup.exe，'
+      + '前缀限 ' + ACCEPTED_PREFIXES.join(' 或 ') + '）：' + value);
   }
 
   /* ③ 版本一致性（可选：调用方拿不到 version 时跳过，但仍已过 ①②） */
   if (expectVersion) {
-    const inName = /^JimengConsole-(\d+\.\d+\.\d+)-x64-Setup\.exe$/.exec(value);
+    const inName = ARTIFACT_VERSION_RE.exec(value);
     if (!inName) throw new Error('更新文件名里读不出版本号：' + value);
     if (inName[1] !== String(expectVersion).trim()) {
       throw new Error('更新文件名里的版本（' + inName[1] + '）与清单版本（'
@@ -582,7 +614,9 @@ function cleanupStaleTemp(destDir, maxAgeMs) {
     if (!fs.existsSync(destDir)) return { ok: true, removed };
     const now = Date.now();
     fs.readdirSync(destDir).forEach((n) => {
-      if (n.indexOf('.part-') < 0 || n.indexOf(ARTIFACT_PREFIX) !== 0) return;
+      /* 认**全部**可接受前缀：老用户机器上可能残留 JimengConsole-*.part-*，
+         换前缀后不能因为"前缀对不上新名"就让这些大文件永远清不掉。 */
+      if (n.indexOf('.part-') < 0 || !ACCEPTED_PREFIXES.some((p) => n.indexOf(p) === 0)) return;
       const p = path.join(destDir, n);
       try {
         const st = fs.statSync(p);
@@ -665,7 +699,7 @@ function install(installerPath) {
 module.exports = {
   parseVersion, isNewer, parseLatestYml, fetchText, downloadTo,
   resolveSource, fetchManifest, DEFAULT_SOURCE,
-  safeArtifactName, assertManifestFile, ARTIFACT_RE, ARTIFACT_PREFIX,
+  safeArtifactName, assertManifestFile, ARTIFACT_RE, ARTIFACT_PREFIX, ACCEPTED_PREFIXES,
   progressOf, check, download, install,
   isDownloading, cleanupStaleTemp
 };

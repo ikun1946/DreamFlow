@@ -38,6 +38,40 @@ describe('updater —— 更新文件名安全校验（P0-1 路径穿越回归�
       'yml 的 artifactName 必须与 ARTIFACT_RE 同形状，否则校验会误杀真实产物');
   });
 
+  test('过渡期双前缀：JimengConsole- 与 DreamFlow- 都接受（换名分两步的兼容层）', () => {
+    // 背景：0.27.0 已把项目更名 DreamFlow，但安装包文件名仍是 JimengConsole-*。
+    // 换名必须**分两步** —— 已装 ≤0.30.0 的用户手上是旧版白名单（只认 JimengConsole-），
+    // 新版若直接把 latest.yml 指向 DreamFlow-*.exe，他们会走完
+    // 「找到更新 → 下载完成 → 校验拒绝」而永远升不上来。
+    // 所以 0.31.0 先放开校验（产物名不变），下一版才换名。
+    assert.deepEqual(updater.ACCEPTED_PREFIXES, ['JimengConsole-', 'DreamFlow-'],
+      '过渡期必须同时接受两个前缀，且当前产物前缀排第一');
+
+    // ① 两种前缀都要放行，且版本一致性对**两者**都生效
+    assert.equal(updater.safeArtifactName('JimengConsole-0.31.0-x64-Setup.exe', '0.31.0'),
+      'JimengConsole-0.31.0-x64-Setup.exe');
+    assert.equal(updater.safeArtifactName('DreamFlow-0.32.0-x64-Setup.exe', '0.32.0'),
+      'DreamFlow-0.32.0-x64-Setup.exe');
+
+    // ② 放宽 ≠ 放开：白名单之外的写法一律仍拒（前缀必须整段锚定）
+    const stillBad = [
+      'Evil-0.32.0-x64-Setup.exe',            // 未知前缀
+      'DreamFlowx-0.32.0-x64-Setup.exe',      // 前缀后多字符
+      'dreamflow-0.32.0-x64-Setup.exe',       // 大小写不符
+      'xDreamFlow-0.32.0-x64-Setup.exe',      // 前缀前多字符
+      'DreamFlow-0.32.0-x64-Setup.exe.evil',  // 拼接后缀
+      'DreamFlow-0.32-x64-Setup.exe'          // 版本段不完整
+    ];
+    for (const n of stillBad) {
+      assert.equal(updater.ARTIFACT_RE.test(n), false, '不应通过：' + n);
+      assert.throws(() => updater.safeArtifactName(n), /不符合本项目安装包命名/, '应抛错：' + n);
+    }
+
+    // ③ 版本一致性对新前缀同样生效（否则换名等于把这一层护栏丢掉）
+    assert.throws(() => updater.safeArtifactName('DreamFlow-0.32.0-x64-Setup.exe', '0.33.0'),
+      /不一致/);
+  });
+
   test('★ 合法文件名被接受', () => {
     const ok = [
       'JimengConsole-0.27.0-x64-Setup.exe',

@@ -10,7 +10,8 @@
  *
  *   2. 【构建后验收】对已生成的产物逐文件验证签名
  *          node scripts/check-signing.js --verify
- *      它会扫描 release/ 下的 Setup.exe 与 win-unpacked/JimengConsole.exe，
+ *      它会扫描 release/ 下的 Setup.exe 与 win-unpacked/ 下的主程序 exe
+ *      （JimengConsole.exe 或换名后的 DreamFlow.exe），
  *      用 signtool 验证签名链与时间戳，并把结果汇总成表。
  *
  *   3. 【正式发布卡点】未配置凭据时直接失败
@@ -162,8 +163,9 @@ function collectArtifacts() {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) { walk(full); continue; }
       // 只关心会被用户双击的两个对象
+      // 主程序 exe 名在换名前是 JimengConsole.exe、换名后是 DreamFlow.exe，两种都认
       if (/Setup\.exe$/i.test(e.name)) out.push(full);
-      else if (/JimengConsole\.exe$/i.test(e.name) && /win-unpacked/i.test(full)) out.push(full);
+      else if (/(?:JimengConsole|DreamFlow)\.exe$/i.test(e.name) && /win-unpacked/i.test(full)) out.push(full);
     }
   };
   walk(RELEASE_DIR);
@@ -175,7 +177,7 @@ function verifyArtifacts(signtool) {
 
   const files = collectArtifacts();
   if (!files.length) {
-    warn('release/ 下没有找到 Setup.exe 或 win-unpacked/JimengConsole.exe');
+    warn('release/ 下没有找到 Setup.exe 或 win-unpacked/ 下的主程序 exe');
     info('先执行 npm run dist（或 npm run pack）再运行 --verify。');
     return;
   }
