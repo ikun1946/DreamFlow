@@ -66,7 +66,8 @@ function findSigntool() {
 
   if (process.platform !== 'win32') return null;
 
-  // 标准位置：C:\Program Files (x86)\Windows Kits\10\bin\<ver>\x64\signtool.exe
+  // ① 标准位置（装了 Windows SDK）：
+  //    C:\Program Files (x86)\Windows Kits\10\bin\<ver>\x64\signtool.exe
   const kits = [
     'C:\\Program Files (x86)\\Windows Kits\\10\\bin',
     'C:\\Program Files\\Windows Kits\\10\\bin'
@@ -79,10 +80,30 @@ function findSigntool() {
       if (fs.existsSync(p)) found.push(p);
     }
   }
-  if (!found.length) return null;
-  // 版本号字典序倒排即可满足（10.0.22621 > 10.0.19041）
-  found.sort().reverse();
-  return found[0];
+  if (found.length) {
+    // 版本号字典序倒排即可满足（10.0.22621 > 10.0.19041）
+    found.sort().reverse();
+    return found[0];
+  }
+
+  /* ② 兜底：electron-builder 26 **自带** signtool，缓存在自己的目录里
+        %LOCALAPPDATA%\electron-builder\Cache\winCodeSign\<id>\windows-10\x64\
+
+        2026-09-23 补记：原先只找 Windows Kits，而开发机通常**不装** SDK
+        （实测本机 `Windows Kits\10` 下只有 UnionMetadata、没有 bin）。
+        后果是自检与 --verify 一律报"找不到 signtool.exe"，整个验签功能白白不可用 ——
+        可打包时 electron-builder 用的就是这一份，它明明就在磁盘上。
+        这个兜底不改变"有没有证书"的判断，只是让验签真的能跑起来。 */
+  const ebCache = path.join(
+    process.env.LOCALAPPDATA || '', 'electron-builder', 'Cache', 'winCodeSign');
+  if (process.env.LOCALAPPDATA && fs.existsSync(ebCache)) {
+    for (const id of fs.readdirSync(ebCache)) {
+      const p = path.join(ebCache, id, 'windows-10', 'x64', 'signtool.exe');
+      if (fs.existsSync(p)) return p;
+    }
+  }
+
+  return null;
 }
 
 // ── 2. 检查签名凭据 ────────────────────────────────────────────
@@ -136,16 +157,25 @@ function checkCredentials() {
     pass('CSC_KEY_PASSWORD 已设置（长度 ' + pass.length + '）');
   }
 
-  // 证书绝不能入库
+  // 证书绝不能入库。
+  /* ⚠ 判据必须是「四类全齐」，不能是「至少三类」。
+     2026-09-23 发现原判据写的是 `ignored.length >= 3`，而漏掉的恰恰是 `*.pfx` ——
+     代码签名证书最常用的容器格式。结果是：一旦真的配了签名，
+     「最可能被误提交的那个文件」没有被忽略，自检却显示 PASS。
+     另外这里只统计**生效行**，注释掉的规则不算数（否则把规则注释掉也照样通过）。 */
   head('[1.1] 证书是否被误提交');
   const gi = path.join(ROOT, '.gitignore');
   const giText = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
-  const ignored = ['*.pem', '*.key', '*.p12', '*.pfx'].filter((pat) => giText.includes(pat));
-  if (ignored.length >= 3) {
-    pass('.gitignore 已忽略私钥类文件：' + ignored.join(' '));
+  const giActive = giText.split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'))
+    .join('\n');
+  const KEY_PATTERNS = ['*.pem', '*.key', '*.p12', '*.pfx'];
+  const missingKeys = KEY_PATTERNS.filter((pat) => !giActive.includes(pat));
+  if (!missingKeys.length) {
+    pass('.gitignore 已忽略私钥类文件：' + KEY_PATTERNS.join(' '));
   } else {
-    fail('.gitignore 未完整忽略私钥（缺 ' +
-      ['*.pem', '*.key', '*.p12', '*.pfx'].filter((p) => !giText.includes(p)).join(' ') + '）');
+    fail('.gitignore 未完整忽略私钥（缺 ' + missingKeys.join(' ') + '）');
   }
 
   return { ok: true, hasLink: true };

@@ -1,7 +1,7 @@
 # AGENTS.md —— 给 AI agent 的项目约定
 
 > 本文件是**任何 agent 接手本仓库时的第一份必读**。人也可以看，但它主要写给 agent。
-> 最后核对：2026-09-23（版本 `v0.35.1`）
+> 最后核对：2026-09-23（版本 `v0.35.2`）
 > 看完整变更记录：[docs/CHANGELOG.md](docs/CHANGELOG.md)（0.29.0 → 最新）。
 >
 > 📖 **想「通读一遍就完整理解项目」** → 读 `docs/项目文档.md`（定位 / 结构 / 目录职责 / 模块依赖 / 主要流程 /
@@ -175,6 +175,8 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 2. `dreamina.exe` 未签名、**未确认允许再分发** → 因此**不内置**，改为运行时从官方 CDN 下载（见上一节；这不改变分发主体，但"官方是否允许"这个问题本身仍未答复）。
 3. FFmpeg 是 **GPL 构建**且单个约 212 MB → 同样未内置。合规路径锁定为"**只调用、不分发**"，已在 `THIRD-PARTY-NOTICES.md` 写明边界在**进程边界**上、不在代码边界上。
 4. ~~安装包**无代码签名**`~~ → **已配置，但证书未就位**：`electron-builder.yml` 加了 `signAndEditExecutable: true` + `signtoolOptions`（sha256 / publisherName / RFC3161 时间戳），配套 `scripts/check-signing.js`（自检 / `--verify` 逐文件验签 / `--require` 发布卡点）。**证书与密码只走环境变量** `CSC_LINK` + `CSC_KEY_PASSWORD`，绝不入库；**未配置时构建仍会成功**（开发机通路），所以正式发布前**必须**跑 `node scripts/check-signing.js --require` 卡住。
+   - **不需要装 Windows SDK**（2026-09-23 实测）：electron-builder 26 自带 signtool，缓存在 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\<id>\windows-10\x64\`。`check-signing.js` 已加这条兜底查找（SDK 优先、自带版兜底），所以 `--verify` 在没有 SDK 的机器上也能跑。
+   - ⚠ `--verify` 会扫 `release/` 下**全部** `Setup.exe`，历史安装包未签名会让整体报失败。跑之前先把旧包移进 `release-archive/`。
 5. **干净 Windows 环境验收未做**：安装包在无 Node、无缓存的干净机器上的**首次安装 / 首启 / 升级 / 卸载**四步，尚未在真实干净环境完整跑过。
 
 ## 仓库是公开的（2026-09-21 起）

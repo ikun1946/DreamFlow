@@ -13,6 +13,49 @@
 
 ---
 
+#### `0.35.2` — 2026-09-23（修签名工具链两处缺陷：`.pfx` 未被忽略、自带 signtool 找不到）
+
+**背景**：使用者问「怎么给安装包签名」。核查本机签名工具链时，顺带发现 `scripts/check-signing.js` 里两个会**误导使用者**的缺陷 —— 都属于"检查器本身不可靠"，比被检查的功能更危险，因为坏掉的检查器会给出 PASS。
+
+**缺陷一：`.gitignore` 漏了 `*.pfx`，而判据又恰好放过它。**
+
+`.gitignore` 的「环境变量与密钥」段只列了 `*.pem` / `*.key` / `*.p12`（第 47–49 行）。但**代码签名证书最常用的容器格式恰恰是 `.pfx`** —— 也就是说，"一旦配了签名，最可能被误提交的那个文件"没有被忽略。
+
+更糟的是 `check-signing.js` 的判据写的是 `if (ignored.length >= 3)` —— 四选三即通过。于是这个漏洞**永远不会被自检发现**，界面照样显示 `PASS`。检查器与被检查对象同时失守，等于没有防护。
+
+修正：
+- `.gitignore` 补 `*.pfx`，并加注释说明为什么它必须在
+- 判据从「至少三类」改为「四类全齐」（`missingKeys.length === 0`）
+- 顺带只统计**生效行**：原先用 `giText.includes(pat)` 全文匹配，把规则**注释掉**也照样通过。现在先剥掉 `#` 开头的行再比对
+
+**缺陷二：`findSigntool()` 不知道 electron-builder 自带 signtool，导致验签功能整条不可用。**
+
+原实现只搜两处：`PATH`，以及 Windows SDK 的 `C:\Program Files (x86)\Windows Kits\10\bin\<ver>\x64\`。但**开发机通常不装 SDK**（本机实测 `Windows Kits\10` 下只有 `UnionMetadata`、没有 `bin`）。后果是自检报「找不到 signtool.exe（构建仍可进行，但无法在本地验证签名）」，`--verify` 直接放弃 —— **而打包时 electron-builder 用的就是它自己缓存的那一份**：
+
+```
+%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\<id>\windows-10\x64\signtool.exe
+```
+
+它明明就在磁盘上，脚本却找不到，于是"验签"这个功能在本机白白废掉。修正：在 Windows Kits 之后加一层兜底查找（SDK 优先，自带版兜底），不改变"有没有证书"的任何判断。
+
+**实测效果**（本机，无 Windows SDK、无证书）：
+
+| 项 | 修复前 | 修复后 |
+|---|---|---|
+| `[2/3] signtool 可用性` | `WARN 找不到 signtool.exe` | `PASS signtool：…\winCodeSign\017956427\windows-10\x64\signtool.exe` |
+| `[1.1] 证书是否被误提交` | `PASS`（因 `>= 3` 而漏判 `*.pfx`） | `PASS`（现在是真的四类全齐） |
+| `--verify` | 直接放弃，报"找不到 signtool" | 正常执行，逐个文件验签 |
+
+**⚠ 一并记下一个尚未处理的观察**：`--verify` 会扫 `release/` 下**全部** `Setup.exe`。本机 `release/` 里累积了 0.29.5 / 0.29.6 / 0.31.0 / 0.32.0 / 0.34.0 / 0.35.1 六个历史安装包，全都未签名 → 整体报 `失败（6 项错误）` 且退出码 1。这在"配好签名之后"会造成误导（新包签了、整体仍红）。**当前未改**，因为"验全部"还是"只验最新"是策略选择，需使用者定夺；临时规避是把历史安装包移出 `release/`（项目根已有 `release-archive/` 就是干这个的）。
+
+**影响范围**：仅 `.gitignore` 与 `scripts/check-signing.js`。**不涉及 `app/` · `server/` · `desktop/` · `electron-builder.yml`**，对使用者**零可见影响**，故本版**不发 Release**（同 `0.33.0` 的处理方式：仅登记版本线，由下一个使用者可见版本一并交付）。
+
+**验证**：`check` 45/45、`lint` 7/7、`test` 173/173。
+
+**版本** `0.35.1` → `0.35.2`（PATCH：修开发工具链缺陷）。
+
+---
+
 #### `0.35.1` — 2026-09-23（移除从未发布的「GPT / DALL·E 图生」在制品）
 
 **背景**：使用者在设置面板看到「更新源 GitHub Releases（ikun1946/DreamFlow，**未配置令牌**）」并质疑——仓库已是公开库、匿名即可检查更新，为何还提令牌。排查时顺带发现工作区里躺着一批**从未提交、从未发布**的 GPT 生图（revChatGPT）在制品。使用者决定：**这个功能暂时不做，删掉**。
