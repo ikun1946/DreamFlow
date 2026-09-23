@@ -44,6 +44,11 @@ let win = null;
 let tray = null;
 let quitting = false;
 let serverReady = false;
+/* 更新相关状态：lastCheck / pendingInstaller 在 doCheckUpdates 与 doDownloadUpdate
+   里被赋值，但 updateStatusPayload 在启动时就会读（初始化卡在空页面时也会读）——
+   历史上漏了 let 声明，全局污染 + 偶发 ReferenceError。本轮修。 */
+let lastCheck = null;
+let pendingInstaller = null;
 
 /* ---------------- 图标 ---------------- */
 function assetPath(name) {
@@ -595,6 +600,68 @@ async function boot() {
 
   createWindow();
   createTray();
+
+  /* 更新流回归的无头驱动（2026-09-22 阶段 3 · P2-7 / 3.2）。
+     为什么需要它：更新链路（检查 → 下载 → 校验 → 调安装器）原先**只能靠人点界面**验证，
+     结果 163e62d 把三个更新源函数删掉都没人发现（见 updateSource 上方注释）。
+     有了这个模式，scripts/test-update-flow.ps1 就能一键把真链路跑完并断言结果。
+
+     用法（由脚本调用，人工一般不用）：
+       JC_UPDATE_FLOW_TEST=1          只跑 检查 + 下载 + 校验（不安装）
+       JC_UPDATE_FLOW_TEST=1 JC_UPDATE_FLOW_INSTALL=1   再真的调安装器（会退出应用）
+     输出：一行 `[update-flow] {json}`（机器读）+ 人类可读日志；退出码 0=通过 1=失败。
+
+     ⚠ 更新源由脚本写进 desktop-config.json 的 `updates` 字段（local 模式指向新版目录），
+       这里不额外做参数注入 —— 走"配置文件"这条路才是真实用户的路径。 */
+  if (process.env.JC_UPDATE_FLOW_TEST === '1') {
+    /* Electron 在没有真实显示器时 createWindow 会卡死（Win32 create 等待 compositor）——
+       测试场景下不弹窗，只跑 boot 链 + 更新流。 */
+    if (process.env.HEADLESS_TEST === '1') return;
+    runUpdateFlowTest();
+  }
+}
+
+async function runUpdateFlowTest() {
+  const report = { ok: false, version: app.getVersion(), steps: [] };
+  const step = (name, data) => {
+    report.steps.push(Object.assign({ name: name }, data || {}));
+    console.log('[update-flow] ' + name + ' ' + JSON.stringify(data || {}));
+  };
+  try {
+    const src = updateSource();
+    step('source', { provider: src.provider, dir: src.dir || null, url: src.url || null, repo: src.repo || null });
+
+    const chk = await doCheckUpdates();
+    step('check', { ok: chk.ok, latest: chk.latestVersion || null, hasUpdate: chk.hasUpdate === true, error: chk.error || null });
+    if (!chk.ok) throw new Error('检查更新失败：' + chk.error);
+    if (!chk.hasUpdate) throw new Error('没有可用更新（latest=' + chk.latestVersion + '，当前=' + app.getVersion() + '）');
+
+    const dl = await doDownloadUpdate();
+    step('download', { ok: dl.ok, path: dl.path || null, bytes: dl.bytes || null, error: dl.error || null });
+    if (!dl.ok) throw new Error('下载失败：' + dl.error);
+
+    report.installer = dl.path;
+    report.downloadedBytes = dl.bytes || null;
+
+    if (process.env.JC_UPDATE_FLOW_INSTALL === '1') {
+      const ins = await doInstallUpdate();
+      step('install', { ok: ins.ok, path: ins.path || null, error: ins.error || null });
+      if (!ins.ok) throw new Error('调安装器失败：' + ins.error);
+      /* 安装成功路径会 setTimeout(800ms) 后 app.quit()；这里先落结果再让它退。 */
+      report.ok = true;
+      console.log('[update-flow] ' + JSON.stringify(report));
+      return;
+    }
+
+    report.ok = true;
+    console.log('[update-flow] ' + JSON.stringify(report));
+    /* 不安装时自己退出：脚本要拿退出码判断成败 */
+    setTimeout(() => app.exit(0), 100);
+  } catch (e) {
+    report.error = (e && e.message) || String(e);
+    console.log('[update-flow] ' + JSON.stringify(report));
+    setTimeout(() => app.exit(1), 100);
+  }
 }
 
 function createTray() {
@@ -633,6 +700,39 @@ const updateStates = updateStateMod.makeUpdateState({
   /* 被互斥拒掉时留一行日志（排查"点了没反应"时这是唯一的线索） */
   onReject: (action, st) => console.warn('[desktop] 更新互斥：拒绝 ' + action + '（当前 ' + st + '）')
 });
+
+/* ---------------- 更新源（配置读写） ----------------
+   ⚠ 2026-09-22 修复：这三个函数在 163e62d（0.27.0 那批加固）里被**误删**了定义，
+   而调用点（updateStatusPayload / doCheckUpdates / doDownloadUpdate / update:setSource）
+   全部留着 —— 于是整个应用内更新链路一调用就抛
+   `ReferenceError: publicSource is not defined`。渲染进程那边 `.catch(() => null)` 吞掉了，
+   界面表现为"更新卡片永远是空的"，静默失效，直到本轮写更新流回归脚本时才暴露。
+
+   教训：**"功能没被任何测试调用"的代码，删掉了也没人知道**。这就是 P2-7 / 3.2
+   （更新链路无自动化回归）真正的代价 —— 本轮的回归脚本就是为了不再让这类事发生。 */
+function updateSource() {
+  const c = (paths && paths.config && paths.config.updates) || {};
+  return updaterMod.resolveSource(c);
+}
+
+function setUpdateSource(patch) {
+  if (!paths) return null;                     // 还没 boot 完就调用：直接忽略，别抛
+  const cur = (paths.config && paths.config.updates) || {};
+  const next = Object.assign({}, cur, patch || {});
+  rpaths.saveConfig(paths, { updates: next });
+  if (paths.config) paths.config.updates = next;
+  return next;
+}
+
+/* 给渲染进程看的更新源：**不含令牌本身**，只说"配没配"。
+   界面需要让用户能设置令牌，但没必要把已存的密钥回传给页面。 */
+function publicSource() {
+  const s = updateSource();
+  return {
+    provider: s.provider, owner: s.owner, repo: s.repo,
+    url: s.url, dir: s.dir, hasToken: !!s.token
+  };
+}
 
 /* 状态变化主动推给界面 */
 function broadcastUpdateState() {

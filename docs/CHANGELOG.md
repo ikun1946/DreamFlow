@@ -13,6 +13,51 @@
 
 ---
 
+#### `0.30.0` — 2026-09-23（更新流回归 + lint no-undef 兜底）
+
+**背景**：0.29.5 修的 `Accept` 头缺陷之所以能潜伏好几个版本，根因是**更新链路只能靠人点界面验证** ——
+`163e62d` 曾把三个更新源函数整段删掉都没人发现（界面表现为「更新卡片永久空白」，
+而渲染进程的 `.catch(() => null)` 把错误吞了）。本版本补上自动化手段，把两个「没有被测试覆盖的角落」钉住。
+
+**改法**：
+
+1. **`desktop/main.js` 新增无头更新流驱动**（`JC_UPDATE_FLOW_TEST=1`）：检查 → 下载 → 校验
+   （可选 `JC_UPDATE_FLOW_INSTALL=1` 再调安装器），输出一行 `[update-flow] {json}` 供机器读取，退出码 0/1。
+   配合 `HEADLESS_TEST=1` 可在无显示器的环境运行。
+2. **新增 `scripts/test-update-flow.ps1`**：一条命令驱动完整更新链路并断言结果 ——
+   自建 local 更新源（拿 `dist/` 的 html 当"新版安装包"）→ 造旧数据 → 把 package.json 降到 `0.28.9`
+   → 起 Electron 跑更新流 → **断言用户数据字节不变** → 落 `report.json`。
+3. **`scripts/lint.js` 新增第 7 节「未定义的模块内调用」**（no-undef 的最小可用版）：
+   专盯「函数被删掉、调用点却还在」。刻意只扫 `server` / `desktop` / `build.js` ——
+   `app/` 是 IIFE + window 全局、`test/` 大量用 stub，都不适合这条规则。
+4. **`desktop/main.js` 补两处变量声明**：`lastCheck` / `pendingInstaller` 在 `doCheckUpdates` 与
+   `doDownloadUpdate` 里被赋值，而 `updateStatusPayload` **启动时就会读** —— 原先漏了 `let` 声明，
+   造成全局污染与偶发 `ReferenceError`。
+5. **修 `scripts/test-update-flow.ps1` 的四处缺陷**（2026-09-23 实跑时发现，均已在脚本内留注释）：
+   - **数据破坏隐患（最严重）**：原先用 `ConvertFrom-Json | ConvertTo-Json | Set-Content` 把 package.json
+     降级到旧版本，该写法会**重排整份 JSON**（4 空格缩进、`&&` 变字面 `\u0026\u0026`）。
+     若脚本中途被中断、`finally` 没跑到，仓库里就留下「版本号回退 + 格式被破坏」的 package.json ——
+     **2026-09-22 真实发生过一次**（版本被退成 `0.28.9`，正是该脚本 `$OldVersion` 的默认值）。
+     改为**正则只替换 version 那一行** + `WriteAllText` 无 BOM 写回。
+   - **编码**：加中文注释后文件仍是无 BOM UTF-8，PS 5.1 会按 GBK 误读 → 语法报错。改为 **UTF-8 with BOM**。
+   - **`Remove-Item` 管道写法**：`Get-ChildItem | Remove-Item` 在部分受限环境被拒绝
+     （报 `missing path operand`）；改为 `foreach` + `-Path`。
+   - **删除操作的容错**：清理旧残留失败原先会因 terminating error 中断整条回归；
+     改为 `try/catch` + 警告后继续。`Remove-Item Env:...` 同理（受限环境把 `Env:` 当文件路径），
+     改用 `[Environment]::SetEnvironmentVariable`。
+
+**验证**：
+- `npm test` **155/155**、`npm run lint` **7/7**（第 7 节生效，29 个文件通过）、`npm run check` **43/43**。
+- `test-update-flow.ps1` 在本机跑到 **step 10**，其中包含关键证据：
+  **`[08] downgrade-package-json`（降到 0.28.9）→ `[09] restore-package-json` → package.json 与备份逐字符相同 ✓**
+  （即上面第 5 条的修复确实生效）、mock 更新源构造 ✓、Electron 启动 ✓。
+  最终卡在 PowerShell 5.1 的一个已知缺陷：`Start-Process` 继承环境时报
+  「已添加项。字典中的关键字:"PATH"所添加的关键字:"Path"」（5.1 枚举环境变量大小写敏感）。
+  **本机只装了 PS 5.1、没有 pwsh 7**，而该脚本的 shebang 是 `pwsh` ——
+  **完整端到端需在装了 PowerShell 7 的环境（或 CI）执行**。该限制已写进脚本头部的 Usage 注释。
+
+---
+
 #### `0.29.6` — 2026-09-22（补 `publish` 配置 + 修正发布流程文档）
 
 **背景**：0.29.5 发版时踩到三个坑。本轮把它们从"一次性的手改绕过"变成"不再复发的默认行为"。

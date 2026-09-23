@@ -18,7 +18,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.29.6`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.30.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
@@ -438,7 +438,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.29.6`**
+当前版本：**`0.30.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
