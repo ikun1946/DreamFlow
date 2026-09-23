@@ -507,7 +507,28 @@ function copyAndVerify(src, dest, expectSha512, expectSize, onProgress) {
     const tmp = dest + '.part-' + process.pid;
     let settled = false;
     const done = (r) => { if (!settled) { settled = true; resolve(r); } };
-    const cleanup = () => { try { fs.unlinkSync(tmp); } catch (e) { /* 尽力而为 */ } };
+
+    /* ⚠ 2026-09-23 修：卸载临时文件必须**等文件句柄真正释放**。
+       Windows 上删一个还开着的句柄会报 EBUSY / EPERM，而 'finish' 只表示
+       "数据已交给内核"，fd 通常还没关（要等 'close'）。原先在 'finish' 里直接
+       unlinkSync + catch 吞掉，于是"校验不通过要丢弃"这条路上会**留下
+       .part-<pid> 残留文件**（最大可达上百 MB）。
+       Linux 上 unlink 对打开的文件同样成功，所以这个缺陷**只在 Windows 复现** ——
+       表现为 CI 的间歇性失败（test/03-build-release.test.js 里"哈希对不上"与
+       "字节数对不上"两个子用例都断言目标目录必须一个文件都不剩）。
+       这里改为**带退避重试**：句柄释放通常在毫秒级，25 次 × 20ms 足够；
+       仍失败就放弃（尽力而为，不阻断主流程）—— 残留文件还有启动时的
+       cleanupStaleTemp() 兜底。 */
+    const cleanup = (tries) => new Promise((res) => {
+      const attempt = (n) => {
+        try { fs.unlinkSync(tmp); return res(true); }
+        catch (e) {
+          if (n >= (tries || 25)) return res(false);
+          setTimeout(() => attempt(n + 1), 20);
+        }
+      };
+      attempt(0);
+    });
 
     let rs, ws;
     try {
@@ -524,14 +545,16 @@ function copyAndVerify(src, dest, expectSha512, expectSize, onProgress) {
       hash.update(d);
       if (onProgress) { try { onProgress(got, total); } catch (e) { /* 忽略 */ } }
     });
-    rs.on('error', (e) => { cleanup(); done({ ok: false, error: '读取失败：' + e.message }); });
-    ws.on('error', (e) => { cleanup(); done({ ok: false, error: '写入失败：' + e.message }); });
+    rs.on('error', (e) => { cleanup().then(() => done({ ok: false, error: '读取失败：' + e.message })); });
+    ws.on('error', (e) => { cleanup().then(() => done({ ok: false, error: '写入失败：' + e.message })); });
     ws.on('finish', () => {
-      if (expectSize && got !== expectSize) { cleanup(); return done({ ok: false, error: '字节数不符：' + got + ' / ' + expectSize }); }
+      /* 先把校验结论算出来，再决定落盘还是丢弃 —— 丢弃走 cleanup()（会重试）。 */
+      if (expectSize && got !== expectSize) {
+        return cleanup().then(() => done({ ok: false, error: '字节数不符：' + got + ' / ' + expectSize }));
+      }
       const actual = hash.digest('base64');
       if (expectSha512 && actual !== expectSha512) {
-        cleanup();
-        return done({ ok: false, error: '校验不通过（sha512 不符），已丢弃。' });
+        return cleanup().then(() => done({ ok: false, error: '校验不通过（sha512 不符），已丢弃。' }));
       }
       done({ ok: true, tmp, bytes: got, sha512: actual });
     });

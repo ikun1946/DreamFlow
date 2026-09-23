@@ -598,8 +598,23 @@ async function boot() {
     console.error('[desktop] 内嵌服务启动失败：' + ((e && e.message) || e));
   }
 
-  createWindow();
-  createTray();
+  /* ── 无头模式（HEADLESS_TEST=1）────────────────────────────────
+     ⚠ 2026-09-23 修（这是个**让整条回归从构造上就失效**的缺陷）：
+     原先 createWindow()/createTray() 是**无条件调用**的，而"跳过"却写在了下面的
+     更新流驱动里（`if (HEADLESS_TEST === '1') return;`）—— 与注释所说的
+     "测试场景下不弹窗，只跑 boot 链 + 更新流"**恰好相反**：
+       · 窗口照建（没有显示器时正是它要卡住）
+       · 更新流**完全不跑** → 没有 [update-flow] 输出
+       · 于是 scripts/test-update-flow.ps1 等 Electron 退出到超时、判失败退出，
+         而 Electron 进程还活着 → CI 那一步永远不结束 → job 撞 20 分钟超时。
+     正确语义：无头 = **不建窗口与托盘，但更新流照跑**。 */
+  const headless = process.env.HEADLESS_TEST === '1';
+  if (headless) {
+    console.log('[desktop] HEADLESS_TEST=1：跳过窗口与托盘（无显示器环境）');
+  } else {
+    createWindow();
+    createTray();
+  }
 
   /* 更新流回归的无头驱动（2026-09-22 阶段 3 · P2-7 / 3.2）。
      为什么需要它：更新链路（检查 → 下载 → 校验 → 调安装器）原先**只能靠人点界面**验证，
@@ -621,9 +636,6 @@ async function boot() {
        现在更新源已**固定**（见 updateSource 上方注释），脚本里的 `set-update-source` 步骤
        更是彻底失效 —— 留着它只会让人以为"本地源被测过了"。 */
   if (process.env.JC_UPDATE_FLOW_TEST === '1') {
-    /* Electron 在没有真实显示器时 createWindow 会卡死（Win32 create 等待 compositor）——
-       测试场景下不弹窗，只跑 boot 链 + 更新流。 */
-    if (process.env.HEADLESS_TEST === '1') return;
     runUpdateFlowTest();
   }
 }

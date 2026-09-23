@@ -79,6 +79,8 @@ $report  = [ordered]@{
   steps       = @()
 }
 $script:stepNum = 0
+# Fail 里要靠它收掉残留的 Electron 进程（见 Fail 的注释）
+$script:electronProc = $null
 function Record($name, $data = @{}) {
   $script:stepNum++
   $entry = [ordered]@{ n = $script:stepNum; name = $name; data = $data }
@@ -90,6 +92,18 @@ function Fail($why) {
   $script:report.ok = $false
   $script:report.error = $why
   Write-Host "[FAIL] $why" -ForegroundColor Red
+  # ⚠ 2026-09-23 补：退出前**必须收掉 Electron 进程**。
+  #   CI 的一步要等整棵进程树结束才算完 —— 若 Electron 还活着（无头驱动失效、
+  #   或断言在它退出前就失败），这一步会一直挂着，最终把"测试失败"变成
+  #   "job 20 分钟超时"，现场（report.json 之外的输出）全丢。
+  #   实测：2026-09-23 首次 CI 运行就是这样被掐掉的。
+  try {
+    if ($script:electronProc -and -not $script:electronProc.HasExited) {
+      $script:electronProc.Kill()
+      $script:electronProc.WaitForExit(10000) | Out-Null
+      Write-Host '[info] 已终止残留的 Electron 进程'
+    }
+  } catch { Write-Host ('[warn] 终止 Electron 失败（已忽略）: ' + $_.Exception.Message) }
   $reportPath = Join-Path $runDir 'report.json'
   ConvertTo-Json $script:report -Depth 10 | Set-Content -Path $reportPath -Encoding UTF8
   Write-Host "[info] Report written to: $reportPath"
@@ -286,6 +300,7 @@ try {
     -RedirectStandardOutput $logFile `
     -RedirectStandardError "$logFile.err" `
     -PassThru -NoNewWindow
+  $script:electronProc = $proc   # Fail 时要靠它收尾，别让 CI 卡在进程树上
 
   $waited = $proc.WaitForExit($TimeoutSec * 1000)
   if (-not $waited) {
