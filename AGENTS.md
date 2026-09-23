@@ -1,7 +1,7 @@
 # AGENTS.md —— 给 AI agent 的项目约定
 
 > 本文件是**任何 agent 接手本仓库时的第一份必读**。人也可以看，但它主要写给 agent。
-> 最后核对：2026-09-23（版本 `v0.35.6`）
+> 最后核对：2026-09-23（版本 `v0.35.7`）
 > 看完整变更记录：[docs/CHANGELOG.md](docs/CHANGELOG.md)（0.29.0 → 最新）。
 >
 > 📖 **想「通读一遍就完整理解项目」** → 读 `docs/项目文档.md`（定位 / 结构 / 目录职责 / 模块依赖 / 主要流程 /
@@ -64,6 +64,7 @@ node build.js           # 把 app/ 内联成 dist/ 单文件网页版（改了 a
 npm install             # 只在要跑桌面版时需要
 npm start               # 桌面版开发态
 npm run dist            # 出 NSIS 安装包 → release/
+npm run verify:release  # 发布后验收：确认 Release 真能被应用查到（需联网）
 npm run pack            # 只出免安装目录 → release/win-unpacked/
 npm run icons           # 由 build/icon-source.png 重新生成图标（build/icon.png、icon.ico、app/icon.png）
 ```

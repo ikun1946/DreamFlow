@@ -13,6 +13,45 @@
 
 ---
 
+#### `0.35.7` — 2026-09-23（新增发布后验收 `verify-release`：补上「更新链路在本机无法验证」的缺口）
+
+**背景**：0.35.6 发布后，待办里剩一条 —— 修 `scripts/test-update-flow.ps1` 那个从未生效的 `set-update-source` 步骤。动手前先查它能不能在本机跑，结论是**不能**：
+
+| 事实 | 证据 |
+|---|---|
+| 脚本 shebang 是 `pwsh`，头部自述**需要 PS 7+** | `scripts/test-update-flow.ps1` 第 1 / 23-27 行 |
+| 本机只有 **Windows PowerShell 5.1**（Desktop edition） | 实测 `$PSVersionTable.PSVersion` = `5.1.19041.6456`；`Program Files\PowerShell\7\` 与 WinGet Links 下均无 |
+| 5.1 下会在「启动 Electron」那步失败 | `Start-Process` 继承环境时报「已添加项。字典中的关键字:"PATH"所添加的关键字:"Path"」（5.1 枚举环境变量大小写敏感） |
+| 该脚本**从未在本机完整跑通过** | CHANGELOG 的 0.30.0 一节记着「跑到 step 10 …… 完整端到端需在装了 PS 7 的环境执行」 |
+
+也就是说：`docs/项目全面审查与改进流程.md` 给这一项（P2-7 / 3.2）定的验收标准「**至少完整跑通一次并留痕**」**至今未达成**，而**改它也无法在本机验证** —— 盲改一个跑不起来的回归脚本，风险大于收益。
+
+**改法：不在跑不起来的脚本上继续投入，而是补一段本机就能跑的验收。**
+
+新增 `scripts/verify-release.js`（`npm run verify:release`）。它**直接用应用自己的 `desktop/updater.js`** —— 不启动 Electron、不需要 PS，只依赖 Node 内置模块，因此本机与 CI 都能跑。断言五件事：
+
+| # | 断言 | 为什么重要 |
+|---|---|---|
+| ① | 更新源固定为 `github/ikun1946/DreamFlow`，`token`/`url`/`dir` 均为空 | 守住 0.35.6 刚收紧的那条 |
+| ② | 应用能**查到**该版本（走 `fetchManifest`，与界面同一条路径） | 更新源不对 / 网络不通会在这里暴露 |
+| ③ | 附件齐全：`Setup.exe` + `.blockmap` + **`latest.yml`**，状态均 `uploaded` | **缺 `latest.yml` = 应用内更新查不到新版，传了安装包也等于没发** —— 这是"发版静默失败"最常见的原因，此前**只靠人眼在网页上核对** |
+| ④ | 附件字节与本地 `release/` 产物一致（比对 GitHub 返回的 `digest`） | 传错文件 / 上传损坏；且**不需要下载 107 MB** 就能做哈希级证明 |
+| ⑤ | `package.json` 版本不高于已发布版本 | 「发完又改代码、没再发」 |
+
+**实测（对刚发布的 v0.35.6）**：五节全绿 —— 查到 0.35.6、三个附件齐全且 `uploaded`、三个附件大小与 sha256 与本地构建产物**全部一致**、`package.json` 与已发布版本一致。另外单独跑过一轮「模拟装着 0.35.1 检查更新」：正确查到 0.35.6、判定 `hasUpdate=true`；`check('0.35.6')` 则判定无更新（不误报）。
+
+**与 `check-signing.js` 的分工**：那个管「产物签没签名」，这个管「产物到没到使用者手里」。
+
+**配套**：`package.json` 加 `verify:release`；`docs/版本发布与更新流程.md` 的「三十秒版」加第 ⑥ 步并新增「建完 Release 必须跑一次发布后验收」小节；`docs/项目文档.md` §6.1 命令清单与 `AGENTS.md` 常用命令各加一行。
+
+**⚠ 仍未解决（如实记录）**：`scripts/test-update-flow.ps1` 的两个问题都还在 —— ① `set-update-source` 写到了应用不读的路径（`<runDir>/new-data/desktop-config.json` vs `app.getPath('userData')/desktop-config.json`）；② 本机没有 PS 7，跑不通。**本版没有改它**，因为改完无法验证。建议二选一：装 PS 7（`winget install Microsoft.PowerShell`）后实跑一次；或把它改造成 CI 作业。
+
+**验证**：`npm run verify` 全绿（check 45/45 · lint 7/7 · test 173/173 · dist 重建）；`npm run verify:release` 对 v0.35.6 全绿。
+
+**版本** `0.35.6` → `0.35.7`（PATCH：开发工具链新增，**对使用者零可见影响，故不发 Release** —— 同 0.33.0 / 0.35.2 / 0.35.4 的处理）。
+
+---
+
 #### `0.35.6` — 2026-09-23（更新源改为**固定**：把「不让用户更改」这件事真正做实）
 
 **背景（一次需求理解的纠偏）**：使用者在看到 0.35.5 后指出 —— 「我说的不是移除更新源设置这个界面，我的意思是不让用户自己更改更新源」。

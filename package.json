@@ -1,7 +1,7 @@
 {
   "name": "dreamflow",
   "productName": "即梦批量生成控制台",
-  "version": "0.35.6",
+  "version": "0.35.7",
   "private": true,
   "description": "即梦批量生成控制台 —— 面向 AI 短剧 / 分镜视频生产的分镜批量管理工作台（Windows 桌面版）",
   "author": "ikun1946",
@@ -17,6 +17,7 @@
     "lint": "node scripts/lint.js",
     "smoke:web": "node scripts/smoke-web.js",
     "e2e": "node scripts/e2e-flow.js",
+    "verify:release": "node scripts/verify-release.js",
     "verify": "npm run check && npm run lint && npm test && npm run build:web",
     "pack": "electron-builder --win --dir",
     "dist": "electron-builder --win nsis --x64"
