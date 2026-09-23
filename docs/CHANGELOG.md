@@ -13,6 +13,67 @@
 
 ---
 
+#### `0.32.0` — 2026-09-23（安装包换前缀·第二步：正式改名 DreamFlow）
+
+**这一步做完，安装包与主程序的名字终于与项目名统一了。**
+
+| | `0.31.0`（第一步） | **`0.32.0`（本版）** |
+|---|---|---|
+| 安装包 | `JimengConsole-0.31.0-x64-Setup.exe` | **`DreamFlow-0.32.0-x64-Setup.exe`** |
+| 主程序 | `JimengConsole.exe` | **`DreamFlow.exe`** |
+| 校验接受的前缀 | 新旧都认 | 新旧都认（**不变**） |
+
+**为什么现在能改**：第一步（`0.31.0`）已让能自动更新的用户升到「双前缀都认」的版本，
+本版换掉产物名，他们收得下。若跳过第一步直接改，那些用户会「看得到更新却装不上」。
+
+**改法**（与已删除的 `docs/产物名换前缀-第二步清单.md` 一致，共 4 处）：
+
+1. `electron-builder.yml`：`executableName` → `DreamFlow`；`artifactName`（nsis / portable）→ `DreamFlow-${version}-…`
+2. `desktop/updater.js`：`ARTIFACT_PREFIX` → `'DreamFlow-'`；`ACCEPTED_PREFIXES` 调换为 `['DreamFlow-', 'JimengConsole-']`
+3. `test/03-build-release.test.js`：3 处断言同步（`ARTIFACT_PREFIX` 值、yml 形状正则、`ACCEPTED_PREFIXES` 顺序）
+4. 版本号 → `0.32.0`
+
+> ⚠ **`'JimengConsole-'` 永远不能从 `ACCEPTED_PREFIXES` 里删掉**。理由有二：
+> ① 老用户机器上可能残留 `JimengConsole-*.part-*` 临时文件（每个 100+ MB），
+> `cleanupStaleTemp` 靠它才清得掉；② 它同时是一条"回退旧名"的路。
+> 以后再有类似换名照此办理：**新前缀进列表，旧前缀永不出列表**。（已写进 `updater.js` 的长期约束注释。）
+
+**★ 顺带修掉一个盲区（本版最有价值的发现）**：
+换名时发现 **`.github/workflows/ci.yml` 也硬编码了主程序名**（`release\win-unpacked\JimengConsole.exe`，两处）
+—— 不一起改，CI 会在真跑 `npm run pack` 之后因找不到文件而失败。这类"只有跑几分钟 CI 才暴露"的错，
+本地 `npm run check` 原本查不出来（与 0.29.4 那次 `signtoolOptions` 缩进事故同源）。
+为此**给门禁 §4 补了一条**：CI 里引用的主程序名必须与 yml 的 `executableName` 一致，漏改任一处即 FAIL。
+**门禁总项数 43 → 44。**
+
+**同步更新的文档与脚本**（改名后这些命令/路径都会失效，必须一起改）：
+`README.md`、`AGENTS.md`、`docs/项目文档.md`（冒烟命令）、`docs/版本发布与更新流程.md`
+（产物名表格 + 手动上传示例改成占位符）、`THIRD-PARTY-NOTICES.md`（分发方式）、CI 两处。
+**刻意未改**：`docs/项目审查与改进清单.md` 里的同款命令 —— 那份文档状态是「历史」，
+保留当时的快照比改它更诚实。
+
+**使用者会经历什么**（已同步写进 Release 说明）：
+
+| 项 | 变化 |
+|---|---|
+| 安装包文件名 | `DreamFlow-0.32.0-x64-Setup.exe` |
+| 可执行文件 | `DreamFlow.exe` |
+| **安装目录** | `%LOCALAPPDATA%\Programs\JimengConsole\` → **`Programs\DreamFlow\`** |
+| 快捷方式 | 重建（指向新 exe） |
+| 任务栏固定项 | 可能失效，需重新固定一次 |
+| 升级方式 | 靠 `appId` 的 GUID 识别已装实例，**不会新旧并存**，但会走「先卸后装」 |
+| **用户数据** | **不受影响** —— 在 `%USERPROFILE%\Videos\JimengConsole\`，卸载时明确不删 |
+| `appId` / 数据目录 | **不变**（刻意保留） |
+
+> 安装目录随 `executableName` 变，依据是实测：`0.25.0` 装在 `%LOCALAPPDATA%\Programs\JimengConsole\`，
+> 而不是 `Programs\即梦批量生成控制台\` —— 即 NSIS 的默认安装目录用的是 `executableName`，不是 `productName`。
+
+**测试**：`npm run check` **44/44**、`npm run lint` **7/7**、`npm test` **156/156**。
+反向验证：把 yml 的 `artifactName` 改回 `JimengConsole-` 而 updater 不动 → 门禁准确报出两处前缀不一致。
+
+**收尾**：`docs/产物名换前缀-第二步清单.md` 已按该文件自身的要求删除，内容并入本节。
+
+---
+
 #### `0.31.0` — 2026-09-23（安装包换前缀·第一步：先放开校验）
 
 **背景**：项目 0.27.0 已更名 **DreamFlow**（仓库名 / clone 文件夹 / npm 包名 / User-Agent / 文档全改），

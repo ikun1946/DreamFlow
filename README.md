@@ -1,12 +1,15 @@
 # DreamFlow · 即梦批量生成控制台
 
 > **项目英文名：DreamFlow** —— 它同时是 GitHub 仓库名，所以 `git clone` 下来的文件夹名也是 `DreamFlow/`。
-> 中文产品名仍是「即梦批量生成控制台」：界面标题、托盘、安装包显示的都是这个中文名，
-> 应用身份（`appId` / 可执行文件名 / 数据目录 `JimengConsole`）也保持不变 —— 改它们会让已装的版本变成"另一个应用"、并让数据目录搬家。
+> 中文产品名仍是「即梦批量生成控制台」：界面标题、托盘、快捷方式显示的都是这个中文名。
 >
-> ⚠ 所以**下载到的安装包文件名是 `JimengConsole-<版本>-x64-Setup.exe`** —— 那不是笔误，是上面这条约束的直接结果。
-> 换名正在**分两步**走：`0.31.0` 已让更新器同时接受新旧两种前缀（**本版产物名不变**），下一步才真正改
-> `artifactName` / `executableName`。为什么必须分两步、每步的范围与风险，见 [CHANGELOG 0.31.0](docs/CHANGELOG.md)。
+> 安装包与可执行文件在 **0.32.0 完成更名**：产物名 `DreamFlow-<版本>-x64-Setup.exe`、主程序 `DreamFlow.exe`。
+> 更名前是 `JimengConsole-*` —— 那一步刻意延后，因为旧版更新器的白名单只认 `JimengConsole-`，
+> 直接改名会让老用户「看得到更新却装不上」。两步走的完整理由见 [CHANGELOG 0.31.0 / 0.32.0](docs/CHANGELOG.md)。
+>
+> ⚠ 有两处**仍叫 `JimengConsole`**，且是刻意保留的：**应用 ID**（`appId`，决定 Windows 能否认出
+> 「同一个应用」、能否原地升级）与**数据目录**（`%USERPROFILE%\Videos\JimengConsole\` —— 改名会让
+> 用户以为项目全没了）。这两处界面上都看不到。
 
 面向 AI 短剧 / 分镜视频生产的**前后端完整项目**：前端是分镜批量管理工作台，后端是本地桥接服务，通过即梦官方**创作 CLI（`dreamina`）**完成真实视频生成。**无任何演示/模拟数据**——所有数据来自真实数据流。
 
@@ -22,13 +25,13 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.31.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.32.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `npm run server` → `http://127.0.0.1:8787/`；Windows 桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎；画布 CLI 已于 2026-09-18 彻底移除） |
 | 运行时依赖 | **零 npm 依赖**：后端只用 Node 内置模块，前端是原生 HTML/CSS/JS；`electron` / `electron-builder` 只在打包期用到 |
 | 自动化测试 | **156 个用例**（`npm test`，Node 内置 test runner）：数据安全 26 / 任务逻辑 20 / 构建发布 64 / 路由 6 / 队列 9 / CSP 7 / cliJobs 11 / a11y 7 / 错误码 6 |
-| 统一检查 | `npm run check`（`scripts/check-project.js`，16 节 43 项一致性检查）+ `npm run lint`（7 项静态检查：语法 / debugger / 前端调试输出 / require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） |
+| 统一检查 | `npm run check`（`scripts/check-project.js`，16 节 44 项一致性检查）+ `npm run lint`（7 项静态检查：语法 / debugger / 前端调试输出 / require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） |
 | 端到端验收 | 网页版 `npm run smoke:web`（连通性）；业务流 `npm run e2e`（53 项断言）；桌面版 `JC_DESKTOP_SMOKE=1`（见「自检」）；CI 双 job 已就位（`.github/workflows/ci.yml`） |
 | 一键回归 | `npm run verify` = `check` + `lint` + `test` + `build:web` |
 
@@ -246,7 +249,7 @@ CLI 状态在界面上分**三态**显示，因为用户要做的动作完全不
 
 ```powershell
 $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
-.\release\win-unpacked\JimengConsole.exe
+.\release\win-unpacked\DreamFlow.exe
 ```
 
 会截图、落一份 DOM 快照、打印标题 / 视图几何 / 资源加载状态 / 数据目录 / 工具路径，然后自己退出。用于确认"打包出来的应用真的能把界面画出来"，而不是只看进程有没有起来。
@@ -442,7 +445,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 
 ## 版本
 
-当前版本：**`0.31.0`**
+当前版本：**`0.32.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：
 
@@ -450,7 +453,7 @@ GET/POST         /workspaces/:id/storyboards  工作区分镜
 - **MINOR**：向后兼容的新增能力（新模块、新接口、新配置项）
 - **PATCH**：缺陷修复与文档更新
 
-⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（156 用例）、`npm run check`（43 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
+⚠ **自动化测试已于 2026-09-21 恢复**（此前 2026-09-20 按用户要求删除过，同日随项目审查整改补回）。现在有 `npm test`（156 用例）、`npm run check`（44 项一致性检查）、`npm run lint`（静态检查）、`npm run smoke:web`（网页版连通性）、`npm run e2e`（端到端业务流，跑完自己打印断言数），以及 `npm run verify` 一键串起。**这两个数字由机器盯着**（`check-project.js` 第 16 节会拿它们和实际值对账，对不上就报错），所以它们不会像以前那样悄悄过期。下方各历史版本里写的「N/N 通过」是当时的真实记录，数字口径与今天不同。**2026-09-20 那条"不保留自动化测试"的说明已作废。**
 
 改完 `app/` 必须 `node build.js` 重建 `dist/`。
 

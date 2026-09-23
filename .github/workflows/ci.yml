@@ -111,7 +111,7 @@ jobs:
       - name: 确认打包产物齐备
         shell: pwsh
         run: |
-          $exe = "release\win-unpacked\JimengConsole.exe"
+          $exe = "release\win-unpacked\DreamFlow.exe"
           if (-not (Test-Path $exe)) { throw "缺少主程序：$exe" }
           Write-Host "主程序已生成：$((Get-Item $exe).Length) 字节"
           if (-not (Test-Path "release\win-unpacked\resources\app.asar")) {
@@ -126,7 +126,7 @@ jobs:
         run: |
           $env:JC_DESKTOP_SMOKE = "1"
           $env:JC_SMOKE_DELAY = "3000"
-          $p = Start-Process -FilePath "release\win-unpacked\JimengConsole.exe" `
+          $p = Start-Process -FilePath "release\win-unpacked\DreamFlow.exe" `
                 -PassThru -NoNewWindow -RedirectStandardOutput "smoke-out.txt" `
                 -RedirectStandardError "smoke-err.txt"
           # smoke 模式应自行退出

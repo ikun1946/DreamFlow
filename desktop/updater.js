@@ -119,31 +119,34 @@ function parseLatestYml(text) {
      ARTIFACT_RE 必须同步改 —— 否则更新会把合法安装包也拒掉。
      回归测试在 test/03-build-release.test.js 里。
 
-   ---------------- 产物名换前缀：必须分两步（2026-09-23，0.31.0） ----------------
-   项目 0.27.0 已更名 DreamFlow，但**安装包文件名仍是 JimengConsole-***（更名时刻意不动
-   应用身份，见 CHANGELOG 0.27.0 / 0.30.0）。要把它换成 DreamFlow-* 时，不能只改
-   electron-builder.yml —— 已装 ≤0.30.0 的用户，其本文件是**旧版本**，正则严格单前缀：
+   ---------------- 产物名换前缀：两步走（2026-09-23） ----------------
+   项目 0.27.0 已更名 DreamFlow，但安装包文件名当时仍是 JimengConsole-*（更名时刻意不动
+   应用身份，见 CHANGELOG 0.27.0 / 0.30.0）。换名**不能一次改完** —— 已装 ≤0.30.0 的用户，
+   其本文件是**旧版本**，正则严格单前缀：
 
        /^JimengConsole-\d+\.\d+\.\d+-x64-Setup\.exe$/
 
-   新版若把 latest.yml 指向 DreamFlow-*.exe，这些用户会走完
+   若新版直接把 latest.yml 指向 DreamFlow-*.exe，这些用户会走完
    「找到更新 → 下载完成 → 校验拒绝」，然后**永远升不上来**（先有鸡还是先有蛋）。
 
-   所以分两步，**顺序不可颠倒**：
-     第一步（本版 0.31.0）：放开校验、同时接受两种前缀，**产物名不变**。
-       这一版一发布，能自动更新的用户就会升上来，他们手上的正则从此是"双前缀"。
-     第二步（下一版）：yml 的 artifactName + executableName 改 DreamFlow-*，
-       同步把 ARTIFACT_PREFIX 改成 'DreamFlow-'。此时所有还在自动更新链路上的
-       用户都已能接受新前缀。
+   两步走，顺序不可颠倒：
+     · 0.31.0（第一步，已完成）：放开校验、同时接受两种前缀，**产物名不变**。
+       这一版发布后，能自动更新的用户升上来，其手上的正则就变成"双前缀"。
+     · 0.32.0（第二步，本版）：yml 的 artifactName + executableName 改为 DreamFlow-*，
+       ARTIFACT_PREFIX 同步改成 'DreamFlow-'。
+
+   ⚠ 由此得出的**长期约束**：ACCEPTED_PREFIXES 里的 'JimengConsole-' **不能删**。理由有二：
+     ① 老用户机器上可能残留 JimengConsole-*.part-* 临时文件（每个 100+ MB），
+        cleanupStaleTemp 靠它才清得掉；
+     ② 保留它等于保留一条"从旧名回退"的路。
+     以后再有类似换名，照此办理：**新前缀进列表，旧前缀永不出列表**。
 
    ACCEPTED_PREFIXES 是**校验可接受**的前缀集合；ARTIFACT_PREFIX 是**本版产物实际使用**
    的前缀（必须与 electron-builder.yml 的 artifactName 一致，门禁 §4 会比对这两处）。 */
-const ARTIFACT_PREFIX = 'JimengConsole-';
+const ARTIFACT_PREFIX = 'DreamFlow-';
 
-/* 第一项是"当前产物前缀"，其余是过渡期仍须接受的历史前缀。换第二步时：
-   把 'DreamFlow-' 挪到第一位、ARTIFACT_PREFIX 同步改，'JimengConsole-' 保留在列表里
-   ——老用户机器上可能还残留 JimengConsole-*.part-* 临时文件，清理逻辑要靠它。 */
-const ACCEPTED_PREFIXES = ['JimengConsole-', 'DreamFlow-'];
+/* 第一项＝当前产物前缀；其余是历史前缀，**只增不删**（见上方长期约束）。 */
+const ACCEPTED_PREFIXES = ['DreamFlow-', 'JimengConsole-'];
 
 /* 前缀进正则要转义（当前两个前缀无需转义，但别给未来留坑）。 */
 const reEscape = (s) => String(s).replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');

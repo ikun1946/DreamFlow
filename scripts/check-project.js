@@ -234,6 +234,29 @@ if (yml === null) {
     ok('artifactName 前缀与 updater 的 ARTIFACT_PREFIX 一致：' + updPref[1]);
   }
 
+  // CI 的冒烟步骤也硬编码了主程序 exe 名 —— 必须与 yml 的 executableName 一致。
+  // 2026-09-23 加：换名（JimengConsole → DreamFlow）时才发现 CI 里另有一份硬编码，
+  // 而它只会在 CI 真跑 pack 之后才暴露（本地 check 查不出来）。
+  // 与上面 artifactName 那条同理：把"跑几分钟才知道"的错提前成 0.1 秒的门禁。
+  const ymlExe = /^ {2}executableName:\s*(\S+)\s*$/m.exec(yml);
+  const ciSrc = read('.github/workflows/ci.yml');
+  if (!ymlExe) {
+    warn('yml 里读不到 win.executableName（跳过 CI 主程序名比对）');
+  } else if (!ciSrc) {
+    warn('读不到 .github/workflows/ci.yml（跳过 CI 主程序名比对）');
+  } else {
+    const ciExes = [...new Set([...ciSrc.matchAll(/win-unpacked\\([A-Za-z0-9_.-]+\.exe)/g)].map((m) => m[1]))];
+    const badCi = ciExes.filter((n) => n !== ymlExe[1] + '.exe');
+    if (!ciExes.length) {
+      warn('CI 里没有找到 win-unpacked 下的主程序 exe 引用（跳过）');
+    } else if (badCi.length) {
+      fail('CI 引用的主程序（' + badCi.join('、') + '）与 yml 的 executableName（' + ymlExe[1] + '）不一致',
+        '换名时须同时改 .github/workflows/ci.yml');
+    } else {
+      ok('CI 主程序名与 yml 的 executableName 一致：' + ciExes[0]);
+    }
+  }
+
   /* ⚠ 2026-09-22 加的：签名配置必须缩进在 `win:` 之下。
      electron-builder 26 的 schema 只认 win.signAndEditExecutable / win.signtoolOptions，
      写在**顶层**会让它直接中止构建（"configuration has an unknown property ..."）——

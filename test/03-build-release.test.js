@@ -26,26 +26,29 @@ const SANDBOX = H.freshDir('build-release');
 
 describe('updater —— 更新文件名安全校验（P0-1 路径穿越回归）', () => {
   test('ARTIFACT_RE 与 ARTIFACT_PREFIX 与 electron-builder.yml 的 artifactName 一致', () => {
-    assert.equal(updater.ARTIFACT_PREFIX, 'JimengConsole-');
-    // 本项目的产物名形状：JimengConsole-<version>-x64-Setup.exe
-    assert.equal(updater.ARTIFACT_RE.test('JimengConsole-0.27.0-x64-Setup.exe'), true);
-    assert.equal(updater.ARTIFACT_RE.test('JimengConsole-1.2.3-x64-Setup.exe'), true);
-    assert.equal(updater.ARTIFACT_RE.test('JimengConsole-v0.27.0-x64-Setup.exe'), false, '版本前缀 v 不合法');
+    assert.equal(updater.ARTIFACT_PREFIX, 'DreamFlow-');
+    // 本项目的产物名形状：DreamFlow-<version>-x64-Setup.exe
+    // （0.32.0 换名前是 JimengConsole-，两个前缀现在都要认得，见下一个用例）
+    assert.equal(updater.ARTIFACT_RE.test('DreamFlow-0.32.0-x64-Setup.exe'), true);
+    assert.equal(updater.ARTIFACT_RE.test('DreamFlow-1.2.3-x64-Setup.exe'), true);
+    assert.equal(updater.ARTIFACT_RE.test('DreamFlow-v0.32.0-x64-Setup.exe'), false, '版本前缀 v 不合法');
+    // 历史前缀仍须通过 —— 换名后不能把它踢出白名单（老机器的 .part- 残留要靠它清）
+    assert.equal(updater.ARTIFACT_RE.test('JimengConsole-0.31.0-x64-Setup.exe'), true);
 
     // 与 yml 里写的模板对齐
     const yml = fs.readFileSync(path.join(REPO, 'electron-builder.yml'), 'utf8');
-    assert.match(yml, /artifactName:\s*JimengConsole-\$\{version\}-x64-Setup\.\$\{ext\}/,
+    assert.match(yml, /artifactName:\s*DreamFlow-\$\{version\}-x64-Setup\.\$\{ext\}/,
       'yml 的 artifactName 必须与 ARTIFACT_RE 同形状，否则校验会误杀真实产物');
   });
 
-  test('过渡期双前缀：JimengConsole- 与 DreamFlow- 都接受（换名分两步的兼容层）', () => {
-    // 背景：0.27.0 已把项目更名 DreamFlow，但安装包文件名仍是 JimengConsole-*。
-    // 换名必须**分两步** —— 已装 ≤0.30.0 的用户手上是旧版白名单（只认 JimengConsole-），
-    // 新版若直接把 latest.yml 指向 DreamFlow-*.exe，他们会走完
+  test('双前缀兼容层：DreamFlow- 与 JimengConsole- 都接受（换名两步走的结果）', () => {
+    // 背景：0.27.0 已把项目更名 DreamFlow，但当时不动安装包文件名 —— 已装 ≤0.30.0 的用户
+    // 手上是旧版白名单（只认 JimengConsole-），若直接发 DreamFlow-*.exe，他们会走完
     // 「找到更新 → 下载完成 → 校验拒绝」而永远升不上来。
-    // 所以 0.31.0 先放开校验（产物名不变），下一版才换名。
-    assert.deepEqual(updater.ACCEPTED_PREFIXES, ['JimengConsole-', 'DreamFlow-'],
-      '过渡期必须同时接受两个前缀，且当前产物前缀排第一');
+    // 故 0.31.0 先放开校验（产物名不变）、0.32.0 才换名。本用例锁住兼容层的两条边：
+    // 新前缀是当前产物前缀，且**旧前缀不能被删掉**。
+    assert.deepEqual(updater.ACCEPTED_PREFIXES, ['DreamFlow-', 'JimengConsole-'],
+      '当前产物前缀排第一；历史前缀必须保留（清 .part- 残留 + 支持回退旧名）');
 
     // ① 两种前缀都要放行，且版本一致性对**两者**都生效
     assert.equal(updater.safeArtifactName('JimengConsole-0.31.0-x64-Setup.exe', '0.31.0'),

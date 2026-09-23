@@ -72,7 +72,13 @@ win:
   # 而本应用所有可写数据都在用户目录下。
   requestedExecutionLevel: asInvoker
   # 可执行文件名（开始菜单/任务管理器里显示的名字）
-  executableName: JimengConsole
+  # 2026-09-23（0.32.0）由 JimengConsole 改为 DreamFlow —— 换名第二步。
+  # ⚠ 这会**迁移安装目录**：NSIS 的默认安装目录用的是 executableName，不是 productName
+  #   （实测 0.25.0 装在 %LOCALAPPDATA%\Programs\JimengConsole\）。靠 appId 的 GUID 识别
+  #   已装实例，**不会新旧并存**，但会走「先卸后装」、快捷方式重建、任务栏固定项可能失效。
+  #   用户数据在 %USERPROFILE%\Videos\JimengConsole\ 下，不受影响。
+  # ⚠ 必须与 desktop/updater.js 的 ARTIFACT_PREFIX 同时改 —— 门禁 §4 会比对这两处。
+  executableName: DreamFlow
   # ⚠ 签名配置**必须在 win: 之下**（见上方"代码签名（P0-5）"注释块）。
   # 2026-09-22 教训：这两个键原先写在顶层，electron-builder 26 的 schema 直接拒绝 ——
   # 报 "configuration has an unknown property 'signAndEditExecutable' / 'signtoolOptions'"
@@ -139,8 +145,11 @@ nsis:
   deleteAppDataOnUninstall: false
   # 安装时不要自动拉起应用：用户刚点完安装，多半想先自己看一眼
   runAfterFinish: false
-  artifactName: JimengConsole-${version}-x64-Setup.${ext}
+  # 0.32.0：JimengConsole- → DreamFlow-（换名第二步；须与 updater.js 的 ARTIFACT_PREFIX 同改，
+  # 但 updater 的白名单**必须继续接受旧的 JimengConsole- 前缀** —— 老用户机器上可能残留
+  # JimengConsole-*.part-* 临时文件，见 updater.js 的 ACCEPTED_PREFIXES）
+  artifactName: DreamFlow-${version}-x64-Setup.${ext}
 
 # 不生成 32 位与 ARM 包：本机目标就是 Win10/11 x64（计划 §4 首版范围）
 portable:
-  artifactName: JimengConsole-${version}-portable.${ext}
+  artifactName: DreamFlow-${version}-portable.${ext}

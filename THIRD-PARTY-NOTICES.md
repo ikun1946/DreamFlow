@@ -26,7 +26,7 @@
 | 许可证 | MIT |
 | 版权 | Copyright © Electron contributors；Chromium 部分版权归 The Chromium Authors |
 | 用途 | 桌面版宿主运行时（窗口、托盘、IPC、自动更新调用） |
-| 分发方式 | **随安装包分发**（Electron 运行时被合并进 `JimengConsole.exe` 与 `resources/`） |
+| 分发方式 | **随安装包分发**（Electron 运行时被合并进 `DreamFlow.exe` 与 `resources/`） |
 | 义务 | 保留 MIT 许可证与版权声明（已由 electron-builder 自动写入 `LICENSES.chromium.html`） |
 
 ### 2. Chromium / Node.js（Electron 内置）
