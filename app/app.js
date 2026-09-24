@@ -400,10 +400,12 @@
       '<div class="cell prompt">' +
         '<span class="titleline"><span class="shotno">分镜 ' + s.seq + '</span>' + durHTML(s) +
           '<span class="grow"></span>' +
-          '<button class="zoom-btn" data-editprompt="' + s.id + '" title="编辑提示词">' + I.edit + '</button>' +
-          '<button class="zoom-btn" data-zoom="' + s.id + '" title="放大查看完整提示词（含素材名着色）">' + I.expandDark + '</button>' +
+          '<button class="zoom-btn" data-zoom="' + s.id + '" title="全屏查看 / 编辑提示词">' + I.expandDark + '</button>' +
         '</span>' +
-        '<span class="prompt-text">' + highlightPrompt(s.prompt) + '</span>' +
+        /* 0.39.1：提示词改为**常驻文本框**（使用者要求去掉铅笔按钮、直接改）。
+           保存时机见 renderTable 上方说明；素材名着色随之取消（着色需要只读富文本）。 */
+        '<textarea class="prompt-ta" data-ptext="' + s.id + '" maxlength="2000" ' +
+          'placeholder="填写提示词…">' + esc(s.prompt || '') + '</textarea>' +
         '<span class="prompt-meta">模型 ' + esc(labelOf(opts().models, s.model) || s.model) + ' · ' + s.ratio + ' · ' + s.resolution + ' · motion ' + Number(s.motion).toFixed(2) +
           /* 上限统计常驻（0.38.0，使用者要求不再依赖打开资产弹窗才看得到）：
              imageLimit 由服务端按当前模型下发；未知上限的模型退回只显示已用数。 */
@@ -423,74 +425,14 @@
   }
 
   /* ---------------------------------------------------------- 表格三态 */
-  /* 提示词行内编辑（0.38.0 新增）：后端 PATCH /storyboards/:id 早就支持 prompt 字段，
-     但界面一直没有编辑入口 —— 使用者一直以为"提示词无法更改"。
-     实现：点行内铅笔 → .prompt-text 原地换成 textarea（保存 / 取消 / Ctrl+Enter / Esc）。
-     ⚠ 编辑期间必须**跳过整表重绘**（轮询每几秒 renderTable 一次，会把编辑器连根拔掉）；
-       用 data-editprompt-live 标记编辑器是否还挂在 DOM 里 —— 切视图后标记随 innerHTML
-       一起消失，保护自动解除，不需要手动清理状态。 */
-  function startPromptEdit(s) {
-    if (S.editPrompt) cancelPromptEdit();   // 已在编辑另一行：先还原再开新的
-    const row = document.querySelector('.row[data-id="' + s.id + '"]');
-    const cell = row && row.querySelector('.cell.prompt');
-    const textEl = cell && cell.querySelector('.prompt-text');
-    if (!textEl) return;
-    S.editPrompt = s.id;
-    const wrap = document.createElement('div');
-    wrap.setAttribute('data-editprompt-live', '1');
-    wrap.innerHTML =
-      '<textarea class="prompt-editor-ta" maxlength="2000"></textarea>' +
-      '<div class="prompt-editor-foot">' +
-        '<span class="hint-sm" data-count></span>' +
-        '<span class="grow"></span>' +
-        '<button class="btn-mini" data-pcancel>取消（Esc）</button>' +
-        '<button class="btn-mini btn-primary" data-psave>保存（Ctrl+Enter）</button>' +
-      '</div>';
-    const ta = wrap.querySelector('textarea');
-    ta.value = String(s.prompt || '');
-    const countEl = wrap.querySelector('[data-count]');
-    const count = () => { countEl.textContent = ta.value.trim().length + ' / 2000 字'; };
-    ta.addEventListener('input', count);
-    ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); cancelPromptEdit(); }   // 别让全局 Esc 把弹层也关了
-      else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); savePromptEdit(s, ta, wrap); }
-    });
-    wrap.querySelector('[data-pcancel]').addEventListener('click', () => cancelPromptEdit());
-    wrap.querySelector('[data-psave]').addEventListener('click', () => savePromptEdit(s, ta, wrap));
-    textEl.style.display = 'none';
-    textEl.after(wrap);
-    count();
-    ta.focus();
-    ta.setSelectionRange(ta.value.length, ta.value.length);
-  }
-  function cancelPromptEdit() {
-    S.editPrompt = null;
-    renderTable();   // 重绘即还原（编辑器随之移除）
-  }
-  async function savePromptEdit(s, ta, wrap) {
-    const v = String(ta.value || '').trim();
-    if (!v) { toast('提示词不能为空（1–2000 字）', 'err'); return; }
-    if (v.length > 2000) { toast('提示词最长 2000 字，当前 ' + v.length + ' 字', 'err'); return; }
-    const saveBtn = wrap.querySelector('[data-psave]');
-    const cancelBtn = wrap.querySelector('[data-pcancel]');
-    saveBtn.disabled = true; cancelBtn.disabled = true;
-    try {
-      const fresh = await Api.patchStoryboard(s.id, { prompt: v });
-      const picked = (fresh && fresh.data && (fresh.data.storyboard || fresh.data)) || null;
-      if (picked && picked.prompt != null) Object.assign(s, picked);
-      else s.prompt = v;
-      S.editPrompt = null;
-      renderTable();   // 重绘后素材名着色等高亮逻辑照常生效
-      toast('提示词已更新');
-    } catch (e) {
-      saveBtn.disabled = false; cancelBtn.disabled = false;
-      toast(errText(e), 'err');
-    }
-  }
+  /* 提示词 = **常驻文本框**（0.39.1，使用者要求去掉铅笔按钮，直接在行内改）：
+     后端 PATCH /storyboards/:id 早就支持 prompt 字段（1–2000 字）。
+     保存时机：失焦且内容有变、Ctrl+Enter；Esc 还原为上次保存的值。
+     ⚠ 轮询整表重绘会打掉输入焦点与未保存内容 —— 表里存在**处于焦点或带未保存
+       改动**的文本框时，renderTable 整表跳过；保存 / 还原清掉脏标记后画面自动恢复。 */
   function renderTable() {
     const host = $('#table');
-    /* 编辑态保护：见 startPromptEdit 上方说明。标记不在了（切视图/重绘过）就自动放行。 */
-    if (S.editPrompt && host.querySelector('[data-editprompt-live]')) return;
+    if (host.querySelector('.prompt-ta[data-dirty="1"], .prompt-ta:focus')) return;
     if (S.loading) {
       host.innerHTML = '<div class="skeleton">' + Array.from({ length: 4 }).map(() =>
         '<div class="sk-row">' +
@@ -520,6 +462,43 @@
     host.innerHTML = S.list.map(rowHTML).join('');
     updateCheckAll();
   }
+
+  /* 提示词常驻文本框（0.39.1）：标脏 / 保存 / 还原。
+     事件委托挂在 document 上 —— 行会随轮询整表重绘，绑在行上会被冲掉。
+     保存 = PATCH prompt；还原 = 写回 S.list 里的上次保存值。 */
+  function promptSave(ta) {
+    const s = rowById(ta.dataset.ptext);
+    if (!s) return;
+    const v = String(ta.value || '').trim();
+    if (v === String(s.prompt || '').trim()) { delete ta.dataset.dirty; return; }   // 没变就不打接口
+    if (!v) { toast('提示词不能为空（1–2000 字）', 'err'); return; }   // 保留脏标记，改完失焦重试
+    Api.patchStoryboard(s.id, { prompt: v }).then((fresh) => {
+      const picked = (fresh && fresh.data && (fresh.data.storyboard || fresh.data)) || null;
+      if (picked && picked.prompt != null) Object.assign(s, picked); else s.prompt = v;
+      delete ta.dataset.dirty;
+      toast('提示词已保存');
+    }).catch((e) => toast(errText(e), 'err'));   // 失败保留脏标记与内容，可改后重试
+  }
+  function promptRevert(ta) {
+    const s = rowById(ta.dataset.ptext);
+    if (!s) return;
+    ta.value = String(s.prompt || '');
+    delete ta.dataset.dirty;
+  }
+  document.addEventListener('input', (e) => {
+    const ta = e.target.closest && e.target.closest('.prompt-ta');
+    if (ta) ta.dataset.dirty = '1';
+  });
+  document.addEventListener('focusout', (e) => {
+    const ta = e.target;
+    if (ta && ta.classList && ta.classList.contains('prompt-ta') && ta.dataset.dirty === '1') promptSave(ta);
+  });
+  document.addEventListener('keydown', (e) => {
+    const ta = e.target;
+    if (!(ta && ta.classList && ta.classList.contains('prompt-ta'))) return;
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); promptSave(ta); }
+    else if (e.key === 'Escape') { e.stopPropagation(); promptRevert(ta); }   // 只还原文本，别让全局 Esc 关抽屉
+  });
 
   /* ---------------------------------------------------------- 显示偏好（个性化） */
   /* 表格密度的**唯一事实来源是 `#app` 上的 `.compact` 类** —— 与原来顶栏那个
@@ -2714,13 +2693,8 @@
 
     if (t.closest('[data-check]')) { S.sel.has(s.id) ? S.sel.delete(s.id) : S.sel.add(s.id); renderTable(); renderPanel(); renderStatusbar(); return; }
 
-    if (t.closest('[data-zoom]')) {   // 提示词放大：全屏看完整文本，素材名照样着色
-      openFullscreenText('分镜 ' + s.seq + ' · 提示词', highlightPrompt(s.prompt));
-      return;
-    }
-
-    if (t.closest('[data-editprompt]')) {   // 提示词行内编辑（0.38.0）
-      startPromptEdit(s);
+    if (t.closest('[data-zoom]')) {   // 全屏查看 / 编辑提示词（0.39.1：从只读改为可编辑）
+      openPromptZoom(s);
       return;
     }
 
@@ -2959,6 +2933,45 @@
         '<div class="fs-panel-head"><b>' + esc(title) + '</b></div>' +
         '<div class="fs-panel-body">' + html + '</div>' +
       '</div>', 'fs-textview');
+  }
+
+  /* 提示词全屏**编辑**（0.39.1）：使用者要求"全屏观看也要能更改"。
+     与行内文本框走同一条 PATCH 路径；打开时带上行内文本框的未保存内容（如有），
+     保存后同步回行内并清脏标记。Esc / × / 点空白 = 退出全屏（不保存，行内内容不动）。 */
+  function openPromptZoom(s) {
+    const rowTa = document.querySelector('.prompt-ta[data-ptext="' + s.id + '"]');
+    const start = rowTa ? rowTa.value : String(s.prompt || '');
+    const close = openFullscreenShell(
+      '<div class="fs-panel fs-promptedit">' +
+        '<div class="fs-panel-head"><b>分镜 ' + s.seq + ' · 提示词</b>' +
+          '<span class="grow"></span>' +
+          '<span class="hint-sm" id="fsPCount"></span>' +
+          '<button class="btn-mini btn-primary" id="fsPSave">保存（Ctrl+Enter）</button></div>' +
+        '<div class="fs-panel-body">' +
+          '<textarea class="prompt-ta" id="fsPTA" maxlength="2000" placeholder="填写提示词…">' + esc(start) + '</textarea>' +
+        '</div>' +
+      '</div>', 'fs-promptedit');
+    const ta = document.getElementById('fsPTA');
+    const cnt = document.getElementById('fsPCount');
+    const count = () => { cnt.textContent = ta.value.trim().length + ' / 2000 字'; };
+    const save = () => {
+      const v = String(ta.value || '').trim();
+      if (!v) { toast('提示词不能为空（1–2000 字）', 'err'); return; }
+      Api.patchStoryboard(s.id, { prompt: v }).then((fresh) => {
+        const picked = (fresh && fresh.data && (fresh.data.storyboard || fresh.data)) || null;
+        if (picked && picked.prompt != null) Object.assign(s, picked); else s.prompt = v;
+        if (rowTa) { rowTa.value = v; delete rowTa.dataset.dirty; }   // 同步回行内并清脏
+        count();
+        toast('提示词已保存');
+      }).catch((e) => toast(errText(e), 'err'));
+    };
+    ta.addEventListener('input', count);
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+    });
+    document.getElementById('fsPSave').addEventListener('click', save);
+    count();
+    ta.focus();
   }
 
   /* ---------------- 新建素材（资产库的「新建…」瓦片） ----------------

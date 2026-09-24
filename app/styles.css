@@ -568,16 +568,19 @@ html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--ch
 .slot-add:hover{border-color:var(--primary);background:var(--primary-bg)}
 .dash{font-size:13px;color:var(--chipgray)}
 
-/* ==================== 提示词行内编辑（0.38.0） ====================
-   编辑器原地替换 .prompt-text（见 app.js startPromptEdit）。
-   配色全走主题令牌，浅色 / 深色 / 跟随系统三态自动适配。 */
-.prompt-editor-ta{
-  width:100%;min-height:96px;max-height:240px;resize:vertical;
-  border:1px solid var(--primary);border-radius:8px;background:var(--surface);
-  color:var(--ink);font-family:inherit;font-size:12.5px;line-height:1.7;padding:8px 10px;
+/* ==================== 提示词常驻文本框（0.39.1） ====================
+   行内 textarea 直接改（0.38.0 的铅笔按钮已删）。默认无边框透明底融入行内，
+   悬停浮出虚线边、聚焦换成主色实线边 —— 不动行高，主题令牌自动适配浅 / 深色。 */
+.prompt-ta{
+  width:100%;flex:1;min-height:64px;max-height:130px;resize:none;
+  border:1px solid transparent;border-radius:8px;background:transparent;
+  color:var(--ink);font-family:inherit;font-size:12.5px;line-height:1.7;padding:4px 8px;
 }
-.prompt-editor-ta:focus{outline:none;box-shadow:0 0 0 2px var(--primary-bg)}
-.prompt-editor-foot{display:flex;align-items:center;gap:8px;margin-top:6px}
+.cell.prompt:hover .prompt-ta{border-color:var(--hairline)}
+.prompt-ta:focus{outline:none;border-color:var(--primary);background:var(--surface);
+  box-shadow:0 0 0 2px var(--primary-bg)}
+/* 全屏编辑视图：同一套文本框放大版，面板头右侧带字数与保存按钮 */
+.fs-promptedit .prompt-ta{min-height:52vh;max-height:none;font-size:13.5px;padding:12px 14px}
 
 /* ============================ 素材图号徽标 ============================
    这个数字有两重含义，且必须一致：
