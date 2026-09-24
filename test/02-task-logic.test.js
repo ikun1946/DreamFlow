@@ -213,6 +213,74 @@ describe('services —— 素材名解析的确定性', () => {
   });
 });
 
+/* 提示词导入的名称提取（0.37.1 修复回归）：
+   修复前，新格式（asset-image-prompt-builder 产出）的行内没有「｜」，
+   guessPromptAssetName 的「｜」切分形同未做，整行被当成名字再截成 60 字 ——
+   使用者实测 8 个资产的名称全是提示词原文片段（《最后一瓶牛奶》）。 */
+describe('services —— 提示词导入的名称提取', () => {
+  const names = (rawText) => {
+    const r = services.importAssetPrompts({ assets: [] }, { rawText, apply: false }, { projectId: 't' });
+    return r.items.map((it) => it.type + ':' + it.name);
+  };
+
+  test('★ 新格式角色：名字取「角色描述信息如下：」后首个词块（使用者实测踩到的那条）', () => {
+    const raw = '根据下方角色描述信息制作一张影视级建模角色设定板\n\n' +
+      '角色描述信息如下：林夏，22岁，身高约165公分；女性；深夜便利店的常客，独居于老式居民楼三层，' +
+      '与深夜出现在店里的另一个自己互为镜像；身形单薄偏瘦，肩线窄而略向内收。\n\n' +
+      '反向提示词：ugly, blurry.';
+    assert.deepEqual(names(raw), ['character:林夏'], '★ 必须是「林夏」，而不是 60 字的描述片段');
+  });
+
+  test('新格式场景 / 道具：名字取首个「。」/「，」前', () => {
+    const scene = '按照下方场景描述内容生成一张 3D 国漫场景图\n\n' +
+      '场景描述内容如下：便利店。场景类型为连锁便利店室内空间，美学定位为低饱和冷调的写实都市夜景。\n\n' +
+      '负面提示词：人物，角色。';
+    const prop = '根据道具描述内容生成一张 3D 超写实道具设定图\n\n' +
+      '道具描述内容如下：牛奶瓶，类别为饮品容器，美学定位为朴素写实的日常乳制品包装。\n\n' +
+      '负面提示词：人物，角色。';
+    assert.deepEqual(names(scene), ['scene:便利店']);
+    assert.deepEqual(names(prop), ['prop:牛奶瓶']);
+  });
+
+  test('角色名带前缀（另一个林夏）不被切断', () => {
+    const raw = '角色设定参考图\n\n' +
+      '角色描述信息如下：另一个林夏，22岁，身高约165公分；女性；身份为林夏的镜像存在。\n\n人设描述：…';
+    assert.deepEqual(names(raw), ['character:另一个林夏']);
+  });
+
+  test('旧格式（名称｜…）回归：仍取首个「｜」前', () => {
+    const raw = '按照下方场景描述内容生成…\n\n' +
+      '场景描述内容如下：公寓餐厨起居区｜居家室内场景｜夜景。\n\n…';
+    assert.deepEqual(names(raw), ['scene:公寓餐厨起居区']);
+  });
+
+  test('旧格式（【姓名】群像）回归：取所有姓名拼接', () => {
+    const raw = '角色设定参考图\n\n【姓名】：林夏\n【姓名】：阿哲\n\n人设描述：…';
+    assert.deepEqual(names(raw), ['character:林夏、阿哲']);
+  });
+
+  test('行内没有任何分隔符 → 整行就是名字（不再被截成 60 字）', () => {
+    const raw = '角色设定参考图\n\n角色描述信息如下：林夏的镜像\n\n人设描述：…';
+    assert.deepEqual(names(raw), ['character:林夏的镜像']);
+  });
+
+  test('名字超过 ASSET_NAME_MAX(60) 才按上限截断', () => {
+    const long = '一'.repeat(80);
+    const raw = '按照下方场景描述内容生成…\n\n' +
+      '场景描述内容如下：' + long + '。场景类型为…\n\n…';
+    const r = names(raw);
+    assert.equal(r[0], 'scene:' + '一'.repeat(60), '超长名字按库上限截断（前缀 scene: 是测试自己的拼装）');
+  });
+
+  test('真实粘贴形态（含 ```text 围栏 + @ 分节）不受影响，且逐段各得其所', () => {
+    const raw = '```text\n根据下方角色描述信息制作一张影视级建模角色设定板\n\n' +
+      '角色描述信息如下：阿哲，25岁，身高约172公分；男性；这家便利店的值夜收银员。\n\n' +
+      '反向提示词：ugly.\n```\n\n@\n\n```text\n按照下方场景描述内容生成一张 3D 国漫场景图\n\n' +
+      '场景描述内容如下：居民楼走廊。场景类型为老式住宅楼楼道。\n```\n';
+    assert.deepEqual(names(raw), ['character:阿哲', 'scene:居民楼走廊']);
+  });
+});
+
 describe('util —— 错误码表完整性（P1-10）', () => {
   test('511xx 段五个工具错误码齐备且唯一', () => {
     assert.equal(util.ERR.CLI_NOT_FOUND, 51101);

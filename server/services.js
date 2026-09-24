@@ -1675,23 +1675,44 @@ function splitPromptSegments(rawText) {
   return segs.map((ls) => ls.join('\n').trim()).filter((s) => s.length > 0);
 }
 
+/* 从「…描述内容/信息如下：」之后的整行里取出**名字**（2026-09-24 修）。
+   行内已知两种格式：
+     旧（_asset_prompts_out.txt）：名称｜其它说明｜…      → 名字是首个「｜」前的词块
+     新（asset-image-prompt-builder）：名字，22岁，… / 名字。场景类型为… / 名字，类别为…
+                                     → 名字是首个名字终止符（，。；,;.）前的词块
+   两种格式的共同点：名字一定是行首的第一个"词块"。
+   ⚠ 之前只做了「｜」切分，而新格式行内没有「｜」→ 切分形同未做，整行被当成名字，
+     再被 ASSET_NAME_MAX 截成 60 字 —— 就是使用者看到的"名称是一段提示词原文片段"
+     （《最后一瓶牛奶》8 个资产全军覆没，已实测复现）。
+   ⚠ 词块切出来为空（行首就是分隔符）时返回 null，让调用方走原有兜底，绝不返回空串。 */
+function promptNameFromLine(line) {
+  const s = String(line || '').trim();
+  if (!s) return null;
+  const head = s.split('｜')[0];                       // 旧格式：名称｜…
+  const cut = head.split(/[，。；,;.]/)[0].trim();     // 新格式：名字，/ 名字。/ 名字；
+  if (!cut) return null;
+  /* 仍要按 ASSET_NAME_MAX 截：这是 createAsset 的库约束，超长名字会在 apply 阶段被拒收 */
+  return cut.slice(0, ASSET_NAME_MAX);
+}
+
 function guessPromptAssetName(type, seg) {
   if (type === 'character') {
     const m = seg.match(/角色描述信息如下[：:]\s*([^\n]+)/);
-    if (m) return m[1].trim().slice(0, 60);
+    if (m) return promptNameFromLine(m[1]) || '角色群像';
     const names = [];
     for (const mm of seg.matchAll(/【姓名】[：:]\s*([^\n【]+)/g)) {
       const n = mm[1].trim();
       if (n && !names.includes(n)) names.push(n);
     }
-    if (names.length) return names.join('、').slice(0, 60);
+    if (names.length) return names.join('、').slice(0, ASSET_NAME_MAX);
     return '角色群像';
   }
   const label = type === 'scene' ? '场景描述内容' : '道具描述内容';
   const m = seg.match(new RegExp(label + '如下[：:]\\s*([^\\n]+)'));
   if (!m) return null;
-  const head = m[1].split('｜')[0].trim();          // 「公寓餐厨起居区｜居家室内场景｜…」取首段
-  return head ? head.slice(0, 60) : null;
+  /* 名字词块取不出来时返回 null（而非退化成整行截断）——
+     parseAssetPromptSegments 会兜底成「未命名场景 / 未命名道具」，至少不是误导性名称。 */
+  return promptNameFromLine(m[1]);
 }
 
 function parseAssetPromptSegments(rawText) {
