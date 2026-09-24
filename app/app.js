@@ -402,10 +402,14 @@
           '<span class="grow"></span>' +
           '<button class="zoom-btn" data-zoom="' + s.id + '" title="全屏查看 / 编辑提示词">' + I.expandDark + '</button>' +
         '</span>' +
-        /* 0.39.1：提示词改为**常驻文本框**（使用者要求去掉铅笔按钮、直接改）。
-           保存时机见 renderTable 上方说明；素材名着色随之取消（着色需要只读富文本）。 */
-        '<textarea class="prompt-ta" data-ptext="' + s.id + '" maxlength="2000" ' +
-          'placeholder="填写提示词…">' + esc(s.prompt || '') + '</textarea>' +
+        /* 0.39.x：提示词改为**常驻文本框**（使用者要求去掉铅笔按钮、直接改）。
+           保存时机见 renderTable 上方说明；素材名着色随之取消（着色需要只读富文本）。
+           悬停文本框 → 右上角浮现半透明复制按钮（0.39.x），快速复制当前内容。 */
+        '<div class="prompt-tawrap">' +
+          '<textarea class="prompt-ta" data-ptext="' + s.id + '" maxlength="2000" ' +
+            'placeholder="填写提示词…">' + esc(s.prompt || '') + '</textarea>' +
+          '<button class="prompt-copy" data-promptcopy="1" title="复制提示词">' + I.copy + '</button>' +
+        '</div>' +
         '<span class="prompt-meta">模型 ' + esc(labelOf(opts().models, s.model) || s.model) + ' · ' + s.ratio + ' · ' + s.resolution + ' · motion ' + Number(s.motion).toFixed(2) +
           /* 上限统计常驻（0.38.0，使用者要求不再依赖打开资产弹窗才看得到）：
              imageLimit 由服务端按当前模型下发；未知上限的模型退回只显示已用数。 */
@@ -2693,6 +2697,17 @@
     }
 
     if (t.closest('[data-check]')) { S.sel.has(s.id) ? S.sel.delete(s.id) : S.sel.add(s.id); renderTable(); renderPanel(); renderStatusbar(); return; }
+
+    /* 复制提示词（0.39.x）：悬停文本框右上角浮现的半透明按钮。
+       复制的是文本框**当前内容**（含未保存的改动）；点击按钮先触发 textarea
+       失焦自动保存，再落到这里复制 —— 拿到的始终是最新文本。 */
+    const pcopy = t.closest('[data-promptcopy]');
+    if (pcopy) {
+      const wrap = pcopy.closest('.prompt-tawrap');
+      const ta = wrap && wrap.querySelector('.prompt-ta');
+      copyText(ta ? ta.value : '', '提示词已复制');
+      return;
+    }
 
     if (t.closest('[data-zoom]')) {   // 全屏查看 / 编辑提示词（0.39.1：从只读改为可编辑）
       openPromptZoom(s);
