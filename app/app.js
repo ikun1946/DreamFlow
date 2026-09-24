@@ -5047,7 +5047,8 @@
       ? '<button class="btn-mini btn-mini-cta" data-updact="install">下载并安装 ' + esc(String(u.lastCheck.latestVersion)) + '</button>'
       : '<button class="btn-mini" data-updact="check"' + dis + '>' + (busy === 'check' ? '检查中…' : '检查更新') + '</button>';
 
-    return '<section class="scard">' +
+    /* id="updCard"：下载期间只重绘这一张卡片（见 refreshUpdateCard），不整抽屉重绘 */
+    return '<section class="scard" id="updCard">' +
       '<div class="scard-hd"><div class="scard-hd-t"><h3>应用更新</h3>' +
       '<p>桌面版可在应用内完成更新：下载 → 校验 → 静默安装 → 自动重启</p></div></div>' +
       '<div class="scard-bd">' +
@@ -5060,6 +5061,20 @@
         state +
         '<div class="cli-actions">' + btns + '</div>' +
       '</div></section>';
+  }
+
+  /* 只重绘「应用更新」这一张卡片（0.37.2 修）。
+     之前下载进度的更新走的是 `querySelector('[data-updact="install"]')` —— 但下载期间
+     busy='download'，canInstall=false，**那个按钮根本不在 DOM 里**，于是进度存进了
+     S.appUpdate 却永远画不出来；只有关掉抽屉再重开（整抽屉重绘）才能看到新进度，
+     这就是"进度条要关两次设置页才动"的根因。
+     ⚠ 必须只重绘这一张卡片、绝不能整抽屉 renderSettings()：整抽屉重绘会刷掉用户
+       的滚动位置与正在查看的内容（注释见 runUpdateAction 里的原始说明）。
+     ⚠ 网页版 / 抽屉未开时没有这个节点 → 直接跳过，重开时 renderSettings() 会用
+       最新状态画一遍。 */
+  function refreshUpdateCard() {
+    const el = document.getElementById('updCard');
+    if (el) el.outerHTML = appUpdateHTML();
   }
 
   /* 按钮：按"当前该做什么"决定给哪几个 —— 没装就只给安装，别拿登录按钮干扰 */
@@ -5241,17 +5256,15 @@
 
     if (kind === 'install') {
       u().busy = 'download'; u().error = null; renderSettings();
-      /* 下载是长请求（100+ MB），另开轮询显示百分比。只改按钮文案，不整块重绘 ——
-         整块重绘会把用户正在看的内容刷掉。 */
+      /* 下载是长请求（100+ MB），另开轮询显示百分比。只重绘「应用更新」这一张卡片，
+         不整抽屉重绘 —— 整块重绘会把用户正在看的内容刷掉。
+         ⚠ 0.37.2 之前这里 patch 的是 [data-updact="install"]，但下载期间该按钮根本
+           不在 DOM 里（busy='download' → canInstall=false），进度永远画不出来。 */
       const timer = setInterval(async () => {
         try {
           const st = await J.updateStatus();
           S.appUpdate.progress = st.progress;
-          const el = document.querySelector('[data-updact="install"]');
-          if (el && st.progress && st.progress.active) {
-            const pct = st.progress.total ? Math.floor(st.progress.got / st.progress.total * 100) : 0;
-            el.textContent = '下载中 ' + pct + '%（' + (st.progress.got / 1048576).toFixed(1) + ' MB）…';
-          }
+          refreshUpdateCard();
         } catch (e) { /* 进度查询失败不影响下载本身 */ }
       }, 800);
       try {
@@ -5749,6 +5762,27 @@
        两页的内容都是整体重绘的，所以事件一律挂在容器上委托，
        与 #recView / #panel 的做法一致。 */
     bindPageViews();
+
+    /* 应用更新的**主进程推送**（0.37.2 接上）：状态切换（idle/checking/downloading/
+       ready/installing）时 desktop/main.js 的 broadcastUpdateState() 会发 'update:state'。
+       ⚠ 这个通道在 preload.js 里早就暴露了（JCDesktop.onUpdateState），但渲染端一直
+         没订阅 —— 于是从**托盘**发起的检查/下载，设置抽屉里完全无感（抽屉只在
+         打开时画一次快照）。
+       ⚠ 下载中的百分比**不靠它**：主进程只在状态切换时广播，tick 之间不广播；
+         进度由 runUpdateAction 里的 800ms 轮询驱动。这里只负责"状态变了"这类跳变。
+       ⚠ 载荷里的 busy 是主进程状态机的布尔值，与渲染端自己的 busy（'check'/'download'）
+         语义不同，**不覆盖** —— 渲染端的 busy 由动作的 await 生命周期管理。 */
+    if (window.JCDesktop && window.JCDesktop.onUpdateState) {
+      window.JCDesktop.onUpdateState((p) => {
+        if (!p || typeof p !== 'object') return;
+        const u = (S.appUpdate = S.appUpdate || {});
+        u.progress = p.progress;                        // 下载进度的活引用（got 会持续变）
+        if (p.lastCheck) u.lastCheck = p.lastCheck;     // 托盘发起的检查，结果从这里回来
+        if (p.installing) u.installing = true;          // 安装器拉起 → 显示"正在安装"卡片
+        if (p.state === 'idle') u.busy = null;          // 主进程已收尾
+        refreshUpdateCard();
+      });
+    }
 
     /* 快速多选：素材网格与分镜列表各挂一次框选引擎。
        两边共用同一套拖拽/区间逻辑，差异只在「项选择器」与「选择态怎么落地」。

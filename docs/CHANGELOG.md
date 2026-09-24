@@ -13,6 +13,47 @@
 
 ---
 
+#### `0.37.2` — 2026-09-24（修复：设置页「检查更新」的下载状态与进度不实时刷新）
+
+**现象**：设置里点「检查更新」→「下载并安装」，开始下载后页面不显示"正在下载"；
+关掉设置页再重开，显示"正在下载"但进度不动；**再**关再开，才看到进度。
+预期是设置页内实时刷新，不需要关了重开。
+
+**根因（三个缺陷叠加，全在 `app/app.js`）**：
+
+1. **主进程的推送通道从未被订阅**。`desktop/preload.js` 早已暴露 `JCDesktop.onUpdateState`
+   （`desktop/main.js` 的 `broadcastUpdateState()` 在状态切换时广播），但渲染端**一次都没调用** ——
+   从托盘发起的检查/下载，设置抽屉里完全无感。
+2. **下载轮询把进度画到了一个不存在的节点上**。`runUpdateAction('install')` 里的 800ms 轮询
+   确实把最新进度存进了 `S.appUpdate.progress`，但接着
+   `querySelector('[data-updact="install"]')` 去 patch 按钮 —— 下载期间 `busy='download'`
+   → `canInstall=false` → **那个按钮根本不在 DOM 里**（渲染出来的是禁用的"检查更新"）。
+   进度存了，却永远画不出来。
+3. **下载全程没有任何重绘**。`renderSettings()` 只在动作开始/结束各调一次，中间轮询
+   只改状态不改 DOM → 唯一的刷新机会就是"关抽屉再重开"（整抽屉重绘）。
+   三步复现完全吻合。
+
+**修复（3 处）**：
+- `appUpdateHTML()` 的卡片加 `id="updCard"`；新增 `refreshUpdateCard()` ——
+  **只重绘这一张卡片**（`el.outerHTML = appUpdateHTML()`），绝不整抽屉重绘
+  （整抽屉重绘会刷掉用户的滚动位置与正在查看的内容）。
+- 下载轮询：存完进度后改调 `refreshUpdateCard()`，删掉那条 patch 不存在按钮的错路。
+- `bindStatic()` 接上 `JCDesktop.onUpdateState`：状态切换的推送进来 → 合并字段
+  （progress / lastCheck / installing；`state==='idle'` 时清渲染端 busy）→ 刷新卡片。
+  ⚠ 载荷里的 `busy` 是主进程状态机的布尔值，与渲染端自己的 `busy`（'check'/'download'）
+  语义不同，**不覆盖**（渲染端 busy 由动作的 await 生命周期管理）。
+
+**验证**：`build` ✓ · `lint` 7/7 · `test` **209/209** · `check` 44/45（唯一失败是开发机沙箱
+`spawnSync git EBUSY` 的环境问题，shell 直跑 git 正常）。
+行为验证（真 index.html + 注入假 `JCDesktop`，Electron 内真实点击，8 项断言全过）：
+A1 打开抽屉卡片存在 ✓ · A2 检查 → 发现新版本 ✓ ·
+**A3 点下载 1.5s 内卡片出现「正在下载」+ 百分比（修复前永远不出现）** ✓ ·
+**A4 不关抽屉，进度 12% → 81% 持续走动** ✓ · A5 推送 installing → 卡片切「正在安装更新」✓ ·
+A6 全程抽屉保持打开（没靠关-开来刷新）✓ · A7 卡片始终在 DOM ✓ · A8 推送通道已订阅 ✓。
+
+**版本**：`0.37.1 → 0.37.2`（PATCH：缺陷修复；无接口变更、无数据变更）。
+对使用者可见（更新过程的界面反馈），应发 Release。
+
 #### `0.37.1` — 2026-09-24（修复：提示词导入的资产名称被截成 60 字描述片段）
 
 **现象**：使用者粘贴《最后一瓶牛奶》提示词文件（`asset-image-prompt-builder` 产出）导入资产，
