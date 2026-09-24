@@ -506,8 +506,35 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 /* 素材格 */
 /* 0.38.0 加 flex-wrap:align-content 让多行后垂直居中。此前不换行 —— 图片绑满一列
    时「＋」槽位被顶出单元格（cell overflow:hidden 裁掉），使用者再也找不到加资产
-   的入口，资产选择弹窗里的「已添加 X / 上限 Y」统计也随之"消失"。 */
+   的入口，资产选择弹窗里的「已添加 X / 上限 Y」统计也随之"消失"。
+   0.39.0：换行被使用者否决（"太乱"），改为**两种可选模式**（设置 → 个性化 →
+   素材槽位切换，持久化在 localStorage，CSS 按 <html data-slotmode> 分支）：
+     · deck（默认）  ：收拢成扑克牌组（负 margin 叠放），点一下摊开成浮层，点外面收起；
+     · scroll        ：单行横向滚动。
+   两档都不换行，所以行高回到固定值；cell-slots 的 overflow:visible 只在 deck 下
+   放开 —— 摊开的浮层要能盖过相邻列（z-index:6 压过普通列内容）。 */
 .slots{display:flex;flex-wrap:wrap;align-items:center;align-content:center;gap:8px;min-width:0}
+html[data-slotmode="deck"] .slots{flex-wrap:nowrap;position:relative}
+html[data-slotmode="deck"] .cell-slots{overflow:visible}
+/* 收拢态：只露前 2 张（第 2 张压上来只露一条边），其余收进「+N」数量角标 */
+html[data-slotmode="deck"] .slots:not(.deck-open) .thumb + .thumb{margin-left:-32px}
+html[data-slotmode="deck"] .slots:not(.deck-open) span.thumb:nth-of-type(n+3){display:none}
+.deckcount{display:none;flex:none;font-family:var(--mono);font-size:11px;font-weight:600;
+  color:var(--ink48);cursor:pointer}
+html[data-slotmode="deck"] .slots:not(.deck-open) .deckcount{display:inline-grid;place-items:center;
+  width:26px;height:var(--thumb-h);border-radius:8px;border:1px dashed var(--chipgray);background:var(--pearl)}
+html[data-slotmode="deck"] .slots.deck-open{
+  position:absolute;left:0;top:50%;transform:translateY(-50%);z-index:6;
+  flex-wrap:wrap;max-width:340px;padding:10px;
+  background:var(--surface);border:1px solid var(--primary);border-radius:12px;
+  box-shadow:var(--shadow-2);
+}
+html[data-slotmode="scroll"] .slots{
+  flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;
+  scrollbar-color:var(--chipgray) transparent;padding-bottom:2px;
+}
+html[data-slotmode="scroll"] .slots::-webkit-scrollbar{height:6px}
+html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--chipgray);border-radius:999px}
 .thumb{
   width:var(--thumb-w);height:var(--thumb-h);border-radius:8px;flex:none;
   position:relative;overflow:hidden;display:grid;place-items:center;

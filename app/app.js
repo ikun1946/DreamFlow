@@ -292,6 +292,13 @@
         '<button class="rm" data-unbind="' + a.assetId + '" data-role="' + role + '" title="移除">' + I.x + '</button>' +
         '</span>';
     });
+    /* 堆叠牌组（0.39.0）：收拢时 CSS 只露前 2 张，这里补一枚「+N」数量角标
+       （N = 收起看不到的张数）。角标只在收拢态显示（摊开态由 CSS 隐藏），
+       点它和点牌组一样是摊开。仅 deck 模式且多于 2 张时渲染。 */
+    const deckChip = (slotMode() === 'deck' && items.length > 2)
+      ? '<i class="deckcount" title="共 ' + items.length + ' 个，点击展开">+' + (items.length - 2) + '</i>'
+      : '';
+    out += deckChip;
     if (canAdd) {
       /* 参考图已达当前模型上限：按钮改成「满额」样式并说明原因。
          仍然可点（点击给出解释而不是毫无反应的禁用态），拦截在 data-bind 处理器里。 */
@@ -378,6 +385,11 @@
     return hit ? out + esc(src.slice(pos)) : esc(src);
   }
 
+  /* 素材槽位单元格（0.39.0）：cell-slots 类供堆叠模式的 overflow:visible 使用；
+     deck-open 按行+角色记录（轮询整表重绘后摊开状态不丢）。 */
+  const slotCell = (s, role) => '<div class="cell cell-slots"><span class="slots' +
+    (S.deckOpen && S.deckOpen[s.id + ':' + role] ? ' deck-open' : '') +
+    '" data-deckkey="' + s.id + ':' + role + '">' + slotsHTML(s, role) + '</span></div>';
   function rowHTML(s) {
     const sel = S.sel.has(s.id);
     return '<div class="row' + (sel ? ' sel' : '') + '" data-id="' + s.id + '">' +
@@ -398,12 +410,12 @@
           (s.imageLimit != null ? ' · 参考图 ' + (s.imageCount || 0) + '/' + s.imageLimit + ' 张'
             : (s.imageCount ? ' · 参考图 ' + s.imageCount + ' 张' : '')) + '</span>' +
       '</div>' +
-      '<div class="cell"><span class="slots">' + slotsHTML(s, 'character') + '</span></div>' +
-      '<div class="cell"><span class="slots">' + slotsHTML(s, 'scene') + '</span></div>' +
-      '<div class="cell"><span class="slots">' + slotsHTML(s, 'prop') + '</span></div>' +
-      '<div class="cell"><span class="slots">' + slotsHTML(s, 'firstFrame') + '</span></div>' +
-      '<div class="cell"><span class="slots">' + slotsHTML(s, 'storyboard') + '</span></div>' +
-      '<div class="cell"><span class="slots">' + slotsHTML(s, 'audio') + '</span></div>' +
+      slotCell(s, 'character') +
+      slotCell(s, 'scene') +
+      slotCell(s, 'prop') +
+      slotCell(s, 'firstFrame') +
+      slotCell(s, 'storyboard') +
+      slotCell(s, 'audio') +
       '<div class="cell result">' + resultHTML(s) + '</div>' +
       '<div class="cell"><span class="badge ' + s.status + '"><i class="bdot"></i>' + STATUS_TEXT[s.status] + '</span></div>' +
       '<div class="cell acts">' + actsHTML(s) + '</div>' +
@@ -574,6 +586,39 @@
         else if (mq.addListener) mq.addListener(onChange);
       } catch (e) { /* 旧浏览器忽略 */ }
     }
+  }
+
+  /* ---------------------------------------------------------- 素材槽位显示模式（0.39.0） */
+  /* 参考图 / 分镜图多时的排布方式，两档：
+       · deck（默认）：堆叠成扑克牌组，点一下摊开成浮动面板，点外面收起；
+       · scroll      ：单行横向滚动，不换行。
+     完全镜像主题的实现方式：唯一事实来源是 <html data-slotmode>，localStorage 只做
+     启动镜像；CSS 按 html[data-slotmode=…] 分支，绝不写进 S.settings（显示偏好，
+     与生成参数无关）。 */
+  const SLOTMODE_KEY = 'jmc.slotMode';
+  const SLOTMODE_VALUES = ['deck', 'scroll'];
+  function slotMode() {
+    const t = document.documentElement.dataset.slotmode;
+    return SLOTMODE_VALUES.indexOf(t) >= 0 ? t : 'deck';
+  }
+  function storedSlotMode() {
+    try {
+      const v = localStorage.getItem(SLOTMODE_KEY);
+      return SLOTMODE_VALUES.indexOf(v) >= 0 ? v : 'deck';
+    } catch (e) { return 'deck'; }
+  }
+  function applySlotMode(v) {
+    document.documentElement.dataset.slotmode = SLOTMODE_VALUES.indexOf(v) >= 0 ? v : 'deck';
+  }
+  function setSlotMode(v) {
+    applySlotMode(v);
+    try { localStorage.setItem(SLOTMODE_KEY, slotMode()); } catch (e) { /* 隐私模式忽略 */ }
+  }
+  function initSlotMode() { applySlotMode(storedSlotMode()); }
+  /* 摊开状态按「行:角色」记录：轮询整表重绘后不丢；点外面统一收起（closeDecks）。 */
+  function closeDecks() {
+    S.deckOpen = {};
+    document.querySelectorAll('.slots.deck-open').forEach((el) => el.classList.remove('deck-open'));
   }
 
   /* 「设置」按钮上主题图标的可读文案（往 title 后追加括号后缀）。
@@ -2628,6 +2673,9 @@
 
     /* 关闭下拉 */
     if (!t.closest('.menu') && !t.closest('[data-val]')) closeMenu();
+    /* 堆叠牌组（0.39.0）：点在牌组外面 → 全部收起。必须在最前面，
+       否则点别的按钮时摊开的浮层还悬着。 */
+    if (slotMode() === 'deck' && !t.closest('.slots')) closeDecks();
 
     /* ---- 素材面板 ----
        ⚠ 本处理器挂在 **document** 上，会收到**全页面**的点击。项目页资产库会渲染**同样**的
@@ -2651,6 +2699,18 @@
     if (!rowEl) return;
     const s = rowById(rowEl.dataset.id);
     if (!s) return;
+
+    /* 堆叠牌组（0.39.0）：收拢状态点一下 = 摊开成浮层（预览 / 替换 / 移除等
+       原有动作在摊开后照常可用）。＋ 槽位与 × 移除不拦，维持各自既有流程。 */
+    if (slotMode() === 'deck' && !t.closest('.slot-add') && !t.closest('[data-unbind]')) {
+      const st = t.closest('.slots');
+      if (st && !st.classList.contains('deck-open')) {
+        S.deckOpen = S.deckOpen || {};
+        S.deckOpen[st.dataset.deckkey] = true;
+        st.classList.add('deck-open');
+        return;
+      }
+    }
 
     if (t.closest('[data-check]')) { S.sel.has(s.id) ? S.sel.delete(s.id) : S.sel.add(s.id); renderTable(); renderPanel(); renderStatusbar(); return; }
 
@@ -5650,6 +5710,15 @@
               '<button data-toggle="theme" data-theme-val="dark"' + (themeChoice() === 'dark' ? ' class="on"' : '') + '>深色</button>' +
             '</span></div>' +
           '<p class="hint-sm">「跟随系统」随系统的浅色 / 深色偏好自动切换</p>' +
+          /* 0.39.0：素材槽位显示模式。参考图 / 分镜图多时：
+             deck = 堆叠成扑克牌组（点一下摊开成浮动面板，点外面收起）；
+             scroll = 单行横向滚动。持久化与回显方式与「外观」完全同构。 */
+          '<div class="srow"><span class="k">素材槽位</span>' +
+            '<span class="seg" title="参考图 / 分镜图多时的排布方式">' +
+              '<button data-toggle="slotmode" data-slotmode-val="deck"' + (slotMode() === 'deck' ? ' class="on"' : '') + '>堆叠牌组</button>' +
+              '<button data-toggle="slotmode" data-slotmode-val="scroll"' + (slotMode() === 'scroll' ? ' class="on"' : '') + '>横向滚动</button>' +
+            '</span></div>' +
+          '<p class="hint-sm">「堆叠牌组」点一下摊开成浮层，点外面收起；「横向滚动」单行左右滑</p>' +
         '</div>' +
       '</section>' +
       /* —— 卡片 5 · 生成引擎与账号（全局的「检测」升到卡片头）——
@@ -6072,6 +6141,7 @@
          · autoRetry 改的是生成行为（写 S.settings.queue）
          · compact   改的是显示偏好（写 #app 的类，与旧顶栏按钮同源）
          · theme     改的是外观偏好（写 <html> 的 data-theme，持久化到 localStorage；**不碰 S.settings**）
+         · slotmode  改的是素材槽位排布（deck 堆叠 / scroll 横向滚动，写 <html> 的 data-slotmode）
          三者互不影响，各自只动自己的那一份状态。 */
       const tg = e.target.closest('[data-toggle]');
       if (tg) {
@@ -6079,6 +6149,7 @@
         if (k === 'autoRetry') S.settings.queue.autoRetry = !S.settings.queue.autoRetry;
         else if (k === 'compact') applyDensity(!isCompact());
         else if (k === 'theme') setTheme(tg.dataset.themeVal);   // .seg 三态：读 data-theme-val
+        else if (k === 'slotmode') setSlotMode(tg.dataset.slotmodeVal);   // .seg 两态：读 data-slotmode-val
         renderSettings(); return;
       }
     });
@@ -6256,6 +6327,7 @@
   /* ---------------------------------------------------------- 启动 */
   async function boot() {
     initTheme();   // 主题先于一切：解析持久化偏好 → 写 <html data-theme>，避免首屏闪色
+    initSlotMode();   // 素材槽位显示模式（deck/scroll）：同为主题类的本地显示偏好
     bindStatic();
     renderColhead();
     render();
