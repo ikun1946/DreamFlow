@@ -4825,8 +4825,17 @@
        两个形态的"关闭位置"差了整整一个屏幕宽（抽屉 = translateX(480px) 视口外；
        居中 = 屏幕正中）。若不摘布局就改类，浏览器会把这次类变更当成一次**过渡**，
        于是首次从首页打开设置时，窗口会从右侧抽屉位横扫到屏幕中央 —— 实测可见。
-       摘成 display:none 后，类变更不产生过渡，位置直接落定。 */
-    if (dr.classList.contains('center') !== center) dr.hidden = true;
+       ⚠ 但"摘成 display:none"必须真正被浏览器算过一次样式才算数：下面 4845 那次
+         重排取的"变更前样式"是**上一次样式重算**的结果，若 hidden=true 与末尾的
+         hidden=false 落在同一同步任务里、中间没有任何重算，display:none 就从未生效，
+         变更前样式仍是启动时的抽屉位 translateX(100%) —— 首开照样从右横扫到中央
+         （2026-09-25 用户实测：重启后首开从右飞入，关掉再开才正常 —— 后者之所以
+         一直没事，是因为 closeSettings 对居中态真的落了 hidden，窗口在 display:none
+         里真实停靠过一次）。所以摘布局后必须立刻强制一次重排。 */
+    if (dr.classList.contains('center') !== center) {
+      dr.hidden = true;
+      void dr.offsetWidth;
+    }
     dr.classList.toggle('center', center);
     mk.classList.toggle('center', center);
     if (inline) mountInlinePanel('settings');
