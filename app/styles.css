@@ -526,16 +526,24 @@ html[data-slotmode="deck"] .slots:not(.deck-open) .deckcount{display:inline-grid
 /* 摊开态：以**牌组所在位置为中心**向左右展开并整体上浮放大（translate -50% 居中 +
    scale 1.06），浮层压过相邻行/列（z-index:6），重阴影强化"悬浮"感；
    ⚠ 定位上下文是 cell-slots（position:relative），否则会以整表为锚点飘到表左缘。 */
+/* 摊开态：以**牌组所在位置为中心**向左右展开并整体上浮放大（translate -50% 居中 +
+   scale 1.06），浮层压过相邻行/列（z-index:6），重阴影强化"悬浮"感；
+   ⚠ 定位上下文是 cell-slots（position:relative），否则会以整表为锚点飘到表左缘。
+   0.38.5：摊开**单行不换行**（超宽时格内横向滑动兜底），入场动画改带轻微
+   回弹的缓动（.22s cubic-bezier 回弹曲线），替代原先生硬的 .16s 直入。 */
 html[data-slotmode="deck"] .slots.deck-open{
   position:absolute;left:50%;top:50%;z-index:6;
-  flex-wrap:wrap;min-width:300px;max-width:460px;padding:12px;
+  flex-wrap:nowrap;max-width:92vw;overflow-x:auto;scrollbar-width:thin;
+  scrollbar-color:var(--chipgray) transparent;padding:12px;
   background:var(--surface);border:1px solid var(--primary);border-radius:14px;
   box-shadow:0 18px 50px rgba(0,0,0,.4);
   transform:translate(-50%,-50%) scale(1.06);
-  animation:deck-pop .16s ease;
+  animation:deck-pop .24s cubic-bezier(.22,1.2,.36,1);
 }
+html[data-slotmode="deck"] .slots.deck-open::-webkit-scrollbar{height:6px}
+html[data-slotmode="deck"] .slots.deck-open::-webkit-scrollbar-thumb{background:var(--chipgray);border-radius:999px}
 @keyframes deck-pop{
-  from{transform:translate(-50%,-50%) scale(.9);opacity:.4}
+  from{transform:translate(-50%,-50%) scale(.88);opacity:0}
   to{transform:translate(-50%,-50%) scale(1.06);opacity:1}
 }
 html[data-slotmode="scroll"] .slots{
