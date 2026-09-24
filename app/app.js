@@ -5465,8 +5465,16 @@
     }
 
     const rows = [];
+    /* 0.38.2 瘦身（使用者反馈文字 / 按钮太多）：
+       · 「打开当前目录」降级为当前路径旁的小按钮；
+       · 两个动作的完整解释收进各自的 title 悬停提示，删除常驻说明段；
+       · 「立即重启应用」不再常驻 —— 只有配置目录 ≠ 运行目录（切换过还没重启）时
+         才出现警告条 + 重启按钮（状态由服务端 configuredDir / dataDir 驱动）。 */
     rows.push('<div class="srow"><span class="k">当前位置</span>' +
-      '<code style="word-break:break-all">' + esc(p.dataDir) + '</code></div>');
+      '<code style="word-break:break-all">' + esc(p.dataDir) + '</code>' +
+      (window.JCDesktop && window.JCDesktop.openDataDir
+        ? '<button class="btn-mini" data-ddact="open" title="在文件管理器中打开当前数据目录">打开</button>' : '') +
+      '</div>');
 
     if (!p.canChange) {
       rows.push('<p class="hint-sm">' + esc(p.reason || '当前模式不支持更改数据目录') + '</p>');
@@ -5479,17 +5487,18 @@
         ? '<button class="btn-outline" data-ddact="pick">浏览…</button>' : '') +
       '</div>');
     rows.push('<div class="cli-actions">' +
-      '<button class="btn-primary" data-ddact="move"' + (S.pathsBusy ? ' disabled' : '') + '>迁移并切换</button>' +
-      '<button class="btn-outline" data-ddact="switch"' + (S.pathsBusy ? ' disabled' : '') + '>仅切换（不搬数据）</button>' +
-      '<button class="btn-outline" data-ddact="open">打开当前目录</button>' +
+      '<button class="btn-primary" data-ddact="move"' + (S.pathsBusy ? ' disabled' : '') +
+        ' title="把库复制到新目录并改指向；原目录保留作为回退，确认无误后可自行删除。目标目录必须是空目录。">迁移并切换</button>' +
+      '<button class="btn-outline" data-ddact="switch"' + (S.pathsBusy ? ' disabled' : '') +
+        ' title="只改指向、不搬任何文件 —— 适合你已经手动搬好数据，或想从空库重新开始。">仅切换（不搬数据）</button>' +
       '</div>');
-    rows.push('<p class="hint-sm">' +
-      '<b>迁移并切换</b>：把库复制到新目录再改指向；原目录<b>保留</b>作为回退，确认无误后可自行删除。目标目录必须是空的。' +
-      '<br><b>仅切换</b>：只改指向、不搬任何文件 —— 适合你已经手动搬好数据，或想从空库重新开始。' +
-      '<br>⚠ <b>两种方式都要重启应用才生效</b>：当前进程已经打开了旧目录的数据库，继续用会把它写回旧位置。' +
-      '</p>');
-    if (window.JCDesktop && window.JCDesktop.relaunch) {
-      rows.push('<div class="cli-actions"><button class="btn-outline" data-ddact="restart">立即重启应用</button></div>');
+    const pendingRestart = !!(p.configuredDir && p.configuredDir !== p.dataDir);
+    if (pendingRestart) {
+      rows.push('<div class="banner warn" style="flex-wrap:wrap">' +
+        '<span style="flex:1;min-width:200px">⚠ 新目录要<b>重启应用</b>才会生效：当前进程仍打开着旧目录的数据库，继续使用会把它写回旧位置。</span>' +
+        (window.JCDesktop && window.JCDesktop.relaunch
+          ? '<button class="btn-mini" data-ddact="restart">立即重启</button>' : '') +
+        '</div>');
     }
 
     return '<section class="scard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
