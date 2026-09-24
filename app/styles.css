@@ -516,19 +516,11 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .slots{display:flex;flex-wrap:wrap;align-items:center;align-content:center;gap:8px;min-width:0}
 html[data-slotmode="deck"] .slots{flex-wrap:nowrap;position:relative}
 html[data-slotmode="deck"] .cell-slots{overflow:visible;position:relative}
-/* 收拢态：只露前 2 张（第 2 张压上来只露一条边），其余收进「+N」数量角标 */
-html[data-slotmode="deck"] .slots:not(.deck-open) .thumb + .thumb{margin-left:-32px}
-html[data-slotmode="deck"] .slots:not(.deck-open) span.thumb:nth-of-type(n+3){display:none}
-.deckcount{display:none;flex:none;font-family:var(--mono);font-size:11px;font-weight:600;
-  color:var(--ink48);cursor:pointer}
-html[data-slotmode="deck"] .slots:not(.deck-open) .deckcount{display:inline-grid;place-items:center;
-  width:26px;height:var(--thumb-h);border-radius:8px;border:1px dashed var(--chipgray);background:var(--pearl)}
+/* 收拢态的叠放边距由 layoutDecks()（app.js）按列宽实测后逐张写入行内样式：
+   能完整并排的排开，放不下的全部叠进牌堆（每张露 3px 边，最上面一张完整可见）。
+   ⚠ CSS 不预置重叠量 —— 负 margin 全部由 JS 实测计算，避免与实测值互相打架。 */
 /* 摊开态：以**牌组所在位置为中心**向左右展开并整体上浮放大（translate -50% 居中 +
    scale 1.06），浮层压过相邻行/列（z-index:6），重阴影强化"悬浮"感；
-   ⚠ 定位上下文是 cell-slots（position:relative），否则会以整表为锚点飘到表左缘。 */
-/* 摊开态：以**牌组所在位置为中心**向左右展开并整体上浮放大（translate -50% 居中 +
-   scale 1.06），浮层压过相邻行/列（z-index:6），重阴影强化"悬浮"感；
-   ⚠ 定位上下文是 cell-slots（position:relative），否则会以整表为锚点飘到表左缘。
    0.38.5：摊开**单行不换行**（超宽时格内横向滑动兜底），入场动画改带轻微
    回弹的缓动（.22s cubic-bezier 回弹曲线），替代原先生硬的 .16s 直入。 */
 html[data-slotmode="deck"] .slots.deck-open{
