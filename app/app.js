@@ -4825,17 +4825,8 @@
        两个形态的"关闭位置"差了整整一个屏幕宽（抽屉 = translateX(480px) 视口外；
        居中 = 屏幕正中）。若不摘布局就改类，浏览器会把这次类变更当成一次**过渡**，
        于是首次从首页打开设置时，窗口会从右侧抽屉位横扫到屏幕中央 —— 实测可见。
-       ⚠ 但"摘成 display:none"必须真正被浏览器算过一次样式才算数：下面 4845 那次
-         重排取的"变更前样式"是**上一次样式重算**的结果，若 hidden=true 与末尾的
-         hidden=false 落在同一同步任务里、中间没有任何重算，display:none 就从未生效，
-         变更前样式仍是启动时的抽屉位 translateX(100%) —— 首开照样从右横扫到中央
-         （2026-09-25 用户实测：重启后首开从右飞入，关掉再开才正常 —— 后者之所以
-         一直没事，是因为 closeSettings 对居中态真的落了 hidden，窗口在 display:none
-         里真实停靠过一次）。所以摘布局后必须立刻强制一次重排。 */
-    if (dr.classList.contains('center') !== center) {
-      dr.hidden = true;
-      void dr.offsetWidth;
-    }
+       摘成 display:none 后，类变更不产生过渡，位置直接落定。 */
+    if (dr.classList.contains('center') !== center) dr.hidden = true;
     dr.classList.toggle('center', center);
     mk.classList.toggle('center', center);
     if (inline) mountInlinePanel('settings');
@@ -4879,26 +4870,6 @@
       /* 抽屉这时已经可交互了：如果用户在等待期间改过任何设置项，就别拿服务端的旧值盖回去，
          否则他的修改会当场回退（"先显示、后刷新"必须配这个守卫）。 */
       if (st && !S.settingsDirty) S.settings = st;
-      /* ⚠ 这次重绘必须等入场动画（0.2s）跑完再执行：动画进行中整面板重建 innerHTML
-         会强制一次完整的样式+布局，顶掉正在跑的合成动画 —— 冷启动首开实测恰好
-         在这里掉帧 46-75ms（2026-09-25，用户感知为"第一次点开设置卡一下"）。
-         二次打开时接口只要 ~2ms，重建并进了首帧所以没事 —— 这正是"只有第一次卡"的原因。
-         晚 0.1-0.2s 刷数据毫无感知。 */
-      await new Promise((resolve) => {
-        const drawer = $('#settingsDrawer');
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          drawer.removeEventListener('transitionend', finish);
-          clearTimeout(tid);
-          resolve();
-        };
-        /* 兜底定时器：transitionend 可能不来（系统开了"减少动态效果"没有过渡、
-           等待期间抽屉被关闭/display:none 打断过渡等），不能让数据永远刷不上。 */
-        const tid = setTimeout(finish, 350);
-        drawer.addEventListener('transitionend', finish);
-      });
       renderSettings();
       /* 冷启动时后端会用"读取中"占位限时返回（不为了一个 9 秒的探测卡住响应）→ 补拉一次，
          免得抽屉一直停在占位文案上。只在抽屉还开着时执行。 */
@@ -4966,14 +4937,15 @@
     }
     const installed = info ? info.installed : null;
 
-    /* 态 1：没装 —— 最需要被明确告知的状态。0.37.4 精简：说明压成一句动作指引，
-       「官方源」这个信任点保留；路径与官方版本降为次要行。 */
+    /* 态 1：没装 —— 最需要被明确告知的状态 */
     if (installed === false) {
       return '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
         '<span><b>未安装</b>　·　没有它就无法生成视频' +
         '<span class="hint-sm" style="display:block">' +
-        '点「安装创作 CLI」从即梦官方源下载，装到 <code>' + esc(info.exePath) + '</code>' +
-        (info.latest && info.latest.ok && info.latest.version ? '　·　官方当前版本 ' + esc(info.latest.version) : '') +
+        '创作 CLI 是即梦官方的命令行工具，本应用靠它调用生成能力。' +
+        '点「安装创作 CLI」会从<b>即梦官方源</b>下载并装到 <code>' + esc(info.exePath) + '</code>' +
+        '（与官方安装脚本用的位置一致，不经过第三方）。' +
+        (info.latest && info.latest.ok && info.latest.version ? '　官方当前版本 ' + esc(info.latest.version) + '。' : '') +
         '</span></span></div>';
     }
 
@@ -5003,23 +4975,18 @@
         '</span></span></div>';
     }
 
-    /* 态 3：就绪。0.37.4 精简：安装路径挪进卡片 tooltip —— 路径很长且只在排查时有用，
-       常驻版面会把「已就绪 · 账号 · 积分」挤成路径展示位。 */
+    /* 态 3：就绪 */
     const build = dInfo && dInfo.commit ? esc(String(dInfo.commit).slice(0, 7)) : null;
-    return '<div class="statecard ok"' + (info && info.exePath ? ' title="安装位置：' + esc(info.exePath) + '"' : '') + '>' + I.check +
+    return '<div class="statecard ok">' + I.check +
       '<span>已就绪' +
       (dAcct && dAcct.userId != null ? '　·　账号 <b>' + esc(String(dAcct.userId)) + '</b>' + (dAcct.vipLevel ? '（' + esc(dAcct.vipLevel) + '）' : '') : '') +
       (credit != null ? '　·　积分 <b>' + credit + '</b>' : '') +
       (creditAt ? '　<span class="hint-sm">读取于 ' + esc(creditAt) + (stale ? '（已过期，正在后台更新…）' : '') + '</span>' : '') +
-      ((build || (info && info.latest && info.latest.ok && info.latest.version))
-        ? '<span class="hint-sm" style="display:block">' +
-          (build ? '本机构建 <code>' + build + '</code>' : '') +
-          (info && info.latest && info.latest.ok && info.latest.version
-            ? (build ? '　·　' : '') + '官方当前版本 <b>' + esc(info.latest.version) + '</b>'
-            : '') +
-          '</span>'
-        : '') +
-      '</span></div>';
+      '<span class="hint-sm" style="display:block">' +
+      (build ? '本机构建 <code>' + build + '</code>' : '') +
+      (info && info.latest && info.latest.ok && info.latest.version ? '　·　官方当前版本 <b>' + esc(info.latest.version) + '</b>' : '') +
+      (info && info.exePath ? '　·　<code>' + esc(info.exePath) + '</code>' : '') +
+      '</span></span></div>';
   }
 
   /* 更新提示：只在"确实发现新版本"时出现，不打扰已经是最新的用户 */
@@ -5080,8 +5047,7 @@
       ? '<button class="btn-mini btn-mini-cta" data-updact="install">下载并安装 ' + esc(String(u.lastCheck.latestVersion)) + '</button>'
       : '<button class="btn-mini" data-updact="check"' + dis + '>' + (busy === 'check' ? '检查中…' : '检查更新') + '</button>';
 
-    /* id="updCard"：下载期间只重绘这一张卡片（见 refreshUpdateCard），不整抽屉重绘 */
-    return '<section class="scard" id="updCard">' +
+    return '<section class="scard">' +
       '<div class="scard-hd"><div class="scard-hd-t"><h3>应用更新</h3>' +
       '<p>桌面版可在应用内完成更新：下载 → 校验 → 静默安装 → 自动重启</p></div></div>' +
       '<div class="scard-bd">' +
@@ -5094,20 +5060,6 @@
         state +
         '<div class="cli-actions">' + btns + '</div>' +
       '</div></section>';
-  }
-
-  /* 只重绘「应用更新」这一张卡片（0.37.2 修）。
-     之前下载进度的更新走的是 `querySelector('[data-updact="install"]')` —— 但下载期间
-     busy='download'，canInstall=false，**那个按钮根本不在 DOM 里**，于是进度存进了
-     S.appUpdate 却永远画不出来；只有关掉抽屉再重开（整抽屉重绘）才能看到新进度，
-     这就是"进度条要关两次设置页才动"的根因。
-     ⚠ 必须只重绘这一张卡片、绝不能整抽屉 renderSettings()：整抽屉重绘会刷掉用户
-       的滚动位置与正在查看的内容（注释见 runUpdateAction 里的原始说明）。
-     ⚠ 网页版 / 抽屉未开时没有这个节点 → 直接跳过，重开时 renderSettings() 会用
-       最新状态画一遍。 */
-  function refreshUpdateCard() {
-    const el = document.getElementById('updCard');
-    if (el) el.outerHTML = appUpdateHTML();
   }
 
   /* 按钮：按"当前该做什么"决定给哪几个 —— 没装就只给安装，别拿登录按钮干扰 */
@@ -5289,15 +5241,17 @@
 
     if (kind === 'install') {
       u().busy = 'download'; u().error = null; renderSettings();
-      /* 下载是长请求（100+ MB），另开轮询显示百分比。只重绘「应用更新」这一张卡片，
-         不整抽屉重绘 —— 整块重绘会把用户正在看的内容刷掉。
-         ⚠ 0.37.2 之前这里 patch 的是 [data-updact="install"]，但下载期间该按钮根本
-           不在 DOM 里（busy='download' → canInstall=false），进度永远画不出来。 */
+      /* 下载是长请求（100+ MB），另开轮询显示百分比。只改按钮文案，不整块重绘 ——
+         整块重绘会把用户正在看的内容刷掉。 */
       const timer = setInterval(async () => {
         try {
           const st = await J.updateStatus();
           S.appUpdate.progress = st.progress;
-          refreshUpdateCard();
+          const el = document.querySelector('[data-updact="install"]');
+          if (el && st.progress && st.progress.active) {
+            const pct = st.progress.total ? Math.floor(st.progress.got / st.progress.total * 100) : 0;
+            el.textContent = '下载中 ' + pct + '%（' + (st.progress.got / 1048576).toFixed(1) + ' MB）…';
+          }
         } catch (e) { /* 进度查询失败不影响下载本身 */ }
       }, 800);
       try {
@@ -5540,25 +5494,26 @@
             '<span class="switch' + (s.queue.autoRetry ? ' on' : '') + '" data-toggle="autoRetry"><i></i></span></div>' +
         '</div>' +
       '</section>' +
-      /* —— 卡片 4 · 个性化（显示偏好；2026-09-20 新增，原顶栏「紧凑视图」按钮并入此处） ——
-         0.37.4 文案精简：说明只留一句「是什么」，操作细节进 tooltip。
-         实现细节（.compact 类、localStorage 键、具体像素值）是给开发者的，不进界面 ——
-         那些内容的完整版在 docs/CHANGELOG.md 的 0.20.x / 0.21.0 条目里，随时可查。 */
+      /* —— 卡片 4 · 个性化（显示偏好；2026-09-20 新增，原顶栏「紧凑视图」按钮并入此处） —— */
       '<section class="scard">' +
         '<div class="scard-hd"><div class="scard-hd-t">' +
-          '<h3>个性化</h3><p>只影响界面显示，不改动生成参数</p></div></div>' +
+          '<h3>个性化</h3><p>界面显示偏好，只影响本页外观，不改动任何生成参数</p></div></div>' +
         '<div class="scard-bd">' +
           '<div class="srow"><span class="k">紧凑视图</span>' +
-            '<span class="switch' + (isCompact() ? ' on' : '') + '" data-toggle="compact" title="行高与缩略图缩小，同屏多看几条分镜；刷新后回到标准视图"><i></i></span></div>' +
+            '<span class="switch' + (isCompact() ? ' on' : '') + '" data-toggle="compact" title="行高与缩略图缩小，同屏看到更多分镜"><i></i></span></div>' +
+          '<p class="hint-sm">开启后行高 132px、素材格 32×40、产物格 56×36，一屏能多看几条分镜；关闭即标准视图。' +
+            '与原来顶栏那个「紧凑视图」按钮是同一套逻辑（切换 <code>#app</code> 上的 <code>.compact</code> 类），' +
+            '只是入口挪到了这里。此项为即时生效的显示偏好，不写入服务端配置，刷新后回到标准视图。</p>' +
           /* v0.21.0：外观（深色模式）。三态用 .seg 分段控件；选中态读 <html data-theme-mode>
              （用户的选择），而不是解析后的 <html data-theme> —— 否则"跟随系统"回显不出选中。 */
           '<div class="srow"><span class="k">外观</span>' +
-            '<span class="seg" id="themeSeg" title="选择保存在本机">' +
+            '<span class="seg" id="themeSeg">' +
               '<button data-toggle="theme" data-theme-val="auto"' + (themeChoice() === 'auto' ? ' class="on"' : '') + '>跟随系统</button>' +
               '<button data-toggle="theme" data-theme-val="light"' + (themeChoice() === 'light' ? ' class="on"' : '') + '>浅色</button>' +
               '<button data-toggle="theme" data-theme-val="dark"' + (themeChoice() === 'dark' ? ' class="on"' : '') + '>深色</button>' +
             '</span></div>' +
-          '<p class="hint-sm">「跟随系统」随系统的浅色 / 深色偏好自动切换</p>' +
+          '<p class="hint-sm">「跟随系统」随操作系统的浅色/深色偏好自动切换；「浅色 / 深色」是你的显式选择，优先于系统。' +
+            '此项为即时生效的显示偏好，保存在本机（<code>localStorage</code> 的 <code>jmc.theme</code>），不写入服务端配置。</p>' +
         '</div>' +
       '</section>' +
       /* —— 卡片 5 · 生成引擎与账号（全局的「检测」升到卡片头）——
@@ -5569,7 +5524,7 @@
       '<section class="scard">' +
         '<div class="scard-hd">' +
           '<div class="scard-hd-t"><h3>生成引擎与账号</h3>' +
-            '<p>全部生成都由创作 CLI（dreamina）执行，引擎随默认模型自动匹配</p></div>' +
+            '<p>引擎随所选模型自动匹配，无需手动切换。本项目只有创作 CLI（dreamina）一个生成引擎。</p></div>' +
           '<button class="btn-mini" data-cliact="check"' + (S.cliBusy ? ' disabled' : '') + ' title="强探创作 CLI：读取登录态、账号与最新积分（强制重探，不受缓存影响）">' + (S.cliBusy === 'check' ? '检测中…' : '检测连接状态') + '</button>' +
         '</div>' +
         '<div class="scard-bd">' +
@@ -5591,7 +5546,9 @@
             '<div class="sblock-hd"><b>创作 CLI（dreamina）</b></div>' +
             cliStateCardHTML(dreaminaProbing, dreaminaOk, dInfo, dAcct, dreaminaCredit, creditAt, dreaminaStale, S.cliInfo) +
             cliUpdateNoticeHTML(S.cliInfo) +
-            '<p class="hint-sm">负责全部视频生成链路。「切换账号」会先退出当前账号并要求确认。</p>' +
+            '<p class="hint-sm">命令：<code>dreamina</code>　·　负责视频生成的全部链路（<code>--image</code> / <code>--audio</code> 混合参考）。' +
+              '下方按钮作用于创作 CLI 自己的 OAuth 登录态：<b>未登录时显示「登录账号」，已登录时显示「切换账号」</b>。' +
+              '<b>「切换账号」会先退出现有账号</b>（CLI 的 <code>relogin</code> 语义），因此会先弹一次确认</p>' +
             '<div class="cli-actions">' + cliActionsHTML(S.cliInfo, dreaminaOk) + '</div>' +
           '</div>' +
           /* 待完成的创作 CLI 授权：后端在启动授权后就把链接落库，这里轮询显示，随时可点 */
@@ -5792,27 +5749,6 @@
        两页的内容都是整体重绘的，所以事件一律挂在容器上委托，
        与 #recView / #panel 的做法一致。 */
     bindPageViews();
-
-    /* 应用更新的**主进程推送**（0.37.2 接上）：状态切换（idle/checking/downloading/
-       ready/installing）时 desktop/main.js 的 broadcastUpdateState() 会发 'update:state'。
-       ⚠ 这个通道在 preload.js 里早就暴露了（JCDesktop.onUpdateState），但渲染端一直
-         没订阅 —— 于是从**托盘**发起的检查/下载，设置抽屉里完全无感（抽屉只在
-         打开时画一次快照）。
-       ⚠ 下载中的百分比**不靠它**：主进程只在状态切换时广播，tick 之间不广播；
-         进度由 runUpdateAction 里的 800ms 轮询驱动。这里只负责"状态变了"这类跳变。
-       ⚠ 载荷里的 busy 是主进程状态机的布尔值，与渲染端自己的 busy（'check'/'download'）
-         语义不同，**不覆盖** —— 渲染端的 busy 由动作的 await 生命周期管理。 */
-    if (window.JCDesktop && window.JCDesktop.onUpdateState) {
-      window.JCDesktop.onUpdateState((p) => {
-        if (!p || typeof p !== 'object') return;
-        const u = (S.appUpdate = S.appUpdate || {});
-        u.progress = p.progress;                        // 下载进度的活引用（got 会持续变）
-        if (p.lastCheck) u.lastCheck = p.lastCheck;     // 托盘发起的检查，结果从这里回来
-        if (p.installing) u.installing = true;          // 安装器拉起 → 显示"正在安装"卡片
-        if (p.state === 'idle') u.busy = null;          // 主进程已收尾
-        refreshUpdateCard();
-      });
-    }
 
     /* 快速多选：素材网格与分镜列表各挂一次框选引擎。
        两边共用同一套拖拽/区间逻辑，差异只在「项选择器」与「选择态怎么落地」。
@@ -6120,46 +6056,6 @@
   }
   const persetsFix = (v) => (v && v.trim()) ? v : ';;';
 
-  /* 合成器预热（只跑一次）：首开设置时的居中弹窗是"新图层 + 大阴影 + 全屏遮罩"的
-     组合，它们的**首次**图层创建与栅格化会让整个窗口的画面冻结 ~60-80ms
-     （2026-09-25 实测：主线程全程空闲（定时器零空洞），冻结发生在合成器/GPU 侧；
-     二次打开图层已热所以顺滑 —— 用户感知为"第一次点开设置卡一下"）。
-     这里在启动空闲时把**真实面板**切到居中关闭位、**真实遮罩**临时显形
-     （都是 opacity 0.01：0 会被合成器整层剔除、不参与栅格化，0.01 不可感知），
-     各真实渲染一帧，把这套一次性成本消化在用户点击之前。实测预热后首开与二开同样顺滑。
-     ⚠ transition 必须临时关掉：boot 时面板还停在抽屉位，开着过渡会让它
-       在屏幕上横扫一次（可见闪屏）。
-     ⚠ 就地模式 / 已打开时不预热：.center 对 .inline 有 :not() 互斥保险，
-       但别去动一个已被 mountInlinePanel 管着的节点；已打开说明用户比预热更快，
-       预热没有意义还添乱。 */
-  let compositorWarmed = false;
-  function warmCompositor() {
-    if (compositorWarmed) return;
-    compositorWarmed = true;
-    const dr = $('#settingsDrawer');
-    const mk = $('#settingsMask');
-    if (!dr || !mk || dr.classList.contains('open') || dr.classList.contains('inline')) return;
-    if (dr.parentElement !== document.body) return;
-    /* 面板切到居中关闭位；遮罩临时显形。两者都 opacity 0.01（0 会被合成器整层
-       剔除、不参与栅格化；0.01 不可感知），遮罩还临时禁用点击防止吃掉用户输入。 */
-    dr.classList.add('center');
-    dr.style.transition = 'none';
-    dr.style.opacity = '0.01';
-    mk.hidden = false;
-    mk.style.transition = 'none';
-    mk.style.opacity = '0.01';
-    mk.style.pointerEvents = 'none';
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      dr.style.transition = '';
-      dr.style.opacity = '';
-      dr.classList.remove('center');
-      mk.hidden = true;
-      mk.style.transition = '';
-      mk.style.opacity = '';
-      mk.style.pointerEvents = '';
-    }));
-  }
-
   /* ---------------------------------------------------------- 启动 */
   async function boot() {
     initTheme();   // 主题先于一切：解析持久化偏好 → 写 <html data-theme>，避免首屏闪色
@@ -6182,10 +6078,6 @@
         if ($('#settingsDrawer').classList.contains('open')) renderSettings();
       } catch (e) { /* 忽略 */ }
     }, 2500);
-    /* 合成器预热排在首屏落定之后的空闲时点：既不跟首屏抢主线程，
-       又赶在用户点开设置之前（点击一般发生在启动数秒后）。 */
-    const whenIdle = window.requestIdleCallback || ((f) => setTimeout(f, 1200));
-    whenIdle(() => warmCompositor(), { timeout: 3000 });
   }
   boot();
 })();
