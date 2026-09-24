@@ -5003,23 +5003,29 @@
         '</span></span></div>';
     }
 
-    /* 态 3：就绪。0.37.4 精简：安装路径挪进卡片 tooltip —— 路径很长且只在排查时有用，
-       常驻版面会把「已就绪 · 账号 · 积分」挤成路径展示位。 */
-    const build = dInfo && dInfo.commit ? esc(String(dInfo.commit).slice(0, 7)) : null;
-    return '<div class="statecard ok"' + (info && info.exePath ? ' title="安装位置：' + esc(info.exePath) + '"' : '') + '>' + I.check +
-      '<span>已就绪' +
-      (dAcct && dAcct.userId != null ? '　·　账号 <b>' + esc(String(dAcct.userId)) + '</b>' + (dAcct.vipLevel ? '（' + esc(dAcct.vipLevel) + '）' : '') : '') +
-      (credit != null ? '　·　积分 <b>' + credit + '</b>' : '') +
-      (creditAt ? '　<span class="hint-sm">读取于 ' + esc(creditAt) + (stale ? '（已过期，正在后台更新…）' : '') + '</span>' : '') +
-      ((build || (info && info.latest && info.latest.ok && info.latest.version))
-        ? '<span class="hint-sm" style="display:block">' +
-          (build ? '本机构建 <code>' + build + '</code>' : '') +
-          (info && info.latest && info.latest.ok && info.latest.version
-            ? (build ? '　·　' : '') + '官方当前版本 <b>' + esc(info.latest.version) + '</b>'
-            : '') +
-          '</span>'
-        : '') +
-      '</span></div>';
+    /* 态 3：就绪。0.37.5 再精简（使用者明确要求）：常驻版面**只显示「账号 · 积分 · 版本」**三项。
+       「已就绪」二字删掉 —— 绿色卡片 + 对勾本身就在说这件事；积分读取时间、本机构建
+       commit、安装路径全部降为悬停提示（排查时仍可查到，不再占常驻版面）。
+       ⚠ 版本只显示**官方当前版本**（官方 version.json 的语义化版本，应用内更新比对的就是它）；
+         本机构建 commit 是另一个来源（exe 自己报的），两者语义不同、不能混排 ——
+         所以 commit 只进 tooltip 且标注「本机构建」，防止读成同一个东西（AGENTS 有此判据）。 */
+    const build = dInfo && dInfo.commit ? String(dInfo.commit).slice(0, 7) : null;
+    const ver = info && info.latest && info.latest.ok && info.latest.version ? esc(info.latest.version) : null;
+    const parts = [];
+    if (dAcct && dAcct.userId != null) {
+      parts.push('账号 <b>' + esc(String(dAcct.userId)) + '</b>' + (dAcct.vipLevel ? '（' + esc(dAcct.vipLevel) + '）' : ''));
+    }
+    if (credit != null) {
+      const tip = creditAt ? '读取于 ' + esc(creditAt) + (stale ? '，已过期，正在后台更新' : '') : '';
+      parts.push('<span' + (tip ? ' title="' + esc(tip) + '"' : '') + '>积分 <b>' + credit + '</b>' +
+        (stale ? '<span class="hint-sm">（更新中…）</span>' : '') + '</span>');
+    }
+    if (ver) parts.push('版本 <b>' + ver + '</b>');
+    const tips = [];
+    if (info && info.exePath) tips.push('安装位置：' + info.exePath);
+    if (build) tips.push('本机构建 ' + build);
+    return '<div class="statecard ok"' + (tips.length ? ' title="' + esc(tips.join('　·　')) + '"' : '') + '>' + I.check +
+      '<span>' + (parts.length ? parts.join('　·　') : '就绪') + '</span></div>';
   }
 
   /* 更新提示：只在"确实发现新版本"时出现，不打扰已经是最新的用户 */
@@ -5568,20 +5574,21 @@
            以及 server/services.js「不再有"一次检测两个 CLI"这回事」自相矛盾。2026-09-23 一并清掉。 */
       '<section class="scard">' +
         '<div class="scard-hd">' +
-          '<div class="scard-hd-t"><h3>生成引擎与账号</h3>' +
-            '<p>全部生成都由创作 CLI（dreamina）执行，引擎随默认模型自动匹配</p></div>' +
+          '<div class="scard-hd-t"><h3>生成引擎与账号</h3></div>' +
           '<button class="btn-mini" data-cliact="check"' + (S.cliBusy ? ' disabled' : '') + ' title="强探创作 CLI：读取登录态、账号与最新积分（强制重探，不受缓存影响）">' + (S.cliBusy === 'check' ? '检测中…' : '检测连接状态') + '</button>' +
         '</div>' +
         '<div class="scard-bd">' +
+          /* 默认模型与引擎的绑定关系不再常驻展示（使用者要求本卡只留「账号 · 积分 · 版本」；
+             绑定事实由卡片标题「生成引擎与账号」与下方子块表达）。只在**有话必须说**时出现：
+             模型不可用（保留原警示卡）、旧名映射 / 建议改选（defaultsNotice 消息自含，独立成卡）。 */
           (dmNotice && dmNotice.reason === 'unavailable'
             ? '<div class="statecard" style="background:var(--warn-bg);color:var(--warn)">' + I.warn +
               '<span>默认模型 <b>' + esc(labelOf(o.models, s.defaults.model) || s.defaults.model) + '</b> → <b>' + esc(engineLabelOf(o, s.defaults.model, false)) + '</b>　·　<b>当前不可用</b>：' + esc(dmNotice.message) +
               '<span class="hint-sm" style="display:block">你的选择已被<b>原样保留</b>（系统不会自动改写默认模型）。新分镜仍会使用它，等该引擎恢复可用后即可正常生成；若想立刻出片，请在上方「默认模型」里改选一个当前可用的模型。</span></span></div>'
-            : '<div class="statecard ok">' + I.check +
-              '<span>默认模型 <b>' + esc(labelOf(o.models, s.defaults.model) || s.defaults.model) + '</b> → <b>' + esc(engineLabelOf(o, s.defaults.model, false)) + '</b>　·　全部可用模型均由创作 CLI 执行</span>' +
-              (dmNotice && dmNotice.reason === 'invalid'
-                ? '<span class="hint-sm" style="display:block">' + esc(dmNotice.message) + '</span>' : '') +
-              '</div>') +
+            : (dmNotice
+              ? '<div class="statecard" style="background:var(--primary-bg);color:var(--ink80)">' + I.warn +
+                '<span>' + esc(dmNotice.message) + '</span></div>'
+              : '')) +
           /* —— 创作 CLI：唯一的生成引擎（画布 CLI 已移除）——
              三态（没装 / 装了没登录 / 就绪）+ 安装·更新入口。
              渲染见上面的 cliStateCardHTML / cliUpdateNoticeHTML / cliActionsHTML。
@@ -5591,7 +5598,8 @@
             '<div class="sblock-hd"><b>创作 CLI（dreamina）</b></div>' +
             cliStateCardHTML(dreaminaProbing, dreaminaOk, dInfo, dAcct, dreaminaCredit, creditAt, dreaminaStale, S.cliInfo) +
             cliUpdateNoticeHTML(S.cliInfo) +
-            '<p class="hint-sm">负责全部视频生成链路。「切换账号」会先退出当前账号并要求确认。</p>' +
+            /* 「负责全部视频生成链路…」说明段已删（0.37.5，使用者要求只留账号/积分/版本）；
+               「切换账号会先退出并确认」的警示在切换按钮的 title 悬停提示里，未丢失。 */
             '<div class="cli-actions">' + cliActionsHTML(S.cliInfo, dreaminaOk) + '</div>' +
           '</div>' +
           /* 待完成的创作 CLI 授权：后端在启动授权后就把链接落库，这里轮询显示，随时可点 */
