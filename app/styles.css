@@ -405,7 +405,10 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .row{
   display:grid;
   grid-template-columns:var(--sb-grid);   /* 列宽见 :root --sb-grid（与 .colhead 同源，改一处即可） */
-  height:var(--row-h);
+  /* 0.38.0：height → min-height。素材格满了以后「＋」槽位要换行到第二行，
+     行必须允许长高（原固定 height 会把换行内容裁掉——这正是"加号槽位被图片
+     挡住"的根因之一）。没换行的行高度不变（min-height 托底）。 */
+  min-height:var(--row-h);
   align-items:center;
   background:var(--surface);
   border-bottom:1px solid var(--divider);
@@ -501,7 +504,10 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .dur.locked button{opacity:calc(var(--disabled-opacity) - .15);cursor:not-allowed;background:none}
 
 /* 素材格 */
-.slots{display:flex;align-items:center;gap:8px;min-width:0}
+/* 0.38.0 加 flex-wrap:align-content 让多行后垂直居中。此前不换行 —— 图片绑满一列
+   时「＋」槽位被顶出单元格（cell overflow:hidden 裁掉），使用者再也找不到加资产
+   的入口，资产选择弹窗里的「已添加 X / 上限 Y」统计也随之"消失"。 */
+.slots{display:flex;flex-wrap:wrap;align-items:center;align-content:center;gap:8px;min-width:0}
 .thumb{
   width:var(--thumb-w);height:var(--thumb-h);border-radius:8px;flex:none;
   position:relative;overflow:hidden;display:grid;place-items:center;
@@ -534,6 +540,17 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .row:hover .slot-add{opacity:1}
 .slot-add:hover{border-color:var(--primary);background:var(--primary-bg)}
 .dash{font-size:13px;color:var(--chipgray)}
+
+/* ==================== 提示词行内编辑（0.38.0） ====================
+   编辑器原地替换 .prompt-text（见 app.js startPromptEdit）。
+   配色全走主题令牌，浅色 / 深色 / 跟随系统三态自动适配。 */
+.prompt-editor-ta{
+  width:100%;min-height:96px;max-height:240px;resize:vertical;
+  border:1px solid var(--primary);border-radius:8px;background:var(--surface);
+  color:var(--ink);font-family:inherit;font-size:12.5px;line-height:1.7;padding:8px 10px;
+}
+.prompt-editor-ta:focus{outline:none;box-shadow:0 0 0 2px var(--primary-bg)}
+.prompt-editor-foot{display:flex;align-items:center;gap:8px;margin-top:6px}
 
 /* ============================ 素材图号徽标 ============================
    这个数字有两重含义，且必须一致：
