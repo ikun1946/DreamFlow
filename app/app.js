@@ -2895,7 +2895,7 @@
      退出方式：右上角关闭按钮 / ESC / 点击图片外空白区域。
      ESC 监听挂在捕获阶段并 stopPropagation——避免同一按键把底下的详情弹窗也关掉。 */
   /* 全屏查看器的公共外壳：遮罩 + 关闭钮 + Esc / 点空白退出。inner 由调用方给，返回 close()。 */
-  function openFullscreenShell(innerHTML, extraClass) {
+  function openFullscreenShell(innerHTML, extraClass, onClose) {
     const v = document.createElement('div');
     v.className = 'fs-viewer' + (extraClass ? ' ' + extraClass : '');
     v.style.zIndex = 300;
@@ -2909,6 +2909,7 @@
       closed = true;
       document.removeEventListener('keydown', onKey, true);
       v.remove();
+      if (onClose) onClose();   // 0.39.x：关闭回调（全屏编辑器的"关闭时自动保存"用）
     };
     const onKey = (ev) => {
       if (ev.key !== 'Escape') return;
@@ -2938,39 +2939,48 @@
 
   /* 提示词全屏**编辑**（0.39.1）：使用者要求"全屏观看也要能更改"。
      与行内文本框走同一条 PATCH 路径；打开时带上行内文本框的未保存内容（如有），
-     保存后同步回行内并清脏标记。Esc / × / 点空白 = 退出全屏（不保存，行内内容不动）。 */
+     保存后同步回行内并清脏标记。Esc / × / 点空白 = 退出全屏。
+     0.39.x：右上角的保存按钮删除（使用者要求）—— 改为**关闭时自动保存**（与行内
+     "失焦保存"同一语义），Ctrl+Enter 仍可随时立即保存且不关闭。 */
   function openPromptZoom(s) {
     const rowTa = document.querySelector('.prompt-ta[data-ptext="' + s.id + '"]');
     const start = rowTa ? rowTa.value : String(s.prompt || '');
-    const close = openFullscreenShell(
-      '<div class="fs-panel fs-promptedit">' +
-        '<div class="fs-panel-head"><b>分镜 ' + s.seq + ' · 提示词</b>' +
-          '<span class="grow"></span>' +
-          '<span class="hint-sm" id="fsPCount"></span>' +
-          '<button class="btn-mini btn-primary" id="fsPSave">保存（Ctrl+Enter）</button></div>' +
-        '<div class="fs-panel-body">' +
-          '<textarea class="prompt-ta" id="fsPTA" maxlength="2000" placeholder="填写提示词…">' + esc(start) + '</textarea>' +
-        '</div>' +
-      '</div>', 'fs-promptedit');
-    const ta = document.getElementById('fsPTA');
-    const cnt = document.getElementById('fsPCount');
-    const count = () => { cnt.textContent = ta.value.trim().length + ' / 2000 字'; };
-    const save = () => {
+    let close = null;
+    const dirtyNow = () => ta.value.trim() !== String(s.prompt || '').trim();
+    const save = async (closeAfter) => {
       const v = String(ta.value || '').trim();
       if (!v) { toast('提示词不能为空（1–2000 字）', 'err'); return; }
-      Api.patchStoryboard(s.id, { prompt: v }).then((fresh) => {
+      try {
+        const fresh = await Api.patchStoryboard(s.id, { prompt: v });
         const picked = (fresh && fresh.data && (fresh.data.storyboard || fresh.data)) || null;
         if (picked && picked.prompt != null) Object.assign(s, picked); else s.prompt = v;
         if (rowTa) { rowTa.value = v; delete rowTa.dataset.dirty; }   // 同步回行内并清脏
         count();
         toast('提示词已保存');
-      }).catch((e) => toast(errText(e), 'err'));
+        if (closeAfter) close();
+      } catch (e) { toast(errText(e), 'err'); }
     };
+    let saved = true;
+    const onFsClose = () => {
+      /* 关闭全屏时若有未保存改动 → 自动保存（与行内失焦保存同一语义，不丢字） */
+      if (dirtyNow()) save(false);
+    };
+    close = openFullscreenShell(
+      '<div class="fs-panel fs-promptedit">' +
+        '<div class="fs-panel-head"><b>分镜 ' + s.seq + ' · 提示词</b>' +
+          '<span class="grow"></span>' +
+          '<span class="hint-sm" id="fsPCount" title="编辑自动保存；Ctrl+Enter 可立即保存"></span></div>' +
+        '<div class="fs-panel-body">' +
+          '<textarea class="prompt-ta" id="fsPTA" maxlength="2000" placeholder="填写提示词…">' + esc(start) + '</textarea>' +
+        '</div>' +
+      '</div>', 'fs-promptedit', onFsClose);
+    const ta = document.getElementById('fsPTA');
+    const cnt = document.getElementById('fsPCount');
+    const count = () => { cnt.textContent = ta.value.trim().length + ' / 2000 字'; };
     ta.addEventListener('input', count);
     ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(false); }
     });
-    document.getElementById('fsPSave').addEventListener('click', save);
     count();
     ta.focus();
   }
