@@ -515,7 +515,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
    放开 —— 摊开的浮层要能盖过相邻列（z-index:6 压过普通列内容）。 */
 .slots{display:flex;flex-wrap:wrap;align-items:center;align-content:center;gap:8px;min-width:0}
 html[data-slotmode="deck"] .slots{flex-wrap:nowrap;position:relative}
-html[data-slotmode="deck"] .cell-slots{overflow:visible}
+html[data-slotmode="deck"] .cell-slots{overflow:visible;position:relative}
 /* 收拢态：只露前 2 张（第 2 张压上来只露一条边），其余收进「+N」数量角标 */
 html[data-slotmode="deck"] .slots:not(.deck-open) .thumb + .thumb{margin-left:-32px}
 html[data-slotmode="deck"] .slots:not(.deck-open) span.thumb:nth-of-type(n+3){display:none}
@@ -523,11 +523,20 @@ html[data-slotmode="deck"] .slots:not(.deck-open) span.thumb:nth-of-type(n+3){di
   color:var(--ink48);cursor:pointer}
 html[data-slotmode="deck"] .slots:not(.deck-open) .deckcount{display:inline-grid;place-items:center;
   width:26px;height:var(--thumb-h);border-radius:8px;border:1px dashed var(--chipgray);background:var(--pearl)}
+/* 摊开态：以**牌组所在位置为中心**向左右展开并整体上浮放大（translate -50% 居中 +
+   scale 1.06），浮层压过相邻行/列（z-index:6），重阴影强化"悬浮"感；
+   ⚠ 定位上下文是 cell-slots（position:relative），否则会以整表为锚点飘到表左缘。 */
 html[data-slotmode="deck"] .slots.deck-open{
-  position:absolute;left:0;top:50%;transform:translateY(-50%);z-index:6;
-  flex-wrap:wrap;max-width:340px;padding:10px;
-  background:var(--surface);border:1px solid var(--primary);border-radius:12px;
-  box-shadow:var(--shadow-2);
+  position:absolute;left:50%;top:50%;z-index:6;
+  flex-wrap:wrap;min-width:300px;max-width:460px;padding:12px;
+  background:var(--surface);border:1px solid var(--primary);border-radius:14px;
+  box-shadow:0 18px 50px rgba(0,0,0,.4);
+  transform:translate(-50%,-50%) scale(1.06);
+  animation:deck-pop .16s ease;
+}
+@keyframes deck-pop{
+  from{transform:translate(-50%,-50%) scale(.9);opacity:.4}
+  to{transform:translate(-50%,-50%) scale(1.06);opacity:1}
 }
 html[data-slotmode="scroll"] .slots{
   flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;

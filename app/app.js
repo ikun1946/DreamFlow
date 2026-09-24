@@ -2679,11 +2679,12 @@
     const s = rowById(rowEl.dataset.id);
     if (!s) return;
 
-    /* 堆叠牌组（0.39.0）：收拢状态点一下 = 摊开成浮层（预览 / 替换 / 移除等
-       原有动作在摊开后照常可用）。＋ 槽位与 × 移除不拦，维持各自既有流程。 */
+    /* 堆叠牌组（0.39.0）：收拢状态点一下 = 以牌组为中心上浮放大、向左右摊开成浮层
+       （预览 / 替换 / 移除等原有动作在摊开后照常可用）。＋ 槽位与 × 移除不拦；
+       只有 2 张以内没有可摊的东西，点击直接走预览。 */
     if (slotMode() === 'deck' && !t.closest('.slot-add') && !t.closest('[data-unbind]')) {
       const st = t.closest('.slots');
-      if (st && !st.classList.contains('deck-open')) {
+      if (st && !st.classList.contains('deck-open') && st.querySelectorAll('.thumb').length > 2) {
         S.deckOpen = S.deckOpen || {};
         S.deckOpen[st.dataset.deckkey] = true;
         st.classList.add('deck-open');
