@@ -2277,10 +2277,18 @@ function logDreaminaAuth(action, out) {
 
 /* ---------------- 生成记录（项目作用域） ----------------
    阶段 2.6 拆分：原 5 个记录函数已抽到 ./records-layer.js，本文件只 re-export
-   （routes.js 继续 require('./services').<name> 拿到）。这样 services.js 减约 60 行。 */
+   （routes.js 继续 require('./services').<name> 拿到）。这样 services.js 减约 60 行。
+   ⚠⚠ 循环 require：records-layer 顶部 require('./services')，拿到的是**此刻这个
+   还没装配完的 exports 对象**并长期持有。所以下面**必须用 Object.assign 往现有
+   对象上挂载，绝不能 module.exports = {...} 整体替换** —— 替换后 records-layer
+   手里的引用永远是空对象，它回调的 services.<fn> 全部 undefined（0.38.1 前正是
+   "整体替换 + 清单漏了 findSb / plannedEngineFor" → 生成记录详情 500，桌面日志
+   每点一次记录告警一次 circular dependency warning；单测与 e2e 都没覆盖详情接口，
+   静默了近两个月）。records-layer 需要回调的**每一个**内部函数都必须出现在
+   下面的清单里，新增时同步维护。 */
 const recordsLayer = require('./records-layer');
 
-module.exports = {
+Object.assign(module.exports, {
   META, DEFAULT_SETTINGS, splitSegments, stats,
   listStoryboards, getProgress, getStoryboard, createStoryboard, patchStoryboard,
   batchDuration, batchSubmit, cancel, retry, batchDelete, reorder,
@@ -2294,6 +2302,8 @@ module.exports = {
   deleteRecord: recordsLayer.deleteRecord,
   clearRecords: recordsLayer.clearRecords,
   exportRecords: recordsLayer.exportRecords,
+  /* records-layer 回调的内部实现（见上方循环 require 警示） */
+  findSb, plannedEngineFor,
   /* 以下为内部实现，导出只为测试能直接钉住规则（音频预算 / 素材名解析） */
   checkAudioBudget, audioBudgetOf, nameKeys
-};
+});

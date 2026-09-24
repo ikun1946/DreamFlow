@@ -188,6 +188,54 @@ describe('services —— 音频预算（数量与总时长上限）', () => {
   });
 });
 
+describe('records —— 生成记录详情（0.38.1 循环 require 回归）', () => {
+  /* ⚠ 本组测试的加载顺序即**生产顺序**：本文件第 23 行先 require ../server/services，
+     services 在末尾才加载 records-layer —— records-layer 捕获的是装配前的
+     exports 引用。0.38.1 之前 module.exports 漏了 findSb / plannedEngineFor，
+     getRecordDetail 一调用就 TypeError（线上表现：记录详情 500），测试却全绿 ——
+     因为没有任何用例碰过详情接口。这组用例就是补那个洞的。 */
+  test('生产加载顺序下 getRecordDetail 正常返回（findSb / plannedEngineFor 经 services 命名空间可达）', () => {
+    const db = H.sampleDb();
+    db.storyboards.push({
+      id: 'st_r1', projectId: 'pj_t1', workspaceId: 'ws_t1', seq: 1,
+      prompt: '测试提示词', model: 'seedance2.0_vip', status: 'draft', assets: []
+    });
+    db.records.push({
+      id: 'rc_r1', projectId: 'pj_t1', storyboardId: 'st_r1',
+      action: 'dryrun', outcome: 'ok', at: '2026-09-25T00:00:00.000Z'
+    });
+    const d = services.getRecordDetail(db, 'rc_r1', { projectId: 'pj_t1' });
+    assert.equal(d.id, 'rc_r1');
+    assert.equal(d.storyboardExists, true, '记录指向的分镜存在');
+    assert.equal(d.storyboardCurrentModel, 'seedance2.0_vip');
+    assert.equal(d.actionLabel, '干跑');
+    assert.equal(d.currentEngine, 'dreamina', 'plannedEngineFor 应可达（0.38.1 前是 undefined → TypeError）');
+  });
+
+  test('分镜已删除 → 详情仍可读，storyboardExists=false', () => {
+    const db = H.sampleDb();
+    db.records.push({
+      id: 'rc_r2', projectId: 'pj_t1', storyboardId: 'st_gone',
+      action: 'generate', outcome: 'ok', at: '2026-09-25T00:00:00.000Z'
+    });
+    const d = services.getRecordDetail(db, 'rc_r2', { projectId: 'pj_t1' });
+    assert.equal(d.storyboardExists, false);
+    assert.equal(d.storyboardStatus, null);
+  });
+
+  test('跨项目记录 → NOTFOUND（作用域守卫不因回归修复而放松）', () => {
+    const db = H.sampleDb();
+    db.records.push({
+      id: 'rc_f1', projectId: 'pj_other', storyboardId: 'st_x',
+      action: 'dryrun', outcome: 'ok', at: '2026-09-25T00:00:00.000Z'
+    });
+    assert.throws(
+      () => services.getRecordDetail(db, 'rc_f1', { projectId: 'pj_t1' }),
+      /不属于当前项目/
+    );
+  });
+});
+
 describe('services —— 素材名解析的确定性', () => {
   test('nameKeys 对同一输入稳定且幂等', () => {
     const a = services.nameKeys('角色_林雪_正面.png', 'image');

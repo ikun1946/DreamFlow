@@ -13,6 +13,38 @@
 
 ---
 
+#### `0.38.1` — 2026-09-25（修复：点击生成记录详情报"服务内部错误"）
+
+**现象**：使用者反馈「生成记录」界面点击**任意一条**记录都显示服务内部错误（500）。
+桌面日志每点一次就告警一次：`Accessing non-existent property 'findSb' of module
+exports inside circular dependency`，时间戳与点击一一对应。
+
+**根因（0.36.0 记录域拆分时引入，静默近两个月）**：`server/services.js` 在**文件末尾**
+`require('./records-layer')`，紧接着用 `module.exports = {...}` **整体替换**导出对象，
+而替换清单里**漏了** `findSb` 与 `plannedEngineFor`。records-layer.js 顶部的循环
+require 捕获的是**装配前的空 exports 引用**并长期持有 —— 运行期 `services.findSb(...)`
+是 undefined → `TypeError` → GET /records/:id 必然 500。列表接口不走这两个函数所以
+正常，"列表能看、详情打不开"。
+
+**为什么逃过了测试**：单测与 e2e **都没有覆盖过 `GET /records/:id`**（e2e 的干跑
+不落记录，也没有其它黑盒造记录的路径），详情接口自拆分起就是零覆盖。
+
+**修复（server/services.js）**：导出装配从 `module.exports = {...}` 整体替换改为
+**`Object.assign(module.exports, {...})`** 在现有对象上挂载 —— records-layer 捕获的
+引用因此能看到全部导出；同时补上 `findSb` / `plannedEngineFor`。两件事缺一不可：
+第一版只补清单、保留整体替换，被新加的回归测试当场拦下（测试失败暴露修复不完整）。
+
+**回归覆盖（test/02-task-logic.test.js，+3 用例）**：按**生产加载顺序**（先加载
+services）构造记录 + 分镜夹具：详情正常返回（含 actionLabel / storyboardExists /
+currentEngine）；分镜已删 → 详情仍可读（storyboardExists=false）；跨项目记录 →
+NOTFOUND（作用域守卫不放松）。⚠ e2e 未补详情断言的原因：干跑不落记录，黑盒流程
+没有其它造记录的 API —— 详情回归由本组单测承担。
+
+**验证**：`build` ✓ · `check` 45/45 · `lint` 7/7 · `test` **212/212**（+3）·
+`smoke:web` ✓ · `e2e` 53/53。
+
+**版本**：`0.38.0 → 0.38.1`（PATCH：缺陷修复；无接口变更、无数据变更）。
+
 #### `0.38.0` — 2026-09-25（新增：分镜提示词行内编辑；修复：资产槽位被挡、上限统计不可见）
 
 使用者报告分镜控制台三个问题（均在隔离环境实测复现后修复）：
