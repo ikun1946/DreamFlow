@@ -330,6 +330,30 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 }
 .btn-outline:hover{background:var(--primary-bg)}
 .btn-outline:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
+
+/* ---------------------------------------------------------- 主题指示图标（2026-09-24）
+   挂在「设置」按钮上：太阳 = 当前浅色，月亮 = 当前深色。**只表示状态，不改变点击行为**
+   （点下去照旧打开设置抽屉）。
+
+   为什么用**两个 SVG 叠放 + CSS 交叉过渡**，而不是 JS 换 svg / 换字符：
+   换内容必然是一次硬跳变（用户要求避免）；叠放之后由 CSS 按 <html data-theme>
+   对 opacity / transform 做插值，天然连续 —— 而且**动画完全不需要 JS 参与**，
+   主题状态仍然只有一个事实来源（data-theme），图标只是它的投影。
+
+   ⚠ 只给**图标本身**加过渡，不给页面配色加。给全页颜色加 transition 会在切主题时
+     整屏重绘，而且 --ink 这类令牌参与过渡会让文字看起来发虚。
+   ⚠ `prefers-reduced-motion` 不用在这里再写一遍 —— 文件末尾已有全局
+     `*{transition-duration:.001ms}` 兜底。
+   ⚠ 两个 svg 必须都绝对定位在同一个 13×13 盒子里，否则切换时按钮宽度会抖。 */
+[data-theme-icon]{transition:background .15s,color .18s ease}
+.tt-ico{position:relative;width:13px;height:13px;flex:none;display:inline-block}
+.tt-ico svg{position:absolute;inset:0;transition:opacity .18s ease,transform .18s ease}
+/* 浅色：太阳在位；月亮转过 -90° 并缩到 0.5（预置在下一次要出现的方向上） */
+.tt-ico .tt-sun{opacity:1;transform:rotate(0deg) scale(1)}
+.tt-ico .tt-moon{opacity:0;transform:rotate(-90deg) scale(.5)}
+/* 深色：反过来。太阳**朝同一个方向**继续转 +90°，两个图标形成一次连贯的旋转交接 */
+[data-theme="dark"] .tt-ico .tt-sun{opacity:0;transform:rotate(90deg) scale(.5)}
+[data-theme="dark"] .tt-ico .tt-moon{opacity:1;transform:rotate(0deg) scale(1)}
 .btn-dark{
   display:inline-flex;align-items:center;gap:6px;
   font-size:12px;padding:8px 13px;border-radius:8px;

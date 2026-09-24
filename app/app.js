@@ -485,6 +485,7 @@
     const root = document.documentElement;
     root.dataset.themeMode = val;
     root.dataset.theme = (val === 'dark' || (val === 'auto' && systemDark())) ? 'dark' : 'light';
+    syncThemeHint();
   }
   /* 切换主题（来自设置抽屉的分段控件）：应用 + 持久化（写失败静默，隐私模式下 localStorage 会抛）。 */
   function setTheme(v) {
@@ -502,6 +503,25 @@
         else if (mq.addListener) mq.addListener(onChange);
       } catch (e) { /* 旧浏览器忽略 */ }
     }
+  }
+
+  /* 「设置」按钮上主题图标的可读文案（往 title 后追加括号后缀）。
+     ⚠ 图标本身**不由这里切** —— 太阳/月亮是 index.html 里叠放的两个 svg，由 CSS 按
+       <html data-theme> 做交叉过渡。这里只把"当前是什么主题"补进 title，让悬停的人
+       不必靠猜。
+     ⚠ `aria-label` **不动**：图标是 aria-hidden 的装饰（不承担任何点击含义），
+       按钮的可及名必须仍然是"设置"。改了它，屏幕阅读器会以为这是个主题开关。
+     ⚠ 只改属性、不重建节点 —— 与 syncTopActions 同一套做法。
+       基础 title 在**第一次**调用时捕获进 data-base-title，之后每次都在它上面追加，
+       避免每次切主题把后缀叠起来越加越长。 */
+  function syncThemeHint() {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    const suffix = '（当前' + (dark ? '深色' : '浅色') + '主题'
+      + (themeChoice() === 'auto' ? '，跟随系统' : '') + '）';
+    $$('[data-theme-icon]').forEach((b) => {
+      if (!b.dataset.baseTitle) b.dataset.baseTitle = b.title || '';
+      b.title = b.dataset.baseTitle + suffix;
+    });
   }
 
   /* 顶栏主操作按钮的标签同步：「提交所选」要带上已选数量。
