@@ -11,6 +11,27 @@
 > - **本文档** —— 完整变更记录，**所有版本从 0.29.0 → 最新**都在这里（0.29.0 之前的记录在 `docs/更改文档.md`，那是 0.17.1 起的旧版变更日志，本文档不重复收录）。
 > - **AGENTS.md** —— agent 自动加载的短契约；首行加一句"看完整变更：docs/CHANGELOG.md"。
 
+#### `0.41.1` — 2026-09-25（修复：设置抽屉「图片生成服务」卡片一直停在「读取中…」）
+
+> **版本号口径**：`0.41.0 → 0.41.1`（PATCH：纯缺陷修复；无新能力、无接口变更、向后兼容）。
+
+**为什么改**：0.41.0 引入「图片生成服务」卡片后，**用户首次打开设置抽屉、且之前从未打开过素材详情或分镜预览时**，卡片会一直停在「读取中…」—— 因为它依赖的 `S.imgProvider` 字段由 `ensureImageProvider()` 懒加载，而该函数**只在打开素材详情弹窗（`openAssetSettings`）和分镜预览弹窗（`openBoundAsset`）时被调用**。换言之：作者当时只想到"两个生图弹窗要这张卡片的状态"，**漏了设置面板本身也是消费者**。
+
+**修法（`app/app.js` · `openSettings` 并发请求）**：
+- 在 `Promise.all([getSettings, getAdapter, getCliStatus])` 里追加 `Api.imageProviderStatus()` 作为第四项，沿用同样的 `.catch(() => null)` 兜底（沿用 2026-09-20 的教训："任一失败都不该让整个抽屉停在半渲染状态"）。
+- 拿到结果后合并到 `S.imgProvider`，桌面版顺带问 `JCDesktop.imageKeyStatus()` 把 `encryption` / `hasKey` 合进 `configured` —— 与 `ensureImageProvider()` 的合并逻辑保持一致，不重复事实来源。
+- 失败兜底：取不到就保持 `S.imgProvider = null`，卡片回到「读取中…」占位，**不会让整张卡片报错或空白**；后续任意一次 `ensureImageProvider()` 调用（打开素材详情、打开分镜预览、保存/删除密钥）都会把它填上。
+
+**为什么不在 `renderSettings()` 顶部加 `ensureImageProvider()`**：那个函数有缓存检查（`if (S.imgProvider) return S.imgProvider;`），但**没有超时保护**——若 `/system/image-provider` 异常挂住，整个 `renderSettings` 调用栈都会被阻塞。改成放进 `Promise.all` 就能享受同样的并发 + 失败兜底，与 `getSettings` / `getAdapter` / `getCliStatus` 三项处于同一地位。
+
+**没动的相关位置（避免引入回归）**：
+- `ensureImageProvider()` 本体不动 —— 它仍然负责两个生图弹窗的懒加载入口与桌面版合并逻辑，**多一个调用点只会触发一次**（缓存命中）。
+- 保存 / 删除 API Key 后的 `S.imgProvider = null; await ensureImageProvider(); renderSettings();` 已经在两处都到位，**这部分不是 bug**——上一版诊断里我误以为漏了重绘，再次核对代码确认已存在。
+
+**验证**：`test` **328/328**（14 文件）· `lint` 7/7 · `check` 46/46 · `build` ✓ · `smoke:web` ✓ · `e2e` 53/53。**未做真实付费验收**——同 0.41.0，复用其 §7 的边界。
+
+**文档与版本**：`package.json` `0.41.0 → 0.41.1` 五处同步（`package.json` 唯一生效来源、`package-lock.json` ×2、`README.md` ×2、`docs/项目文档.md` ×3、`AGENTS.md` 不动 —— 它是 agent 契约本身，事实版本未变）。`docs/项目文档.md` §15 路由计数仍为 64 条（未新增 HTTP 路由）；`docs/CHANGELOG.md` 追加本条目；未触及 `docs/前端页面与接口对接说明.md`（未改接口契约）与 `docs/更改文档.md`（旧版历史日志）。
+
 ---
 
 #### `0.41.0` — 2026-09-25（新增：生图「分辨率 + 宽高比」可配置项 —— 比例联动 / 像素预设 / 非法回落 / 全局默认）

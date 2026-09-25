@@ -5813,13 +5813,31 @@
          于是 await 之后的第二次 renderSettings 永远不执行 —— 抽屉就停在
          第一次渲染的占位内容上，连 CLI 区块也跟着显示成"状态未知"。
          而"刚装完、还没建项目、正准备装创作 CLI"恰恰是最需要这个抽屉正常的场景。 */
-      const [st, ad, ci] = await Promise.all([
+      /* 2026-09-25 fix：openSettings 之前漏拉生图服务状态。ensureImageProvider
+         只在打开素材详情 / 分镜预览时被调（懒加载原则），但「图片生成服务」
+         卡片本身也在设置面板渲染，于是"纯打开设置 → 不开弹窗"的场景下
+         S.imgProvider 永远是 null，卡片永远停在"读取中…"。补到并发请求里，
+         沿用同样的"任一失败不让抽屉半渲染"兜底（2026-09-20 的教训）。
+         合并逻辑与 ensureImageProvider 对齐：桌面版顺带把加密可用性与
+         hasKey 合进 configured，HTTP 入口失败也照常完成这次重绘。 */
+      const [st, ad, ci, ip] = await Promise.all([
         Api.getSettings().catch(() => null),
         Api.getAdapter().catch(() => null),
-        Api.getCliStatus().catch(() => null)
+        Api.getCliStatus().catch(() => null),
+        Api.imageProviderStatus().catch(() => null)
       ]);
       if (ad) S.adapter = ad;
       if (ci) S.cliInfo = ci;
+      if (ip) {
+        S.imgProvider = ip;
+        if (window.JCDesktop && window.JCDesktop.imageKeyStatus) {
+          try {
+            const k = await window.JCDesktop.imageKeyStatus();
+            S.imgKeyEncryption = (k && k.encryption) || 'available';
+            ip.configured = !!(ip.configured || (k && k.hasKey));
+          } catch (e) { /* 取不到就保持原状，保存时后端会再判 */ }
+        }
+      }
       /* 应用更新状态（只有桌面版有）。和上面几项一样单独失败即可 ——
          任何一项取不到都不该让整个设置抽屉打不开。
          合并时保留本地 UI 状态（busy / error），只覆盖主进程给的字段。 */
