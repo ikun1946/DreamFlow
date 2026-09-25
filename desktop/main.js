@@ -27,6 +27,7 @@ const legacyMod = require('./legacy-import');
 const updaterMod = require('./updater');
 const transportMod = require('./updater-transport');   // Chromium 网络传输（纯逻辑，可单测）
 const updateStateMod = require('./update-state');   // 更新互斥状态机（纯逻辑，可单测）
+const imageKeyStoreMod = require('./image-key-store');   // 生图密钥保管（纯逻辑，可单测）
 const runtime = require('../server/runtime');
 
 const APP_ID = 'com.ikun1946.jimengconsole';
@@ -45,6 +46,7 @@ let win = null;
 let tray = null;
 let quitting = false;
 let serverReady = false;
+let imageKeyStore = null;  // 生图密钥保管（boot() 里创建；IPC 与配置注入都读它）
 /* 更新相关状态：lastCheck / pendingInstaller 在 doCheckUpdates 与 doDownloadUpdate
    里被赋值，但 updateStatusPayload 在启动时就会读（初始化卡在空页面时也会读）——
    历史上漏了 let 声明，全局污染 + 偶发 ReferenceError。本轮修。 */
@@ -583,6 +585,20 @@ async function boot() {
 
   const { loadConfig } = require('../server/config');
   const { createServer } = require('../server/server');
+
+  /* ---------------- 图片生图密钥的桌面端保管（2026-09-25 · 阶段 3） ----------------
+     密钥经 safeStorage 加密后落在 userData 下（**不是**数据目录：它是配置，
+     不是用户资产；数据目录可被迁移到移动盘，密钥跟着搬没有意义且会多一份副本）。
+     ⚠ 存的是密文；明文只在 getKey() 被调用的那一瞬间存在于内存里。
+     ⚠ 绝不经 IPC / HTTP 出口返回（IPC 只回布尔状态）。 */
+  imageKeyStore = imageKeyStoreMod.makeImageKeyStore({
+    safeStorage: require('electron').safeStorage,
+    filePath: imageKeyStoreMod.keyFilePath(paths.userData)
+  });
+  if (!imageKeyStore.encryptionAvailable()) {
+    console.warn('[desktop] 系统加密能力不可用：图片生图密钥将无法保存（不会降级为明文）');
+  }
+
   cfg = loadConfig({
     /* port 0 = 让系统分配空闲端口：不再和别的程序抢 8787，也不再因为
        "端口被占"而整个应用起不来。 */
@@ -595,7 +611,15 @@ async function boot() {
     allowFileOrigin: false,
     dreaminaCliPath: found.dreamina.path || 'dreamina',
     ffmpegPath: found.ffmpeg.path || 'ffmpeg',
-    ffprobePath: found.ffprobe.path || 'ffprobe'
+    ffprobePath: found.ffprobe.path || 'ffprobe',
+    /* 图片生图密钥的读取函数（阶段 3）。
+       ⚠ 用**函数**而不是值：用户随时可能写入 / 删除密钥，快照一次的表现就是
+         "刚填的不生效、删掉的还能用"（与 dreamina 适配器同一条教训）。
+       ⚠ 桌面版**忽略** workFisherApiKey 环境变量 —— 密钥只走 safeStorage，
+         避免"环境变量"与"加密存储"两个来源打架、且环境变量更容易被看见。 */
+    imageKeyProvider: () => {
+      try { return imageKeyStore ? imageKeyStore.getKey() : ''; } catch (e) { return ''; }
+    }
   });
   console.log('[desktop] 服务端口 ' + (cfg.port === 0 ? '(随机)' : cfg.port) + '，Token 已生成（长度 ' + cfg.token.length + '）');
 
@@ -1015,6 +1039,32 @@ ipcMain.handle('shell:showItem', (e, p) => {
   return true;
 });
 ipcMain.handle('shell:openExternal', (e, u) => { openExternalSafely(u); return true; });
+
+/* ---------------- 图片生图密钥（2026-09-25 · 阶段 3） ----------------
+   具名 IPC，三个动作，**只有布尔状态进出**：
+     image:keyStatus  → { hasKey, encryption }   ← 没有任何密钥材料
+     image:setKey     → 收明文、加密存、只回 { ok, reason? }
+     image:clearKey   → 删文件，只回 { ok }
+   ★ 刻意**不提供** image:getKey —— 页面永远拿不回密钥。
+     真正的取用只发生在 createServer 注入的 imageKeyProvider 内部（服务端进程内）。
+   与 update:status 的 hasToken 是同一条原则：密钥只进不出。 */
+ipcMain.handle('image:keyStatus', () => {
+  if (!imageKeyStore) return { hasKey: false, encryption: 'unavailable' };
+  return imageKeyStore.status();
+});
+ipcMain.handle('image:setKey', (_e, plain) => {
+  if (!imageKeyStore) return { ok: false, reason: 'unavailable' };
+  const r = imageKeyStore.setKey(plain);
+  /* 日志只记结果，**不记密钥本身**（哪怕截断也不行） */
+  console.log('[desktop] 生图密钥保存：' + (r.ok ? '成功' : ('失败(' + r.reason + ')')));
+  return r;
+});
+ipcMain.handle('image:clearKey', () => {
+  if (!imageKeyStore) return { ok: true };
+  const r = imageKeyStore.clearKey();
+  console.log('[desktop] 生图密钥删除：' + (r.ok ? '成功' : ('失败(' + r.reason + ')')));
+  return r;
+});
 
 /* 应用自更新。⚠ 令牌**只进不出**：配置文件里可以放它，
    但 update:status 的返回值只给 hasToken 布尔值，不把已存的令牌回传给页面。

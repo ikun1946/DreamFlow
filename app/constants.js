@@ -46,6 +46,8 @@
     edit:  '<svg width="12" height="12" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     /* 复制图标：描边用 currentColor，由按钮的 color 控制（浅色块 / 深色代码块上都能用） */
     copy:  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><rect x="8.6" y="8.6" width="11.8" height="11.8" rx="2.4" stroke="currentColor" stroke-width="2"/><path d="M15.4 5.7A2.4 2.4 0 0013.3 4H6.4A2.4 2.4 0 004 6.4v6.9a2.4 2.4 0 001.7 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    /* 生图图标（2026-09-25 阶段 4）：四角星 + 小星，currentColor 描边，用于「保存提示词并生图」 */
+    spark: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 3.2l1.9 5.1 5.1 1.9-5.1 1.9L12 17.2l-1.9-5.1L5 10.2l5.1-1.9z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M18.6 15.4l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8z" fill="currentColor"/></svg>',
     /* 图片占位图标：描边用 currentColor，由 CSS 控制颜色与透明度（半透明占位样式） */
     img:   '<svg width="42" height="42" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.6" width="18" height="14.8" rx="3" stroke="currentColor" stroke-width="1.5"/><circle cx="8.7" cy="9.7" r="1.6" stroke="currentColor" stroke-width="1.5"/><path d="M3.7 16.4l4.5-4.1 3.3 2.9 3-2.5 5.8 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     /* 音符占位：与 I.img 同为 currentColor 描边，好让"无图图片素材"与"无音频"共用同一套半透明空槽位视觉。

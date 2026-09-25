@@ -1,7 +1,7 @@
 # AGENTS.md —— 给 AI agent 的项目约定
 
 > 本文件是**任何 agent 接手本仓库时的第一份必读**。人也可以看，但它主要写给 agent。
-> 最后核对：2026-09-25（版本 `v0.39.0`）
+> 最后核对：2026-09-25（版本 `v0.40.0`）
 > 看完整变更记录：[docs/CHANGELOG.md](docs/CHANGELOG.md)（0.29.0 → 最新）。
 >
 > 📖 **想「通读一遍就完整理解项目」** → 读 `docs/项目文档.md`（定位 / 结构 / 目录职责 / 模块依赖 / 主要流程 /
@@ -92,7 +92,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 
 | 命令 | 管什么 | 现在的状态 |
 |---|---|---|
-| `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y / 错误码四件套 / 数据目录 / 生图服务商 / 生图任务与文件 十二组） | **283 用例全通** |
+| `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y / 错误码四件套 / 数据目录 / 生图服务商 / 生图任务与文件 / 生图密钥 / 生图凭据边界 十四组） | **305 用例全通** |
 | `npm run check` | 一致性门禁：`scripts/check-project.js`（版本漂移、dist 同步、图标、许可、更新器、发布文档现状、旧名残留、过期表述、收尾清单一致性、docs 状态标记、路由计数、git remote、文档数量口径…） | **46 项全通** |
 | `npm run lint` | 静态检查：`scripts/lint.js`（语法 / `debugger` / 前端调试输出 / 相对 require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） | **7 项全通** |
 | `npm run smoke:web` | 网页版连通性：起真服务 → 首页 / 接口 / 鉴权 / 边界 → 关停无残留 | 通过 |
@@ -134,6 +134,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 | `desktop/legacy-import.js` | 旧版数据导入 + 完整性体检 |
 | `desktop/updater.js` | 应用自更新：检查 / 下载 / 校验 / 静默安装 / 自动重启。网络一律走**可注入传输层**（`transport()`），别在别处直接调 `https` |
 | `desktop/updater-transport.js` | 更新器的 Chromium 网络传输（走系统代理）。**不 require electron**（`net`/`session` 由调用方传入），才能用假 net 单测（见 `docs/项目文档.md` §5.6.1） |
+| `desktop/image-key-store.js` | 生图 API Key 的桌面端保管：`safeStorage` 由调用方注入（**不 require electron**，可假 safeStorage 单测）；密文落 **userData** 下 `image-provider-key.json`（**不是**数据目录）。**加密不可用不降级为明文**；`status()` 只回布尔；`getKey()` 仅内部注入用 |
 | `electron-builder.yml` | 安装包配置 |
 
 ## 数据放在哪（桌面版）

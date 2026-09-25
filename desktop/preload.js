@@ -42,7 +42,15 @@ const api = {
     const h = (_e, payload) => { try { cb(payload); } catch (e) { /* 页面回调异常不该影响主进程 */ } };
     ipcRenderer.on('update:state', h);
     return () => { try { ipcRenderer.removeListener('update:state', h); } catch (e) { /* 忽略 */ } };
-  }
+  },
+  /* 图片生图密钥（2026-09-25 阶段 3）。
+     ★ 只有这三个动作，且**没有 getKey** —— 密钥存进去就拿不回来。
+       keyStatus 只回 { hasKey, encryption } 布尔状态；
+       setKey 收明文（单向），clearKey 只删除。
+     这样即使页面被塞进恶意脚本，也只能"写入/删除"，读不到已存的密钥。 */
+  imageKeyStatus: () => ipcRenderer.invoke('image:keyStatus'),
+  imageSetKey: (plain) => ipcRenderer.invoke('image:setKey', plain),
+  imageClearKey: () => ipcRenderer.invoke('image:clearKey')
 };
 
 contextBridge.exposeInMainWorld('JCDesktop', api);

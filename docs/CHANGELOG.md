@@ -13,6 +13,64 @@
 
 ---
 
+#### `0.40.0` — 2026-09-25（新增：图片资产 GPT 生图功能全量交付 —— 实施计划阶段 3–6）
+
+> 本版本接续 `0.39.0`（阶段 1–2 后端骨架），补齐**密钥配置 / 两处界面 / 文档版本 / 验收**，生图功能自此对使用者可见。
+> 与 `0.39.0` 的「无界面变化、功能完全不可见」相反：本版本起，**桌面版在设置中录入 API Key 后即可从两处入口发起生图**。
+> **版本号口径**：`0.39.0 → 0.40.0`（MINOR：新增面向使用者的能力；无破坏性接口变更）。
+
+**为什么改**：`0.39.0` 只立起了后端契约与安全边界 —— 未配密钥时 `/system/image-provider` 报未配置，使用者看不到任何入口。本版本补上从这个边界到可用功能的全部链路。
+
+**新增（`desktop/image-key-store.js`）**：生图 API Key 的桌面端保管。**不 require electron** —— `safeStorage` 由调用方注入（沿用 `desktop/updater-transport.js` 先例），因此可在纯 Node 下用假 safeStorage 单测。存储形状 `{ v:1, enc, createdAt, updatedAt }`，落在 **userData** 下的 `image-provider-key.json`（**不是**数据目录 —— 密钥不属于项目数据，切换数据目录不应搬迁密钥）。三条安全约定：
+1. **加密不可用不降级为明文** —— 返回 `{ok:false, reason:'unavailable'}`，直白拒绝而不是偷偷写明文；
+2. `status()` **只回 `{hasKey, encryption}`**，无任何密钥材料；
+3. `getKey()` 仅供 `createServer` 注入内部调用，密文解不开时返回 `''` 而非抛错 —— 否则会打挂每一次请求。
+
+**改动（`desktop/main.js`）**：boot() 内在 `createServer` 之前建 key store；`loadConfig` 注入 `imageKeyProvider: () => imageKeyStore.getKey()`（带 try/catch 兜底空串）；新增三个 IPC —— `image:keyStatus` / `image:setKey` / `image:clearKey`。**刻意没有 `image:getKey` 通道**。
+
+**改动（`desktop/preload.js`）**：`api` 内新增 `imageKeyStatus()` / `imageSetKey(plain)` / `imageClearKey()` 三个具名动作，同样**无 getKey**。
+
+**改动（`app/api.js`）**：新增 `imageProviderStatus()`、`getAsset(id)`、`submitImageJob(id, prompt)`（带 `idempotencyKey`）、`currentImageJob(id)`、`listImageJobs(id)`、`resaveImageJob(id, jobId)`、`applyImageJob(id, jobId)`、`discardImageJob(id, jobId)`；幂等键 `imageSubmitKey(assetId, prompt)` 与既有 `submitKey` 并列（哈希 + 2 秒时间桶，`ij_` 前缀）。
+
+**改动（`app/app.js`）**：**两处入口共用一套组件** —— `imagePanelHTML(asset, opts)` 渲染 + `wireImagePanel(mask, assetId, getPrompt, opts)` 接线，返回 `{submit, refresh, dispose, getJob}`。
+- `openAssetSettings`（素材库图片详情）与 `openBoundAsset`（分镜已绑定图片预览）各接一套；
+- 分镜侧传 `opts.showPromptEcho` 显示只读提示词回声区（该弹窗原本没有提示词框，异步 `Api.getAsset` 回填）；
+- 轮询由 `refresh()` 3 秒一次、**服务端持表、前端只读**；
+- 提交前有 `uiConfirm` 付费确认，采用前先 `Api.assetUsage` 取影响数再二次确认（资产可能被多分镜共用）；
+- 新增状态 `imgProvider` / `imgKeyEncryption` 与 `ensureImageProvider()` 懒加载（桌面版顺带取 `imageKeyStatus()`，`configured` 与 `hasKey` 取或）；
+- 设置页新增密钥卡片 `imageProviderCardHTML()`（桌面版可录入/保存/删除，网页版只读说明），独立监听 `[data-ipkact]`，保存后清空输入框。
+
+**改动（`app/constants.js` / `app/styles.css`）**：新增 `I.spark` 图标（四角星 + 小星）；新增 `.imgjob*` / `.imgcmp*` / `#asGen,#bpGen svg` / `#ipPromptEcho` 样式，全部走真实主题令牌。
+
+**修的真实缺陷（阶段 3–4 开发中发现并修复）**：
+
+1. **`imagePanelHTML` 缺 `showPromptEcho` 形参**：`openBoundAsset` 引用了 `#ipPromptEcho`，但面板渲染函数里根本没这个分支 → 分镜侧回声区恒为空白。已补形参与分支。
+2. **`app/styles.css` 引用了不存在的主题令牌**（`--surface-2` / `--line` / `--ink60` / `--hint-veil`）：这些变量在本项目主题系统里**不存在**，写上去等于没有任何样式。已全部换成实际令牌（`--hairline` / `--pearl` / `--primary-ink` / `--ink48` / `--code-chip` / `--parchment` / `--surface` / `--divider`）。
+3. **`.imgcmp` 用了 `@container` 查询但弹窗不是 container**：容器查询**静默失败** —— 不报错、不生效，两图挤成一条。已改为 `grid-template-columns:repeat(auto-fit,minmax(140px,1fr))`，不需要容器上下文。
+4. **`openAssetSettings` / `openBoundAsset` 包 `ensureImageProvider().then(...)` 后括号没配平**：`});` 应为 `}));` → 整个文件 `missing ) after argument list`，前端直接白屏。两处均已修。
+5. **自建二次确认框与项目既有能力重复**：一开始写了独立的 `doubleCheck`，后发现项目早有 `uiConfirm(title, message)`。已删除自建件，全部改用 `uiConfirm`（消息用 `\n` 连接多行）。
+6. **`imageProviderCardHTML` 全角括号 typo**：`esc(p.model) + （'') +` → 立即语法错误。已改为 `esc(p.model) +`。
+7. **`app/app.js` 无心占位行**：`S.panelTab = S.panelTab;` 与一段复制成两行的注释。均已删除。
+
+**修的真实缺陷（阶段 3 测试开发中）**：
+
+8. **`test/13` 覆盖保存用例断言方式错误**：原用例写死 `nowIso` 调用下标，但 `nowIso` 在单次 `setKey` 中会被调用多次 —— 断言随机失败。已改为断言**关系**而非具体值（`second.createdAt === first.createdAt` 且 `second.updatedAt > first.updatedAt`）。
+
+**踩过的坑**：
+- **不要在测试里为验证"未配密钥"起第二个 `createServer`**：`S.setImageJobs` 是**模块级单例**，会被永久替换成无密钥实例，污染后续所有 describe。改用 `configOverrides` + 服务层直接验。
+- **建资产必须先建 workspace**：`makeAsset` 只建项目就直接建资产 → 报"素材不存在"。
+- **沙箱里不要指望真实出网**：本环境 `github.com:443` 与所有常见代理端口（7890/7897/10809/1080/8080/49288）均不可达 → 推送无法完成，属环境限制。
+
+**文档与版本**：`docs/图片资产GPT生图实施计划.md` 状态改为「阶段 1–6 已实施」并追加 §9 实施结果与验收记录；`docs/项目文档.md` §8 接口分组登记生图 6 条接口 + 路由表实测 `64` 条；`docs/前端页面与接口对接说明.md` 补生图接口契约；版本号 `0.39.0 → 0.40.0` 六处同步（`package.json` 唯一生效来源、`package-lock.json` ×2、`README.md` ×2、`docs/项目文档.md` ×3、`AGENTS.md`）。
+
+**新增测试**：
+- `test/13-image-key.test.js`（12 例）—— 假 safeStorage（异或 + base64）覆盖：往返、落盘是密文、加密不可用拒绝且**不落明文**、中途不可用视为未配置、`status` 只回布尔、删除、空密钥被拒、密文损坏返回空不抛错、无 safeStorage、覆盖保存保留 `createdAt`、`keyFilePath` 位置。
+- `test/14-image-credential.test.js`（10 例）—— 密钥边界验收：以哨兵串注入后断言其不出现在 HTTP 出口（`/system/image-provider` / 取资产 / 列资产 / 提交响应）、错误提示、日志接口、沙箱全目录明文、`server/` 源码字面量；并断言 `preload` 无 `imageGetKey`、`main` 无 `image:getKey` 通道、key-store `status()` 不含密钥材料。
+
+**验证**：`test` **310/310**（14 文件）· `lint` 7/7（34 文件）· `check` 见 `docs/项目文档.md`（§15 git remote 因沙箱 `spawnSync EBUSY` 为环境限制）· `build` ✓（dist 已重建）· `smoke:web` ✓ · `e2e` ✓。**全程假传输，未产生任何真实调用费用。**
+
+**本版本未做**：一次真实 API Key 的**付费验收**（按计划 §7 明确排除在自动化之外，需使用者确认费用与授权后手动进行）；参考图编辑 / 批量生图 / 多模型切换 / 多候选图 / 自动采用 / 远端任务取消 / 提交前价格预估（均属后续独立设计）。
+
 #### `0.39.0` — 2026-09-25（新增：图片资产生图后端骨架与任务链路 —— 实施计划阶段 1–2）
 
 > 本版本是《图片资产 GPT 生图实施计划》的**阶段 1–2**：服务商适配 + 任务状态机与文件安全。

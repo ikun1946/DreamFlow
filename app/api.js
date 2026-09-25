@@ -192,6 +192,18 @@
     return 'sb_' + h.toString(36) + '_' + bucket.toString(36);
   }
 
+  /* 生图提交的幂等键 = 资产 + 提示词 + 2 秒时间桶。
+     与 submitKey 同一套思路，但把**提示词内容**也掺进来：同一资产连点两次
+     同一提示词被吸收（防重复扣费），而用户改了提示词再点就是新键（应当真提交）。
+     用哈希而不是原文，避免把长提示词塞进请求头。 */
+  function imageSubmitKey(assetId, prompt) {
+    const bucket = Math.floor(Date.now() / 2000);
+    const src = String(assetId || '') + '|' + String(prompt || '') + '|' + bucket;
+    let h = 0;
+    for (let i = 0; i < src.length; i++) h = (h * 31 + src.charCodeAt(i)) >>> 0;
+    return 'ij_' + h.toString(36) + '_' + bucket.toString(36);
+  }
+
   /* ---------------------------------------------------------- 对外 API */
   const api = {
     CFG, META, ERR, ApiError, TOOL_ERROR_CODES, isToolError,
@@ -270,8 +282,30 @@
     deleteAsset:  (id) => request('DELETE', '/assets/' + id, { query: scopeQuery() }),
     // 提示词文本导入资产：@ 分段自动识别 场景/道具/角色；apply=false 仅解析预览，true 落库
     importAssetPrompts: (rawText, apply) => request('POST', '/assets/import-prompts', { body: { rawText, apply: !!apply }, query: scopeQuery() }),
-    bindAsset:    (id, assetId, role) => request('POST', '/storyboards/' + id + '/assets', { body: { assetId, role }, query: scopeQuery() }),
-    unbindAsset:  (id, assetId) => request('DELETE', '/storyboards/' + id + '/assets/' + assetId, { query: scopeQuery() }),
+
+    /* ---------------- 图片资产生图（2026-09-25 · 阶段 4） ----------------
+       服务商是 Work Fisher（Image G v2.5 Flare）。三类注意：
+       · 生图服务状态只回**配没配**，密钥永远拿不回来（后端设计，见计划 §5.3）；
+       · 提交必须带**幂等键** —— 双击/网络重发落到同一个键，防重复扣费
+         （后端还有一道"活动任务检查"，两道闸都在）；
+       · 候选图预览走本地接口，页面拿不到服务商直链。 */
+    // 生图服务配置状态：{ configured, available, provider, model }
+    imageProviderStatus: () => request('GET', '/system/image-provider', { query: scopeQuery() }),
+    // 取资产最新信息（分镜预览要用它拿**最新**提示词，分镜快照里的不能当来源）
+    getAsset:     (id)        => request('GET', '/assets/' + id, { query: scopeQuery() }),
+    // 提交生图。提交键 = 资产 + 提示词快照 + 2 秒时间桶（见 submitKey 的说明）
+    submitImageJob: (id, prompt) => request('POST', '/assets/' + id + '/image-jobs',
+      { body: { prompt }, idempotencyKey: imageSubmitKey(id, prompt), query: scopeQuery() }),
+    // 当前任务（活动任务优先，否则最近一条）。关闭弹窗重开靠它恢复视图。
+    currentImageJob: (id)     => request('GET', '/assets/' + id + '/image-jobs/current', { query: scopeQuery() }),
+    listImageJobs: (id)       => request('GET', '/assets/' + id + '/image-jobs', { query: scopeQuery() }),
+    // 下载失败后的手动重存（不产生新任务、不再次扣费）
+    resaveImageJob: (id, jobId) => request('POST', '/assets/' + id + '/image-jobs/' + jobId + '/resave', { body: {}, query: scopeQuery() }),
+    // 采用结果。返回里带 impact（影响 N 条分镜），界面据此提示后再二次确认
+    applyImageJob: (id, jobId) => request('POST', '/assets/' + id + '/image-jobs/' + jobId + '/apply', { body: {}, query: scopeQuery() }),
+    // 放弃候选结果（清理本地候选文件；已提交的远端任务不宣称已取消）
+    discardImageJob: (id, jobId) => request('DELETE', '/assets/' + id + '/image-jobs/' + jobId, { query: scopeQuery() }),
+    bindAsset:    (id, assetId, role) => request('POST', '/storyboards/' + id + '/assets', { body: { assetId, role }, query: scopeQuery() }),    unbindAsset:  (id, assetId) => request('DELETE', '/storyboards/' + id + '/assets/' + assetId, { query: scopeQuery() }),
     // 自动匹配（按素材名匹配图片参考与音色参考）：apply=false 仅预览不写库；overwrite 控制是否替换该类型已有绑定
     autoMatchAssets: (body) => request('POST', '/storyboards/auto-assets', { body, query: scopeQuery() }),
     // 按提示词里的「总时长」标注重算时长（向上进位）：apply 缺省 true 直接生效，传 false 只预览

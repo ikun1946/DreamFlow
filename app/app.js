@@ -96,6 +96,12 @@
     /* 数据目录状态（2026-09-23 新增）。只有桌面版可改，且状态需要一次额外请求，
        所以由设置面板懒加载并缓存（见 renderSettings / ensurePaths）。 */
     paths: null, pathsError: null, pathsBusy: false,
+    /* 生图服务配置状态（2026-09-25 阶段 4）。懒加载一次并缓存 ——
+       它决定两处弹窗要不要显示生图区，频繁请求没有意义。
+       形状 { configured, available, provider, model }，**不含密钥**。 */
+    imgProvider: null,
+    /* 桌面版系统加密可用性（决定设置页给不给密钥录入框）。null=未知。 */
+    imgKeyEncryption: null,
     sel: new Set(), filter: 'all', keyword: '',
     panelTab: 'character', panelKeyword: '', assets: [], assetCounts: { currentShot: 0, library: 0 },
     /* 全库「素材名(小写) → 类型」索引：给提示词里的素材名着色用。
@@ -3292,8 +3298,324 @@
     return '<span class="empty-ph">' + I.notePh + '<span>这个音频还没有文件</span></span>';
   }
 
+  /* ============================================================
+     图片资产生图 · 共用组件（2026-09-25 · 阶段 4）
+
+     两个入口（素材库详情 / 分镜已绑定图片预览）**必须**共用这一份实现：
+     计划 §2 明确"两个弹窗应复用一套图片生成区"，两处行为不一致正是
+     使用者在别的功能上踩过的坑（同一动作两套皮肤）。
+
+     设计要点（逐条对应计划条款）：
+     · 提示词来源永远是**资产的最新 prompt**（按资产 ID + 项目作用域现取），
+       分镜快照里只有图片与名称，不能当来源（§2 / §4.2）。
+     · 轮询由**服务端**驱动，前端只读本地任务状态（§5.1）——
+       关闭弹窗 / 刷新页面都不中断任务，所以这里只做定时**读**，
+       不直接打服务商接口。
+     · 提交前必须过一次确认框（资产名 / 完整提示词 / 模型 / 张数 / 分辨率 /
+       "服务商按实际消耗收费"）—— 这是一次付费调用（§3.2 第 4 条）。
+     · 采用前再统计影响范围并二次确认（§3.2 第 6 条）。
+     · 音频资产入口隐藏（§1），无图的图片资产也能生成（§1）。
+     · 状态文案按后端状态机翻译，不自己造词（§5.1 的表）。
+     ============================================================ */
+
+  /* 状态机的界面文案。键与 server/image-jobs.js 的 STATE 一一对应。
+     ⚠ 新增状态必须在这里补文案 —— 漏了会显示原始英文串（不致命但很突兀）。 */
+  const IMG_STATE_TEXT = {
+    submitting: '已提交（等待服务商受理）',
+    queued: '排队中',
+    running: '生成中',
+    saving_result: '保存图片',
+    ready: '待采用',
+    failed: '失败',
+    submission_unknown: '提交结果未知',
+    applied: '已采用',
+    discarded: '已放弃'
+  };
+  const IMG_BUSY_STATES = ['submitting', 'queued', 'running', 'saving_result'];
+
+  /* 生图服务配置状态：懒加载 + 失败也记下来（避免每次开弹窗都重试）。
+     形状：{ configured, available, provider, model }。**没有密钥**。
+     ⚠ 必须**先拿到再渲染**生图区，否则会先画一版"未配置"再跳成"已配置"
+       （闪一下，且用户可能正好点到那句误导文案）。所以两个弹窗都在打开前 await 它。 */
+  async function ensureImageProvider() {
+    if (S.imgProvider) return S.imgProvider;
+    try {
+      S.imgProvider = await Api.imageProviderStatus();
+    } catch (e) {
+      S.imgProvider = { configured: false, available: false, error: (e && e.message) || '读取生图服务状态失败' };
+    }
+    /* 桌面版顺带取加密可用性（决定设置页给不给录入框）——
+       取不到就当可用，交给保存时后端再判（保存会明确回 reason:'unavailable'）。 */
+    if (window.JCDesktop && window.JCDesktop.imageKeyStatus) {
+      try {
+        const k = await window.JCDesktop.imageKeyStatus();
+        S.imgKeyEncryption = (k && k.encryption) || 'available';
+        /* 桌面端的"configured"以加密存储为准 —— 环境变量在桌面版被忽略（见 main.js） */
+        if (S.imgProvider) S.imgProvider.configured = !!(S.imgProvider.configured || (k && k.hasKey));
+      } catch (e) { S.imgKeyEncryption = 'available'; }
+    }
+    return S.imgProvider;
+  }
+
+  /* 渲染「生图区」的静态骨架。参数：
+     asset       资产对象（图片类型）
+     opts        { showPromptEcho } —— 无输入框的入口（分镜预览）需要回声区
+     返回 HTML 字符串；事件绑定由 wireImagePanel 负责。 */
+  function imagePanelHTML(asset, opts) {
+    const o = opts || {};
+    const p = S.imgProvider || {};
+    const configured = !!p.configured;
+    /* 未配置密钥：给出**可操作**的指路（计划 §3.1 / §3.4），而不是把入口藏起来 ——
+       素材详情本来就是设置页，藏掉反而让人找不到去哪儿配。 */
+    if (!configured) {
+      return '<div class="sec-title" style="margin-top:12px">GPT 生图</div>' +
+        '<div class="banner warn" id="ipNotice"><span>' +
+          '生图服务未配置。' +
+          (p.error ? esc(p.error) : '请到「项目设置 → 图片生成服务」填入 API Key 后再回来。') +
+        '</span></div>';
+    }
+    return '<div class="sec-title" style="margin-top:12px">GPT 生图'
+        + (p.model ? '<span class="hint-sm" style="font-weight:400;margin-left:6px">' + esc(p.model) + '</span>' : '')
+        + '</div>' +
+      /* 提示词回声区：只有"分镜预览"这种**没有输入框**的入口才需要它 ——
+         素材详情那边提示词就在上面的文本框里，再显示一遍是重复。
+         由调用方决定是否使用（见 openBoundAsset 的 Api.getAsset 回填）。 */
+      (o.showPromptEcho
+        ? '<div class="asset-promptwrap"><div class="imgjob-prompt-body" id="ipPromptEcho">读取中…</div>' +
+          '<span class="hint-sm">提示词取自素材库中该资产的最新记录；要修改请到素材详情里编辑。</span></div>'
+        : '') +
+      /* 状态条：进度 / 结果提示都在这里更新（不重建 DOM，避免输入框失焦） */
+      '<div class="imgjob" id="ipBox" hidden>' +
+        '<div class="imgjob-head">' +
+          '<span class="imgjob-state" id="ipState"></span>' +
+          '<span class="grow"></span>' +
+          '<span class="hint-sm" id="ipUsage"></span>' +
+        '</div>' +
+        '<div class="imgjob-body" id="ipBody"></div>' +
+        '<div class="imgjob-foot" id="ipFoot"></div>' +
+      '</div>' +
+      /* 对比区：有候选图时才出现（原图 | 新图） */
+      '<div class="imgcmp" id="ipCmp" hidden></div>';
+  }
+
+  /* 把生图区接到弹窗上。返回一个控制器，供外部（如"保存并生图"按钮）驱动。
+     参数：
+       mask       弹窗根元素
+       assetId    资产 ID
+       getPrompt  取当前输入框里的提示词（素材库详情用输入框；分镜预览用只读值）
+       opts       { onApplied, keepInput } —— onApplied 在采用成功后回调（刷新缩略图）
+     ⚠ 所有 DOM 查询都在 mask 内（不查 document），避免两个弹窗同时存在时互相串。 */
+  function wireImagePanel(mask, assetId, getPrompt, opts) {
+    const o = opts || {};
+    const q = (s) => mask.querySelector(s);
+    const box = q('#ipBox'), body = q('#ipBody'), foot = q('#ipFoot');
+    const stateEl = q('#ipState'), usageEl = q('#ipUsage'), cmpEl = q('#ipCmp');
+    let job = null;
+    let pollTimer = null;
+    let disposed = false;
+
+    const clearPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
+
+    /* 关弹窗时必须停表 —— 否则弹窗已销毁还在轮询，回调里 q() 全是 null。
+       注意：停的是**前端读表**，不是服务端的查询定时器（那个随服务进程存亡）。 */
+    function dispose() { disposed = true; clearPoll(); }
+
+    function setState(text, kind) {
+      if (!stateEl) return;
+      stateEl.textContent = text || '';
+      stateEl.className = 'imgjob-state' + (kind ? ' ' + kind : '');
+    }
+
+    /* 状态 → 界面。集中在一处，避免"提交后忘了刷按钮态"这类漏网。 */
+    function render() {
+      if (disposed || !box) return;
+      if (!job) { box.hidden = true; if (cmpEl) cmpEl.hidden = true; return; }
+      box.hidden = false;
+
+      const st = job.state;
+      const busy = IMG_BUSY_STATES.indexOf(st) >= 0;
+      setState(IMG_STATE_TEXT[st] || st, st === 'failed' ? 'err' : (busy ? 'busy' : (st === 'ready' ? 'ok' : '')));
+
+      /* 实际扣费只在服务商已结算时显示；**不写死价格**（计划 §3.4） */
+      if (usageEl) {
+        const u = job.usage;
+        if (u && (u.total_tokens != null || u.cost != null || u.credits != null)) {
+          const parts = [];
+          if (u.credits != null) parts.push('扣费 ' + u.credits);
+          if (u.total_tokens != null) parts.push(u.total_tokens + ' tokens');
+          usageEl.textContent = parts.join(' · ');
+        } else usageEl.textContent = '';
+      }
+
+      /* 主体：进度说明 / 失败原因 / 提示词快照 */
+      let html = '';
+      if (busy) {
+        html += '<div class="imgjob-bar"><span></span></div>' +
+          '<p class="hint-sm">' + esc(IMG_STATE_TEXT[st] || st) + '。关闭弹窗不会取消任务，重新打开可继续查看。</p>';
+      }
+      if (st === 'failed' || st === 'submission_unknown') {
+        html += '<div class="banner warn"><span>' + esc(job.error || '服务商未返回具体原因') + '</span></div>';
+        if (st === 'submission_unknown') {
+          html += '<p class="hint-sm">提交结果不确定（没有任务 ID）。请先到服务商控制台核对，应用**不会**自动重发。</p>';
+        }
+      }
+      if (job.prompt) {
+        html += '<details class="imgjob-prompt"><summary>本次提示词</summary>' +
+          '<div class="imgjob-prompt-body">' + esc(job.prompt) + '</div></details>';
+      }
+      if (body) body.innerHTML = html;
+
+      /* 底部动作：按状态给不同按钮（计划 §3.4 的失败处理表） */
+      let fh = '';
+      if (st === 'ready') {
+        fh = '<button class="btn-outline" data-ipact="discard">放弃结果</button>' +
+             '<button class="btn-primary" data-ipact="apply">使用这张图</button>';
+      } else if (st === 'failed') {
+        fh = '<button class="btn-outline" data-ipact="discard">知道了</button>';
+      } else if (st === 'submission_unknown') {
+        fh = '<button class="btn-outline" data-ipact="discard">知道了</button>';
+      } else if (st === 'applied' || st === 'discarded') {
+        fh = '<button class="btn-outline" data-ipact="dismiss">关闭</button>';
+      }
+      if (foot) foot.innerHTML = fh;
+
+      /* 对比区：候选图可用时显示「原图 | 新图」。
+         ⚠ 候选图走本地接口（/media/candidates/...），页面拿不到服务商直链。 */
+      if (cmpEl) {
+        if (st === 'ready' && job.previewUrl) {
+          cmpEl.hidden = false;
+          cmpEl.innerHTML =
+            '<figure class="imgcmp-cell"><figcaption>原图</figcaption>' +
+              (o.origUrl
+                ? '<img src="' + esc(o.origUrl) + '" alt="原图" data-ipzoom="' + esc(o.origUrl) + '"/>'
+                : '<span class="empty-ph">' + I.img + '<span>原本没有图片</span></span>') +
+            '</figure>' +
+            '<figure class="imgcmp-cell new"><figcaption>生成图</figcaption>' +
+              '<img src="' + esc(job.previewUrl) + '" alt="生成图" data-ipzoom="' + esc(job.previewUrl) + '"/>' +
+            '</figure>';
+        } else cmpEl.hidden = true;
+      }
+    }
+
+    /* 读一次当前任务（初次打开 / 轮询都用它）。 */
+    async function refresh() {
+      if (disposed) return;
+      try {
+        const r = await Api.currentImageJob(assetId);
+        if (disposed) return;
+        const changed = !job || !r.job || r.job.jobId !== job.jobId || r.job.state !== job.state;
+        job = r.job;
+        if (r.job) job.previewUrl = r.job.previewUrl;
+        /* 有活动任务就保持轮询；拿到终态就停表（不再空转） */
+        if (r.active) startPoll(); else clearPoll();
+        if (changed) render();
+      } catch (e) {
+        if (disposed) return;
+        /* 读取失败不弹 toast（轮询里会反复弹）—— 只记在状态条上 */
+        setState('读取任务状态失败：' + ((e && e.message) || ''), 'err');
+      }
+    }
+
+    function startPoll() { if (!pollTimer && !disposed) pollTimer = setInterval(refresh, 3000); }
+
+    /* 首屏：先读一次，有活动任务就开始跟。 */
+    refresh();
+
+    /* 动作分发 */
+    if (box) {
+      box.addEventListener('click', async (ev) => {
+        const zoom = ev.target.closest('[data-ipzoom]');
+        if (zoom) { openFullscreenViewer(zoom.getAttribute('data-ipzoom'), '生成结果'); return; }
+        const btn = ev.target.closest('[data-ipact]');
+        if (!btn || !job) return;
+        const act = btn.getAttribute('data-ipact');
+        if (act === 'dismiss') { job = null; render(); return; }
+        if (act === 'discard') {
+          const okDiscard = await uiConfirm('放弃这次生成结果',
+            '本地候选图会被清理，原图保持不变。\n已提交的远端任务无法在这里取消。');
+          if (!okDiscard) return;
+          try {
+            btn.disabled = true;
+            await Api.discardImageJob(assetId, job.jobId);
+            toast('已放弃生成结果', 'ok');
+            await refresh();
+          } catch (e) { btn.disabled = false; fail(e); }
+          return;
+        }
+        if (act === 'apply') {
+          await doApply(btn);
+        }
+      });
+    }
+
+    /* 采用：先取影响范围 → 二次确认 → 调接口 → 回调刷新。
+       ⚠ 影响范围以后端**现算**的为准（assetUsage），不是本地猜的。 */
+    async function doApply(btn) {
+      try {
+        btn.disabled = true;
+        const usage = await Api.assetUsage(assetId).catch(() => ({ count: 0 }));
+        const msg = [
+          '将更新素材库里的这张资产，以及所有引用它的分镜。',
+          Number(usage && usage.count) > 0
+            ? ('影响 ' + usage.count + ' 条分镜，它们的缩略图会一起刷新。')
+            : '当前没有分镜引用这张资产。',
+          '原图会被替换（保留原文件直到新文件写入成功）。'
+        ].join('\n');
+        const okApply = await uiConfirm('使用这张生成的图片', msg);
+        if (!okApply) { btn.disabled = false; return; }
+        const r = await Api.applyImageJob(assetId, job.jobId);
+        toast('已采用生成的图片' + (r && r.impact && r.impact.count ? '（影响 ' + r.impact.count + ' 条分镜）' : ''), 'ok');
+        if (typeof o.onApplied === 'function') { try { await o.onApplied(); } catch (e) { /* 刷新失败不影响采用结果 */ } }
+        await refresh();
+      } catch (e) { btn.disabled = false; fail(e); }
+    }
+
+    /* 对外：提交。raw=true 表示已由调用方做过确认（本组件自己弹确认框）。 */
+    async function submit() {
+      const prompt = String((typeof getPrompt === 'function' ? getPrompt() : '') || '').trim();
+      /* 空文本 / 全空白禁止提交；超限明确报错不截断（计划 §3.2 第 2 条） */
+      if (!prompt) { toast('提示词不能为空', 'err'); return { ok: false }; }
+      if (prompt.length > 10000) { toast('提示词不能超过 10000 字符（当前 ' + prompt.length + '）', 'err'); return { ok: false }; }
+
+      const p = S.imgProvider || {};
+      const confirmed = await uiConfirm('确认发起付费生图',
+        '资产：' + (o.assetName || '(未命名)') + '\n' +
+        '模型：' + (p.model || 'workfisher-image-g-v2.5-flare') + '\n' +
+        '张数：1 张 · 分辨率：1k · 格式：png\n' +
+        '提示词：' + (prompt.length > 120 ? prompt.slice(0, 120) + '…' : prompt) + '\n' +
+        '服务商按实际消耗收费，这次提交会产生真实调用。');
+      if (!confirmed) return { ok: false, canceled: true };
+
+      try {
+        const r = await Api.submitImageJob(assetId, prompt);
+        /* created=false 表示已有活动任务（后端拦住第二次提交，防重复扣费） */
+        if (r && r.created === false) {
+          toast('该资产已有进行中的生图任务，已为你显示它的进度', 'warn');
+        } else {
+          toast('已提交生图任务', 'ok');
+        }
+        job = r.job || null;
+        render();
+        startPoll();
+        return { ok: true };
+      } catch (e) {
+        fail(e);
+        return { ok: false, error: e };
+      }
+    }
+
+    return { submit, refresh, dispose, getJob: () => job };
+  }
+
+  /* 素材详情弹窗（素材库入口）。
+     ⚠ 2026-09-25 阶段 4：这里的"文生图提示词"文本框就是生图区的提示词来源 ——
+       点「保存提示词并生图」会先把该文本提交给生图服务，同时后端把它存回资产的
+       prompt 字段（见 services.submitImageJob）。 */
   function openAssetSettings(asset) {
-    return new Promise((resolve) => {
+    /* 先拿到生图服务状态再画弹窗（见 ensureImageProvider 的说明）。
+       包一层 async，内部仍返回原来的 Promise —— 调用方（editAsset / 卡片点击）
+       本来就 await 它，签名不变。 */
+    return ensureImageProvider().then(() => new Promise((resolve) => {
       const accept = asset.type === 'audio' ? 'audio/*' : 'image/*';
       // 图片用真实 <img> + object-fit:contain 完整展示（原用 background-size:cover 会裁掉四周）
       const hasPic = !!asset.url && asset.type !== 'audio';
@@ -3315,6 +3637,9 @@
           '<textarea id="asPrompt" class="asset-prompt" placeholder="该资产的文生图提示词。可粘贴整段（含风格要求、反向提示词），生成图后仍可回来修改。" maxlength="10000">' + esc(promptVal) + '</textarea>' +
           '<span class="hint-sm" id="asPromptCount">' + promptVal.length + ' / 10000</span>' +
         '</div>';
+      /* 生图区（2026-09-25 阶段 4）：音频不显示（计划 §1）。图片资产 ——
+         含"还没有图"的占位资产 —— 都显示。 */
+      const imgHTML = isAudio ? '' : imagePanelHTML(asset);
       const mask = document.createElement('div');
       mask.className = 'mask'; mask.style.zIndex = 200;
       mask.innerHTML =
@@ -3342,12 +3667,14 @@
                 '</select>' +
                 '<span class="hint-sm" id="asTypeHint"></span></div>') +
             promptHTML +
+            imgHTML +
             /* 上传入口只有图片区本身（点击即选文件），下方不再有「素材文件 / 更换文件」行 */
             '<input type="file" id="asFile" accept="' + accept + '" hidden />' +
           '</div>' +
           '<div class="modal-foot">' +
             '<span class="hint-sm" id="asFileHint"></span><span class="grow"></span>' +
             '<button class="btn-outline" data-cancel>取消</button>' +
+            (isAudio ? '' : '<button class="btn-outline" id="asGen" title="先保存这段提示词，再向生图服务提交一次任务（会产生真实调用）">' + I.spark + ' 保存提示词并生图</button>') +
             '<button class="btn-primary" data-ok>保存</button>' +
           '</div>' +
         '</div>';
@@ -3389,6 +3716,46 @@
           mask.querySelector('#asPromptCount').textContent = promptEl.value.length + ' / 10000';
         });
       }
+      /* 生图区接线（阶段 4）。⚠ 有"待上传文件"时先拦住（计划 §3.2 第 3 条）：
+         否则新选的本地图与生成的候选图会争用同一块预览区，用户会看到一张不属于
+         当前状态图。这里给出明确指引而不是静默忽略。 */
+      let imgPanel = null;
+      if (!isAudio) {
+        imgPanel = wireImagePanel(mask, asset.id, () => (promptEl ? promptEl.value : ''), {
+          assetName: asset.name,
+          origUrl: hasPic ? asset.url : null,
+          /* 采用后刷新素材库与分镜缩略图 —— 资产的 url 变了，两处都要重取 */
+          onApplied: async () => {
+            try { await loadAssets(); } catch (e) { /* 刷新失败不影响采用结果 */ }
+            try { await loadProjAssets(); } catch (e) { /* 素材库不在当前视图时可能失败 */ }
+            if (S.proj && S.proj.tab === 'assets') renderProjAssets();
+            try { await loadList({ skeleton: false }); } catch (e) { /* 分镜列表不在视图时的正常失败 */ }
+            /* 换图后把预览也更新到新图（否则弹窗里还显示旧图） */
+            const fresh = await Api.getAsset(asset.id).catch(() => null);
+            if (fresh && fresh.url) {
+              const im = mask.querySelector('#asPreviewImg');
+              if (im) im.src = fresh.url;
+            }
+          }
+        });
+      }
+      const genBtn = mask.querySelector('#asGen');
+      if (genBtn) {
+        genBtn.addEventListener('click', async () => {
+          if (picked) {
+            toast('请先完成或取消已选择的本地文件，再生成图片', 'warn');
+            return;
+          }
+          const before = Number(promptEl ? promptEl.value.length : 0);
+          const r = await imgPanel.submit();
+          /* 提交成功后把提示词也存进资产（后端在 submitImageJob 里已经存了 ——
+             见 services.submitImageJob 的注释）。这里只刷新一下本地状态。 */
+          if (r && r.ok) asset.prompt = String(promptEl ? promptEl.value : '').trim();
+          void before;
+        });
+      }
+      /* 弹窗关闭时必须停掉前端读表（否则弹窗已销毁还在轮询） */
+      const origDoneCleanup = () => { if (imgPanel) imgPanel.dispose(); };
       const fsEl = mask.querySelector('#asFull');
       if (fsEl) fsEl.addEventListener('click', () => { if (currentImgUrl) openFullscreenViewer(currentImgUrl, asset.name); });
       /* 图片区本身就是上传入口：整块可点。悬浮的「全屏」钮有自己的动作，
@@ -3414,6 +3781,7 @@
       });
       const done = (v) => {
         if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);   // 回收本地预览资源
+        origDoneCleanup();                                         // 停生图区的读表
         mask.remove(); resolve(v);
       };
       mask.querySelector('[data-ok]').addEventListener('click', () => {
@@ -3431,7 +3799,7 @@
         document.removeEventListener('keydown', escAs); done(null);
       });
       nameEl.focus(); nameEl.select();
-    });
+    }));
   }
 
   /* 打开素材详情并落库（改名 / 改提示词 / 换文件 / 改类型） */
@@ -3496,7 +3864,8 @@
       : (a.audioIndex
           ? '音频' + a.audioIndex + '（走 --audio，不占图片号）'
           : '未占用图号');
-    return new Promise((resolve) => {
+    /* 与素材详情同样先取生图服务状态（见 ensureImageProvider 的说明） */
+    return ensureImageProvider().then(() => new Promise((resolve) => {
       const mask = document.createElement('div');
       mask.className = 'mask'; mask.style.zIndex = 210;
       mask.innerHTML =
@@ -3527,6 +3896,11 @@
               ? '<div class="banner warn"><span>未计入图号：' + esc(a.notCounted) +
                 '（后面的图号不会因它顺延；点「更换文件」补上图片即可恢复）</span></div>'
               : '') +
+            /* 生图区（阶段 4）：与素材库详情**共用同一套组件**。
+               提示词来源必须是**素材库资产的最新 prompt**，而不是分镜快照 ——
+               快照里只有图片与名称（计划 §2）。这里先只渲染骨架，
+               真实提示词在下面的 bindPrompt 里异步取回并填充。 */
+            (isAudio ? '' : imagePanelHTML(a, { showPromptEcho: true })) +
             '<div class="hint-sm" style="line-height:1.9">' +
               '· <b>替换素材</b>：在本分镜中改绑素材库里的另一个资产，原素材与其它分镜不受影响。<br/>' +
               '· <b>更换文件</b>：把该素材的图片换成新文件，<b>所有</b>引用它的分镜都会一起换。' +
@@ -3535,6 +3909,7 @@
           '</div>' +
           '<div class="modal-foot">' +
             '<span class="hint-sm" id="bpHint"></span><span class="grow"></span>' +
+            (isAudio ? '' : '<button class="btn-outline" id="bpGen" title="用该素材在素材库中的最新提示词发起一次生图（会产生真实调用）">' + I.spark + ' 生图</button>') +
             '<button class="btn-outline" data-file title="把该素材的图片换成另一个本地文件；素材 id 与全部分镜绑定不变，但所有引用它的分镜都会跟着换图">更换文件</button>' +
             '<button class="btn-primary" data-swap title="在本分镜中改绑素材库里的另一个资产；原素材与其它分镜不受影响">替换素材</button>' +
           '</div>' +
@@ -3544,7 +3919,46 @@
       let busy = false, pickerOpen = false;
       const q = (s) => mask.querySelector(s);
       const setHint = (t) => { const el = q('#bpHint'); if (el) el.textContent = t || ''; };
-      const done = () => { mask.remove(); resolve(true); };
+      const done = () => { if (imgPanel) imgPanel.dispose(); mask.remove(); resolve(true); };
+
+      /* 生图区（阶段 4）。提示词取自**素材库的最新记录**（按资产 ID + 项目作用域现取），
+         不是分镜快照 —— 用户在素材库改了提示词、分镜入口还发旧文案，正是计划 §2
+         点名要避免的。取回前提示词为空，此时点「生图」会被"提示词不能为空"挡住，
+         不会误发一次付费调用。 */
+      let imgPanel = null, latestPrompt = '';
+      if (!isAudio) {
+        imgPanel = wireImagePanel(mask, a.assetId, () => latestPrompt, {
+          assetName: a.name,
+          origUrl: hasPic ? a.url : null,
+          onApplied: async () => {
+            /* 采用后刷新分镜缩略图与项目资产库；资产 ID / 类型 / 图号 / 分镜绑定不变
+               （计划 §3.3 第 4 条）*/
+            try { await loadAssets(); } catch (e) { /* 刷新失败不影响采用结果 */ }
+            try { await loadList({ skeleton: false }); } catch (e) { /* 同上 */ }
+            try {
+              const fresh = await Api.getAsset(a.assetId);
+              if (fresh && fresh.url) {
+                const im = box && box.querySelector('img');
+                if (im) im.src = fresh.url;
+              }
+            } catch (e) { /* 取最新失败则保留旧图，不影响已采用的库记录 */ }
+          }
+        });
+        /* 异步取最新提示词（失败就保持空，不弹错 —— 它只是生图的前置条件） */
+        Api.getAsset(a.assetId).then((fresh) => {
+          latestPrompt = (fresh && fresh.prompt) || '';
+          const ta = q('#ipPromptEcho');
+          if (ta) ta.textContent = latestPrompt || '（素材库中该资产还没有提示词）';
+        }).catch(() => {});
+        const genBtn = q('#bpGen');
+        if (genBtn) {
+          genBtn.addEventListener('click', async () => {
+            /* 有"待上传文件"进行中时先拦住：与素材详情同一理由（两张候选图争预览区） */
+            if (busy) { toast('请等当前文件操作完成', 'warn'); return; }
+            await imgPanel.submit();
+          });
+        }
+      }
 
       /* 预览区（含悬浮的全屏钮）统一走全屏查看器：这里看的就是原图本身，不再套第二层弹窗 */
       const box = q('.asset-preview');
@@ -3611,7 +4025,7 @@
         if (pickerOpen) return;                     // 选择弹窗自己处理 ESC，别把两层一起关掉
         document.removeEventListener('keydown', escBa); close();
       });
-    });
+    }));
   }
 
   /* ---------------------------------------------------------- 导入资产（双模式弹窗） */
@@ -5594,6 +6008,65 @@
        · 被环境变量锁定  → 说明 JC_DATA_DIR 优先级更高、改配置不生效
        · 网页版          → 说明没有持久化机制
      canChange=false 时**不给控件** —— 让用户改了却毫无效果，比不给入口更糟。 */
+  /* ---------------------------------------------------------- 图片生成服务（2026-09-25 阶段 4）
+     密钥的保管方式按交付形态分工（计划 §3.1 / §5.3）：
+       · 桌面版 —— safeStorage 加密存进 userData，页面**只能写入 / 删除**，
+         读回原密钥的通道在架构上就不存在（IPC 只回布尔状态）；
+       · 网页版 —— 由启动者在环境变量 WORK_FISHER_API_KEY 里提供，
+         页面**不提供编辑框**，因为没有安全的落点（前端持久化 = 泄露）。
+     status() 的形状由后端 /system/image-provider 定义，这里只渲染。 */
+  function imageProviderCardHTML() {
+    const p = S.imgProvider;
+    const head = '<div class="scard-hd"><div class="scard-hd-t">' +
+      '<h3>图片生成服务</h3><p>素材库图片资产的生图服务（Work Fisher · Image G v2.5 Flare）</p></div></div>';
+    if (!p) {
+      return '<section class="scard">' + head + '<div class="scard-bd"><p class="hint-sm">读取中…</p></div></section>';
+    }
+    const isDesktop = !!(window.JCDesktop && window.JCDesktop.imageKeyStatus);
+    const rows = [];
+
+    if (p.error) {
+      rows.push('<div class="banner warn"><span>' + esc(p.error) + '</span></div>');
+    }
+
+    if (isDesktop) {
+      /* 桌面版：显示"已配置 / 未配置"，并给写入 / 删除入口。
+         ⚠ 永不回显密钥本身（连掩码都不给）—— "已配置"就是全部信息。 */
+      const encOk = S.imgKeyEncryption !== 'unavailable';
+      rows.push('<div class="cli-state">' + (p.configured ? I.check : I.alert) +
+        '<span>' + (p.configured ? '已配置（密钥已加密保存）' : '未配置') + '</span></div>');
+      if (!encOk) {
+        rows.push('<div class="banner warn"><span>系统加密能力不可用，无法安全保存密钥。' +
+          '本应用不会把密钥以明文写入磁盘，请先在系统层面修复凭据保护后再试。</span></div>');
+      } else {
+        rows.push('<div class="row-inline"><label class="label-sm" for="ipkInput">API Key</label>' +
+          '<input class="input-sm" id="ipkInput" type="password" autocomplete="off" ' +
+            'placeholder="粘贴 Work Fisher 控制台创建的密钥" style="flex:1;min-width:0" /></div>');
+        rows.push('<div class="cli-actions">' +
+          '<button class="btn-primary" data-ipkact="save">保存密钥</button>' +
+          (p.configured ? '<button class="btn-outline" data-ipkact="clear">删除密钥</button>' : '') +
+          '</div>');
+      }
+      rows.push('<p class="hint-sm">密钥经系统加密后保存在本机，页面与日志都无法读回。' +
+        '「已保存」只表示密钥已妥善保管，不代表服务商鉴权或余额已验证 —— ' +
+        '首次提交若返回鉴权/余额错误，会在生图区给出可操作的提示。</p>');
+    } else {
+      /* 网页版：只读说明。没有编辑框是**刻意**的（见上方注释）。 */
+      rows.push('<div class="cli-state">' + (p.configured ? I.check : I.alert) +
+        '<span>' + (p.configured ? '已由运行环境配置' : '未配置') + '</span></div>');
+      rows.push('<p class="hint-sm">' + (p.configured
+        ? '密钥由服务启动环境提供（环境变量 WORK_FISHER_API_KEY），本页不显示也不修改它。'
+        : '请由启动者在启动服务前设置环境变量 WORK_FISHER_API_KEY，然后重启服务。网页版不提供密钥编辑入口 —— 前端没有安全的密钥存放位置。') +
+        '</p>');
+    }
+
+    if (p.model) {
+      rows.push('<div class="row-inline"><span class="label-sm">模型</span>' +
+        '<span class="hint-sm">' + esc(p.model) + '</span></div>');
+    }
+    return '<section class="scard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
+  }
+
   function dataDirCardHTML() {
     const p = S.paths;
     const head = '<div class="scard-hd"><div class="scard-hd-t">' +
@@ -5852,6 +6325,9 @@
         /* —— 应用更新：只有桌面版渲染（网页版没有应用内更新）—— */
         appUpdateHTML() +
       '</section>' +
+      /* —— 卡片 · 图片生成服务（2026-09-25 阶段 4）——
+             与创作 CLI 同属"外部服务接入"，紧跟其后；数据目录仍是最后一张。 —— */
+      imageProviderCardHTML() +
       /* —— 卡片 6 · 数据目录（2026-09-23 新增）。全库级设置、切完必须重启，
              按本面板"低频高风险放最后"的惯例收尾。 —— */
       dataDirCardHTML();
@@ -6329,6 +6805,59 @@
       } catch (err) {
         S.pathsBusy = false; renderSettings();
         toast((err && err.message) || '切换失败', 'warn');
+      }
+    });
+
+    /* 图片生成服务卡片的交互（2026-09-25 阶段 4）。同样独立成一个监听。
+       ⚠ 这里**只经具名 IPC**（JCDesktop.imageSetKey / imageClearKey）——
+         密钥走"页面 → 主进程 → safeStorage"，不进后端 HTTP，也就不会进任何响应。
+       ⚠ 保存成功**立刻清空输入框**：避免密钥停留在 DOM 里被后续快照/截图带走。 */
+    $('#settingsBody').addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-ipkact]');
+      if (!b || b.disabled) return;
+      const act = b.dataset.ipkact;
+      const J = window.JCDesktop;
+      if (!(J && J.imageSetKey)) return;
+
+      if (act === 'save') {
+        const inp = $('#ipkInput');
+        const val = inp ? String(inp.value || '').trim() : '';
+        if (!val) { toast('请先粘贴 API Key', 'warn'); return; }
+        b.disabled = true;
+        try {
+          const r = await J.imageSetKey(val);
+          if (inp) inp.value = '';                     // 无论成败都不把密钥留在 DOM 里
+          if (r && r.ok) {
+            toast('密钥已加密保存', 'ok');
+            /* 重新取一次状态，让"未配置"变成"已配置"、并放出生图区 */
+            S.imgProvider = null;
+            await ensureImageProvider();
+            renderSettings();
+          } else if (r && r.reason === 'unavailable') {
+            toast('系统加密不可用，密钥未保存（不会降级为明文）', 'err');
+          } else {
+            toast('保存失败：' + ((r && r.reason) || '未知原因'), 'err');
+          }
+        } catch (err) { toast((err && err.message) || '保存失败', 'warn'); }
+        finally { b.disabled = false; }
+        return;
+      }
+
+      if (act === 'clear') {
+        if (!window.confirm('删除已保存的 API Key？\n\n删除后素材生图会立刻不可用，重新启用需再次粘贴密钥。')) return;
+        b.disabled = true;
+        try {
+          const r = await J.imageClearKey();
+          if (r && r.ok) {
+            toast('密钥已删除', 'ok');
+            S.imgProvider = null;
+            await ensureImageProvider();
+            renderSettings();
+          } else {
+            toast('删除失败：' + ((r && r.reason) || '未知原因'), 'err');
+          }
+        } catch (err) { toast((err && err.message) || '删除失败', 'warn'); }
+        finally { b.disabled = false; }
       }
     });
 

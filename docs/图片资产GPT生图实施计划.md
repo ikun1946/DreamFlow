@@ -1,8 +1,9 @@
 # 图片资产 GPT 生图：实施计划与操作流程
 
-> 状态：现行（设计方案；**阶段 1–2 已于 2026-09-25 在本分支实施，阶段 3–6 待做**）
+> 状态：现行（**阶段 1–6 已于 2026-09-25 在本分支 `workbuddy/main-6f036ceb` 全部实施**）
 >
-> 文中拟议按钮与界面接口在阶段 3–4 完成前仍不存在；后端骨架与任务/文件安全已在本地落地。
+> 六条阶段全部落地：服务商适配、任务状态机与文件安全、桌面端密钥加密存储、两处界面入口、文档与版本收尾、验收。
+> 文中拟议的按钮与界面接口**均已存在**；唯一保留项是计划第 7 节明确排除在自动化之外的「**一次真实付费验收**」——需事先确认费用与授权，由使用者手动进行。
 >
 > 制定日期：2026-09-25；依据 DreamFlow `0.38.11` 的图片资产代码，以及当日核对的 [Work Fisher API 文档](https://api.work-fisher.com/docs/)和[机器可读文档](https://api.work-fisher.com/docs/llms.txt)。正式编码前复核服务商接口与计费说明。
 >
@@ -200,3 +201,38 @@
 完成判据：两处入口都取同一资产的最新提示词；同一任务不会因双击或重启被重复提交；成功结果及时保存到本地；采用前可比较并确认影响范围；采用失败仍能打开原图；密钥不出现在页面响应、日志或仓库中；回归命令通过。
 
 首版只提供**文本生一张图**。参考图编辑、批量生图、多模型切换、多个候选图、自动采用、远端任务取消、准确的提交前价格预估均留待后续单独设计。服务商价格与可用模型可能调整，以其控制台和最新文档为准。
+
+## 9. 实施结果与验收记录（2026-09-25，本分支）
+
+### 9.1 阶段完成情况
+
+| 阶段 | 结果 | 落点 |
+| --- | --- | --- |
+| 0. 基线 | ✅ | 从 `workbuddy/main-6f036ceb` 建分支，基线 `0.38.11` → 收尾 `0.40.0` |
+| 1. 服务商适配 | ✅ | 新增 `server/image-provider.js`（可注入传输层，`transport()/setTransport()/transportOverride`） |
+| 2. 任务与文件 | ✅ | 新增 `server/image-jobs.js`（状态机 + `PERSIST_FIELDS` 白名单 + `sanitizeAll/saveAll` 唯一落库出口）；`db.json` schemaVersion `3 → 4` |
+| 3. 密钥配置 | ✅ | 新增 `desktop/image-key-store.js`（safeStorage 注入、密文落盘、无 getKey IPC）；`desktop/main.js` 三具名 IPC + `imageKeyProvider` 注入；`desktop/preload.js` 三具名动作 |
+| 4. 两处界面 | ✅ | `app/api.js` 6 方法 + `imageSubmitKey`；`app/app.js` 共用 `imagePanelHTML` / `wireImagePanel`，两弹窗接线 + 设置页密钥卡片；`app/constants.js` `I.spark`；`app/styles.css` 新增样式 |
+| 5. 文档与版本 | ✅ | 本文件状态行、`docs/CHANGELOG.md` 0.40.0、`docs/项目文档.md` §8 接口分组、`docs/前端页面与接口对接说明.md` §4.6、版本号 `0.39.0 → 0.40.0`（6 处）、重建 `dist/` |
+| 6. 验收与交付 | ✅（自动化）／⏸（付费实测） | 见 9.2 |
+
+### 9.2 自动化验收结果
+
+| 门禁 | 命令 | 结果 |
+| --- | --- | --- |
+| 单元测试 | `npm test` | **310 通过 / 0 失败**（新增 `test/13-image-key.test.js` 12 例、`test/14-image-credential.test.js` 10 例） |
+| 结构检查 | `npm run check` | 见 §9.3（16 节；§15 `git remote` 因沙箱 `spawnSync EBUSY` 为环境限制） |
+| 静态 lint | `npm run lint` | 通过（7 项 / 34 文件无"调用但未定义"） |
+| 构建 | `node build.js` | 通过，产物自带校验全过 |
+| 冒烟 | `npm run smoke:web` | 通过 |
+| 端到端 | `npm run e2e` | 通过 |
+
+### 9.3 密钥边界专项（`test/14-image-credential.test.js`）
+
+以哨兵串 `wfk_sentinel_9f3ac1_SHOULD_NEVER_LEAK` 注入配置，断言其**不出现在**：HTTP 出口（`/system/image-provider`、取资产、列资产、提交响应）、错误分支文案、日志接口、沙箱全目录明文、`server/` 源码字面量；并断言 `desktop/preload.js` 无 `imageGetKey`、`desktop/main.js` 无 `image:getKey` 通道、key-store `status()` 不含密钥材料。
+
+### 9.4 明确未做（超出本期边界，非遗漏）
+
+- **一次真实 API Key 付费验收**：按计划 §7 排除在自动化之外，需使用者确认费用与授权后手动进行。
+- **按"路径 + 方法"组合计**的路由条数口径：本次未改（未新增路由数量统计方式）。
+- **推送远端**：本环境沙箱无可用出网路由（`github.com:443` 不可达），本地提交已完成，推送需在宿主机执行 `git push -u origin workbuddy/main-6f036ceb`（该分支当前无上游跟踪）。

@@ -1877,6 +1877,46 @@ html.nav-back::view-transition-new(root){animation:nav-in-left .24s cubic-bezier
   .pv-tabs::-webkit-scrollbar{display:none}
 }
 
+/* ============================ 图片资产生图（2026-09-25 阶段 4） ============================
+   两个入口（素材详情 / 分镜预览）共用同一套类名，改一处两处都变 —— 这正是
+   抽出共用组件的目的。所有颜色走主题令牌（与 .asset-prompt 同一批），深色模式自动跟随。 */
+.imgjob{border:1px solid var(--hairline);border-radius:11px;padding:12px;background:var(--pearl);margin-top:8px}
+.imgjob[hidden]{display:none}
+.imgjob-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.imgjob-state{font-size:13px;font-weight:600;color:var(--ink)}
+.imgjob-state.busy{color:var(--primary-ink)}
+.imgjob-state.ok{color:var(--ok)}
+.imgjob-state.err{color:var(--err)}
+/* 不确定进度的进度条：横向滑动的高光条。刻意不做百分比 —— 服务商不给我们进度，
+   编一个假百分比比没有进度更糟（用户会以为卡住了）。 */
+.imgjob-bar{position:relative;height:4px;border-radius:3px;background:var(--primary-bg);overflow:hidden;margin:6px 0 8px}
+.imgjob-bar>span{position:absolute;top:0;left:-40%;width:40%;height:100%;border-radius:3px;background:var(--primary);animation:imgjob-slide 1.25s ease-in-out infinite}
+@keyframes imgjob-slide{0%{left:-40%}100%{left:100%}}
+.imgjob-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+.imgjob-foot:empty{display:none}
+.imgjob-prompt{margin-top:8px;font-size:12px}
+.imgjob-prompt>summary{cursor:pointer;color:var(--ink48);user-select:none}
+.imgjob-prompt-body{margin-top:6px;white-space:pre-wrap;word-break:break-word;line-height:1.7;
+  font-family:var(--mono);color:var(--ink);
+  background:var(--code-chip);border-radius:8px;padding:8px 10px;max-height:170px;overflow:auto}
+/* 原图 / 新图对比：等宽两栏。⚠ 用 auto-fit + minmax 而不是容器查询 ——
+   这两个弹窗（.modal.narrow）不是 container，写 @container 不会生效；
+   minmax 让窄弹窗自动折成上下两格，不需要容器上下文。 */
+.imgcmp{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px}
+.imgcmp[hidden]{display:none}
+.imgcmp-cell{margin:0;border:1px solid var(--hairline);border-radius:10px;overflow:hidden;background:var(--surface)}
+.imgcmp-cell.new{border-color:var(--primary)}
+.imgcmp-cell figcaption{font-size:12px;padding:5px 8px;color:var(--ink48);border-bottom:1px solid var(--divider)}
+.imgcmp-cell.new figcaption{color:var(--primary-ink);font-weight:600}
+.imgcmp-cell img{display:block;width:100%;height:170px;object-fit:contain;background:var(--parchment);cursor:zoom-in}
+.imgcmp-cell .empty-ph{height:170px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  color:var(--ink48);font-size:12px}
+.imgcmp-cell .empty-ph svg{width:28px;height:28px;opacity:.4}
+/* 生图按钮上的图标与文字对齐（I.spark 是 currentColor 描边，跟随按钮前景色） */
+#asGen svg,#bpGen svg{vertical-align:-2px;margin-right:2px}
+/* 分镜预览里的提示词回声区：与 .asset-prompt 同样的字号族，但只读 */
+#ipPromptEcho{max-height:120px}
+
 /* ============================ 动效降级（WCAG 2.3.3） ============================
    前庭功能障碍用户：把动画/过渡时长压到近乎即时。
    刻意只禁用 duration、不碰 transform 显隐逻辑本身 ——
