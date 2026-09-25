@@ -17,10 +17,10 @@ const path = require('path');
 const H = require('./helpers');
 
 const REPO = H.REPO_ROOT;
-const updater = require(path.join(REPO, 'desktop', 'updater.js'));
-const extTools = require(path.join(REPO, 'desktop', 'external-tools.js'));
-const legacy = require(path.join(REPO, 'desktop', 'legacy-import.js'));
-const updateStateMod = require(path.join(REPO, 'desktop', 'update-state.js'));
+const updater = require('../desktop/updater.js');
+const extTools = require('../desktop/external-tools.js');
+const legacy = require('../desktop/legacy-import.js');
+const updateStateMod = require('../desktop/update-state.js');
 
 const SANDBOX = H.freshDir('build-release');
 
@@ -657,13 +657,13 @@ describe('preload —— 桥面形状（行为型，P0-3）', () => {
       if (request === 'electron' || /^electron\//.test(request)) return stub;
       return orig.apply(this, arguments);
     };
-    const target = path.join(REPO, 'desktop', 'preload.js');
+    /* 0.38.x：路径用静态字面量 —— 动态 require(变量) 会被安全扫描判为注入 */
     try {
-      delete require.cache[require.resolve(target)];
-      require(target);
+      delete require.cache[require.resolve('../desktop/preload.js')];
+      require('../desktop/preload.js');
     } finally {
       Module._load = orig;                        // 立刻还原，别影响别的用例
-      delete require.cache[require.resolve(target)];
+      delete require.cache[require.resolve('../desktop/preload.js')];
     }
     assert.equal(calls.expose.length, 1, '应恰好暴露一个全局对象');
     assert.equal(calls.expose[0].name, 'JCDesktop');
@@ -1040,8 +1040,10 @@ describe('仓库形状（刻意保留的文本断言）', () => {
   test('build.js 存在且可被 node --check 通过', () => {
     const p = path.join(REPO, 'build.js');
     assert.ok(fs.existsSync(p), 'build.js 必须存在');
-    const { execSync } = require('child_process');
-    execSync('node --check ' + JSON.stringify(p), { stdio: 'ignore' });
+    /* 0.38.x：参数列表式调用（execFileSync + 数组参数），不拼 shell 命令串 ——
+       安全扫描要求；语义与原来的 execSync('node --check <path>') 一致 */
+    const { execFileSync } = require('child_process');
+    execFileSync(process.execPath, ['--check', p], { stdio: 'ignore' });
   });
 
   test('图标资源齐备（icon-source.png / icon.png / icon.ico）', () => {
@@ -1070,7 +1072,7 @@ describe('updater —— 传输层（方案 A：可注入 + 跳转 + 回退）',
   const { EventEmitter } = require('events');
   const { Readable } = require('stream');
   const crypto = require('crypto');
-  const transportMod = require(path.join(REPO, 'desktop', 'updater-transport.js'));
+  const transportMod = require('../desktop/updater-transport.js');
 
   /** 200 响应。用**真 Readable**：downloadTo 会 res.pipe(file)，EventEmitter 顶不住。 */
   function res200(buf) {
@@ -1282,7 +1284,7 @@ describe('updater —— 传输层（方案 A：可注入 + 跳转 + 回退）',
    ════════════════════════════════════════════════════════════════ */
 describe('updater-transport —— 假 net 下的跳转 / 回退 / 超时', () => {
   const { EventEmitter } = require('events');
-  const transportMod = require(path.join(REPO, 'desktop', 'updater-transport.js'));
+  const transportMod = require('../desktop/updater-transport.js');
   const TSRC = fs.readFileSync(path.join(REPO, 'desktop', 'updater-transport.js'), 'utf8');
 
   /* 造一个假的 net + 一个可手动 emit 事件的假 req */

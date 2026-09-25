@@ -6223,7 +6223,14 @@
         if (k === 'autoRetry') S.settings.queue.autoRetry = !S.settings.queue.autoRetry;
         else if (k === 'compact') applyDensity(!isCompact());
         else if (k === 'theme') setTheme(tg.dataset.themeVal);   // .seg 三态：读 data-theme-val
-        else if (k === 'slotmode') setSlotMode(tg.dataset.slotmodeVal);   // .seg 两态：读 data-slotmode-val
+        else if (k === 'slotmode') {
+          setSlotMode(tg.dataset.slotmodeVal);
+          /* 切换后立即按新模式重排素材槽位（0.39.x）：不等下一次轮询 ——
+             否则 deck → scroll 时牌堆的负 margin 还挂在行内样式上，看起来"还是堆叠"。 */
+          S.deckOpen = {};
+          document.querySelectorAll('.slots.deck-open').forEach((el) => el.classList.remove('deck-open'));
+          layoutDecks();
+        }
         renderSettings(); return;
       }
     });

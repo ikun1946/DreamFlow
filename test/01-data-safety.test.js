@@ -250,7 +250,7 @@ describe('store —— 原子写入与损坏恢复', () => {
     const before = fs.readFileSync(dbFile, 'utf8');
 
     const script = `
-      const store = require(${JSON.stringify(path.resolve(__dirname, '..', 'server', 'store.js'))});
+      const store = require('../server/store');
       store.saveNow();   // 故意不 load()：修复前会把 "null" 写到 db.json
       console.log('GUARD-RAN');
     `;
@@ -274,7 +274,7 @@ describe('store —— 原子写入与损坏恢复', () => {
 
     const script = `
       const path = require('path');
-      const store = require(${JSON.stringify(path.resolve(__dirname, '..', 'server', 'store.js'))});
+      const store = require('../server/store');
       const db = store.load();
       const info = store.recoveryInfo();
       console.log('__RESULT__' + JSON.stringify({
@@ -303,7 +303,7 @@ describe('store —— 原子写入与损坏恢复', () => {
 
     const script = `
       const path = require('path');
-      const store = require(${JSON.stringify(path.resolve(__dirname, '..', 'server', 'store.js'))});
+      const store = require('../server/store');
       const db = store.load();
       const info = store.recoveryInfo();
       console.log('__RESULT__' + JSON.stringify({
@@ -327,7 +327,7 @@ describe('store —— 原子写入与损坏恢复', () => {
 
     const script = `
       const path = require('path');
-      const store = require(${JSON.stringify(path.resolve(__dirname, '..', 'server', 'store.js'))});
+      const store = require('../server/store');
       console.log('__RESULT__' + JSON.stringify(store.listBackups().map((f) => path.basename(f))));
     `;
     const list = H.nodeJson(script, dir);

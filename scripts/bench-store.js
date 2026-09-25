@@ -29,8 +29,8 @@ const SANDBOX = path.join(REPO, '.test-tmp', 'bench-store-' + process.pid);
 fs.mkdirSync(SANDBOX, { recursive: true });
 process.env.JC_DATA_DIR = SANDBOX;
 
-const store = require(path.join(REPO, 'server', 'store'));
-const P = require(path.join(REPO, 'server', 'paths'));
+const store = require('../server/store');
+const P = require('../server/paths');
 
 /* CLI 参数：--levels N1,N2,N3（默认 100/1k/10k），--runs N（默认 3，去最高最低取均值） */
 const argv = process.argv.slice(2);

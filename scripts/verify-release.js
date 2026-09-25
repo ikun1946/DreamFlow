@@ -39,7 +39,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..');
-const updater = require(path.join(ROOT, 'desktop', 'updater.js'));
+const updater = require('../desktop/updater.js');
 
 const argv = process.argv.slice(2);
 const wantTag = (argv.find((a) => /^v\d+\./.test(a)) || '').trim();
@@ -81,7 +81,7 @@ const sha256 = (file) =>
 
   /* ── ② 应用能否查到 ────────────────────────────────────────── */
   head('[2/5] 应用能否查到已发布版本（走 fetchManifest，与界面同一条路径）');
-  const pkgVersion = require(path.join(ROOT, 'package.json')).version;
+  const pkgVersion = require('../package.json').version;
   const r = await updater.check(pkgVersion, null);
   if (!r.ok) {
     fail('检查更新失败：' + r.error);
