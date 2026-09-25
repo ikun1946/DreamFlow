@@ -12,7 +12,7 @@
     "server": "node server/index.js",
     "build:web": "node build.js",
     "icons": "node scripts/make-icons.js",
-    "test": "node --test test/01-data-safety.test.js test/02-task-logic.test.js test/03-build-release.test.js test/04-routes.test.js test/05-worker.test.js test/06-csp.test.js test/07-cli-jobs.test.js test/08-a11y.test.js test/09-err-info.test.js test/10-data-dir.test.js test/11-image-provider.test.js test/12-image-jobs.test.js test/13-image-key.test.js test/14-image-credential.test.js test/14-image-credential.test.js",
+    "test": "node --test test/01-data-safety.test.js test/02-task-logic.test.js test/03-build-release.test.js test/04-routes.test.js test/05-worker.test.js test/06-csp.test.js test/07-cli-jobs.test.js test/08-a11y.test.js test/09-err-info.test.js test/10-data-dir.test.js test/11-image-provider.test.js test/12-image-jobs.test.js test/13-image-key.test.js test/14-image-credential.test.js",
     "check": "node scripts/check-project.js",
     "lint": "node scripts/lint.js",
     "smoke:web": "node scripts/smoke-web.js",
