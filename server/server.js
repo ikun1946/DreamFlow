@@ -28,6 +28,8 @@ const S = require('./services');
 const { makeDreaminaAdapter } = require('./dreamina-cli');
 const { makeWorker } = require('./worker');
 const { makeRouter, queryOf } = require('./routes');
+const { makeImageProvider } = require('./image-provider');
+const { makeImageJobs } = require('./image-jobs');
 const cliJobsMod = require('./cli-jobs');   // cliJobs 治理（活性保留 + 老化淘汰）
 
 /* ---------------- 静态文件 ---------------- */
@@ -195,6 +197,59 @@ function createServer(opts) {
   const dreamina = makeDreaminaAdapter(cfg);
   const worker = makeWorker(cfg, { dreamina });
   worker.dreamina = dreamina;   // 供状态/积分接口访问（services 统一从 adapter.dreamina 取创作 CLI）
+
+  /* ---------------- 图片资产生图（2026-09-25 · 阶段 2） ----------------
+     注入链刻意与 dreamina 同形：provider 是可替换的外部客户端，imageJobs 是
+     持有状态机的运行时，两者都挂在 adapter 上供 services / routes 取用。
+
+     ⚠ 凭据读取用**函数**而不是快照值：桌面版的密钥由 Electron 主进程经
+       safeStorage 管理，用户随时可能写入 / 删除。若在这里快照一次，
+       表现就是"刚填的密钥不生效、删掉的密钥还能继续用" —— 与 dreamina
+       适配器"路径每次 spawn 现取"是同一条教训。
+     ⚠ 凭据来源由调用方注入（cfg.imageKeyProvider）；网页版是环境变量、
+       桌面版是主进程 IPC。**绝不在 server/ 里读 Electron**。 */
+  const imageProvider = makeImageProvider({
+    apiKey: typeof cfg.imageKeyProvider === 'function'
+      ? cfg.imageKeyProvider
+      : () => cfg.workFisherApiKey || ''
+  }, {
+    baseUrl: cfg.imageProviderBase || undefined,
+    model: cfg.imageProviderModel || undefined
+  });
+  const imageJobs = makeImageJobs({
+    db: () => store.load(),
+    save: () => store.save(),
+    /* ⚠ 采用新图时必须用 flush（同步落盘）而不是 save（去抖 300ms）：
+       计划 §5.2 第 4 条要求"写完新文件并校验后更新资产 URL，强制把数据库刷盘成功，
+       最后才清理旧文件"。若用去抖的 save，落盘还没发生就已经删掉旧文件 ——
+       此时进程被杀，库里指向新图、而新图可能没写全，原图又没了。 */
+    flush: () => store.flush(),
+    provider: imageProvider,
+    /* 任务推进与资产删除都会用到；每次现取，避免持有过期引用 */
+    findAssetForJob: (job) => store.load().assets.find((a) => a && a.id === job.assetId) || null,
+    assetFileOf: (asset) => P.assetFileOf(asset),
+    assetUrl: (pj, file) => P.assetUrl(pj, file),
+    assetDir: (pj) => P.assetDir(pj),
+    markDependentsDirty: (assetId) => {
+      const db = store.load();
+      const a = db.assets.find((x) => x && x.id === assetId);
+      if (!a) return 0;
+      let n = 0;
+      db.storyboards.forEach((s) => {
+        if (!s || s.projectId !== a.projectId) return;
+        if ((s.assets || []).some((r) => r.assetId === assetId)) { s.dirty = true; n++; }
+      });
+      return n;
+    },
+    log: (level, msg) => { try { store.pushLog('system', level, msg); } catch (e) { /* 留痕失败不打断链路 */ } }
+  });
+  /* 反向注入：services 的生图函数需要状态机；状态机需要 provider。
+     用 setImageJobs 而不是在 services 里 require，是为了不让 services 的
+     循环依赖图多一个环（见 services.js 顶部那段警告）。 */
+  S.setImageJobs(imageJobs);
+  worker.imageProvider = imageProvider;
+  worker.imageJobs = imageJobs;
+
   const dispatch = makeRouter(cfg, worker);
 
   const server = http.createServer(async (req, res) => {
@@ -245,13 +300,17 @@ function createServer(opts) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
         return res.end('Not Found');
       }
-      /* 资源文件（素材图 / 产物视频）：
+      /* 资源文件（素材图 / 产物视频 / 生图候选图）：
          形状解析与路径安全**统一走 paths.resolveServePath** —— 逐段白名单校验
          （id / 文件名都来自 URL）+ 解析后的目录包含性检查，返回 null 就一律 404，
          不再"把路径拼出来碰运气"。旧的平铺形状由它内部兜底。
          ⚠ 原来这里的判定是 `p.startsWith(OUTPUT_DIR)` —— 前缀相同但不同目录
-         （如 output 与 output-bak）会漏过去，是个真实的越界口子。 */
-      if (pathname.startsWith('/files/') || pathname.startsWith('/media/assets/')) {
+         （如 output 与 output-bak）会漏过去，是个真实的越界口子。
+         ⚠ `/media/candidates/` 是 2026-09-25 新增（图片生图候选图，阶段 2）——
+         加这个前缀时**必须同时**在 resolveServePath 里加对应分支，否则候选图
+         永远 404（实测踩过：apply 成功了但预览打不开）。 */
+      if (pathname.startsWith('/files/') || pathname.startsWith('/media/assets/')
+        || pathname.startsWith('/media/candidates/')) {
         const p = P.resolveServePath(pathname);
         if (p && serveFile(req, res, p)) return;
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -307,6 +366,27 @@ function createServer(opts) {
       }
     }
     catch (e) { console.error('[cliJobs 启动 GC] 失败：' + e.message); }
+
+    /* 启动期图片生图恢复（2026-09-25 · 阶段 2）：
+       ① 只恢复**有 taskId 的未结束任务**，重启后继续查询同一任务（计划 §5.1）；
+       ② 提交中断（submitting 且无 taskId）转 submission_unknown —— 交人工核对，
+          **绝不**自动重发（那可能是第二次扣费）；
+       ③ 孤儿候选文件有界清理（只删候选目录里没人引用的文件）。 */
+    try {
+      const db = store.load();
+      const rec = imageJobs.reconcile(db);
+      if (rec.resumed || rec.unknown) {
+        store.pushLog('system', 'info',
+          '图片生图任务恢复：' + rec.resumed + ' 条继续查询，' + rec.unknown + ' 条提交结果未知（需人工核对）');
+      }
+      const gc = imageJobs.gcCandidates(db);
+      if (gc.removed) store.pushLog('system', 'info', '图片生图候选文件清理：移除 ' + gc.removed + ' 个无引用的候选图');
+      imageJobs.startTimer();
+    } catch (e) {
+      /* 生图是可选功能（未配密钥时完全不可见），它的启动失败**不能**拦住服务启动 ——
+         否则一个第三方配置问题会让整个应用打不开。 */
+      console.error('[图片生图启动恢复] 失败：' + e.message);
+    }
 
     tickTimer = setInterval(async () => {
       try {
@@ -367,6 +447,11 @@ function createServer(opts) {
     if (stopping) return;
     stopping = true;
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+    /* ⚠ 图片生图的轮询表必须一起停：留着它会让 Node 在退出瞬间还持有计时器句柄，
+       Windows 上表现为进程退出时抛 libuv 断言（与上面那段注释同一个坑）。
+       正在跑的远端任务不受影响 —— 它保存在服务商那边，
+       task_id 也在库里，下次启动会继续查询（见 boot() 的恢复逻辑）。 */
+    try { imageJobs.stopTimer(); } catch (e) { /* 停表失败不阻断退出 */ }
     try { if (dreamina && dreamina.shutdown) await dreamina.shutdown(); }
     catch (e) { console.error('[server] 停止创作 CLI 子进程失败：' + ((e && e.message) || e)); }
     try { store.flush(); } catch (e) { console.error('[server] 退出前落盘失败：' + ((e && e.message) || e)); }
@@ -398,7 +483,7 @@ function createServer(opts) {
     start, stop, address,
     get url() { return address().url; },
     config: cfg,
-    server, worker, dreamina, store
+    server, worker, dreamina, imageProvider, imageJobs, store
   };
 }
 

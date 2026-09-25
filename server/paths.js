@@ -70,6 +70,18 @@ const projectDir = (pj) => path.join(R().projects, pj);
 const assetDir = (pj) => path.join(projectDir(pj), 'assets');
 const outputDir = (pj) => path.join(projectDir(pj), 'output');
 const sbOutputDir = (pj, sb) => path.join(outputDir(pj), sb);
+/* 图片生图的候选图目录（2026-09-25）。
+   为什么放在项目目录里、而不是系统临时目录：候选图是"用户待确认的资产"，
+   它必须
+     · 与项目数据同生共死 —— 迁移数据根时跟着走，彻底删项目时被一并清掉；
+     · 不受系统清理工具（tmp 清理、磁盘清理）影响 —— 放 /tmp 会被静默删掉，
+       用户回来看到"生成成功但图没了"。
+   也不放安装目录：装到 Program Files 后那里只读。 */
+const candidateDir = (pj) => path.join(projectDir(pj), 'image-candidates');
+/* 候选图的 URL 形状。与 assets 分开命名空间，是为了让 resolveServePath 能
+   对候选图施加**比素材更严**的校验（候选图只在图片下载并校验成功后可读，
+   且永远不把服务商直链交给页面）。 */
+const candidateUrl = (pj, file) => '/media/candidates/' + pj + '/' + encodeURIComponent(file);
 
 /* ---------------- URL 构造 ---------------- */
 const assetUrl = (pj, file) => '/media/assets/' + pj + '/' + encodeURIComponent(file);
@@ -143,6 +155,19 @@ function resolveServePath(pathname) {
     }
     return null;
   }
+  /* 图片生图的候选图（2026-09-25）：形状与素材同构（项目段 + 文件名），
+     但目录是候选图专用 —— **只有已通过校验的候选图才会落在那里**，
+     所以这里不需要再判断"校验过没有"。文件名由服务端生成（见 image-jobs.js），
+     不接受任何外部输入拼装。 */
+  if (pathname.startsWith('/media/candidates/')) {
+    const rest = pathname.slice('/media/candidates/'.length);
+    const parts = rest.split('/').map((x) => { try { return decodeURIComponent(x); } catch (e) { return x; } });
+    if (parts.length !== 2) return null;
+    const pj = safeId(parts[0]), file = safeFile(parts[1]);
+    if (!pj || !file) return null;
+    const dir = candidateDir(pj);
+    return contained(dir, path.join(dir, file));
+  }
   if (pathname.startsWith('/files/')) {
     const rest = pathname.slice('/files/'.length);
     const parts = rest.split('/').map((x) => { try { return decodeURIComponent(x); } catch (e) { return x; } });
@@ -198,6 +223,15 @@ function ensureProjectDirs(projectId) {
   return pj;
 }
 
+/* 确保候选图目录就位（下载候选图前调用；不放进 ensureProjectDirs ——
+   没有用生图功能的项目不该凭空多出一个空目录）。 */
+function ensureCandidateDir(projectId) {
+  const pj = safeId(projectId);
+  if (!pj) throw new Error('项目 id 不合法：' + projectId);
+  fs.mkdirSync(candidateDir(pj), { recursive: true });
+  return candidateDir(pj);
+}
+
 module.exports = {
   /* 用 getter 而不是快照值：schema.js 读的是 `PATHS.LEGACY_ASSET_DIR`，
      必须是**调用时**的值，setRoots 之后才能生效（测试沙箱依赖这一点）。 */
@@ -207,8 +241,9 @@ module.exports = {
   setRoots, resetRoots,
   ID_RE, FILE_RE, safeId, safeFile,
   projectDir, assetDir, outputDir, sbOutputDir,
+  candidateDir, candidateUrl,
   assetUrl, outputUrl, parseAssetUrl, parseOutputUrl,
   assetFileOf, sbOutputDirOf, legacyOutputFile,
-  resolveServePath, contained, ensureProjectDirs,
+  resolveServePath, contained, ensureProjectDirs, ensureCandidateDir,
   STATIC_ROOTS, resolveStaticPath
 };

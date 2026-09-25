@@ -13,6 +13,48 @@
 
 ---
 
+#### `0.39.0` — 2026-09-25（新增：图片资产生图后端骨架与任务链路 —— 实施计划阶段 1–2）
+
+> 本版本是《图片资产 GPT 生图实施计划》的**阶段 1–2**：服务商适配 + 任务状态机与文件安全。
+> **阶段 3–6 未做**（密钥配置桌面链路、两处界面、文档版本收尾、验收交付），因此本次**没有任何界面变化** ——
+> 未配置密钥时 `/system/image-provider` 报未配置，功能对使用者完全不可见。
+
+**为什么改**：素材库的图片资产此前只能靠人工导入。计划要让「素材库图片详情」与「分镜已绑定图片预览弹窗」共用一套生图入口，服务商选 Work Fisher（模型 `workfisher-image-g-v2.5-flare`），首版只做纯文本生图。本版本先把**后端契约与安全边界**立起来，界面留到阶段 3–4。
+
+**新增（`server/image-provider.js`）**：Work Fisher 适配层。平铺参数提交 `/v1/image/generations`（单数）、查询 `/v1/image/generations/{task_id}`、鉴权 `Authorization: Bearer <key>`。沿用 `desktop/updater.js` 的**可注入传输层**先例（`transport()` / `setTransport()` / `transportOverride`），单参数回调形状 `cb(res)`、失败走 `res.error`、响应是**已读完的对象** `{statusCode, headers, body}` —— 这样才能用假传输单测，不碰真实密钥。
+
+**新增（`server/image-jobs.js`）**：任务状态机 —— 提交（复用活动任务）/ 轮询 / 下载落盘 / 采用新图。轮询定时器由**服务端**持有；提交请求**不做自动重试**；下载只收 HTTPS 且校验图片特征；采用时先写新文件 → 刷盘 → 清理旧文件，失败回滚原图。
+
+**新增持久化**：`db.json` 加 `imageJobs` 集合，schemaVersion `3 → 4`（迁移按既有纪律：只在克隆体上跑、全成功才写回、幂等、迁移函数不动磁盘）。
+
+**新增接口 6 条**：`/system/image-provider` 与 `/assets/:id/image-jobs*`（提交 / 查询 / 取消 / 采用 / 删除候选文件）。作用域一律走**查询串** `projectId`（`routes.scopeIdsOf(pathname, query)`），与既有约定一致。
+
+**修的真实缺陷（写在这里是因为它们都是"沉默的坑"）**：
+
+1. **远端直链泄漏进 `db.json`（违反硬约束 6）**：下载失败分支里 `job.resultUrl = r.resultUrl` 把服务商**直链**写进落库对象，而原注释谎称"落库前会被 stripRuntime 去掉"—— 那个去处**从不存在**。已删除该赋值，并新增 `PERSIST_FIELDS` 白名单 + `sanitizeAll()` + `saveAll()` 作为**唯一落库出口**（模块内 22 处 `e.save()` 全部改道）。以后新增 job 字段必须进白名单才会落库。
+2. `imageJobs` 未暴露 `provider` → `services.imageProviderStatus` 的 fallback 读不到实例（services 侧需要读它的 `status()`）。已补 `provider: e.provider || null`。
+3. `submit` 复用在跑任务时返回形状不一致（回 `{existing}` 而非 `{job}`）→ 调用方取 `data.job.jobId` 得 undefined。已统一为 `{ job, created:false, existing:true }`。
+4. `setDownloadTransport` 只接受函数，传入 `{get}` / `{request}` 对象时报 `transport is not a function`。已归一化成函数（兼容三种形状）。
+5. `reconcile` 把 `ready` 状态也计入 `resumed` —— 但 `ready` 在**等用户决定**，没有东西可查。已改为只统计 `running` + 有 taskId。
+
+**同时修的既有问题（非本计划引入）**：
+
+- `scripts/lint.js` §7 把对象字面量的**方法简写**（`{ request(url, opts, cb) {…} }`）误报成"调用了未定义的 request()"。已新增 ⑤c `methodRe` 规则收集方法简写名。
+- `test/01-data-safety.test.js` 的迁移链断言仍停留在 `v2→v3`，与 schemaVersion 4 不符。已补齐 `v3→v4`。
+
+**踩过的坑**：
+- **盲目批量替换 `e.save()` → `saveAll()`**：把 `saveAll` 内部那一处也换掉了 → **无限递归** → API 返 `50000`(INTERNAL)；另误伤两处注释文本。教训：批量替换后**必须回读该函数体内部**确认没换到自身。
+- **`spawnSync('git', …)` 在本机稳定 `EBUSY`**（连跑 3 次复现），但同一命令从 Git Bash 直调正常 → `npm run check` §15 恒失败，`npm run verify` 因此中途中止。**属环境限制，不是代码缺陷**。
+- **测试里不要为验证"未配密钥"起第二个 `createServer`**：`S.setImageJobs` 是**模块级单例**，会被永久换成无密钥实例，污染后续所有 describe（表现为"生图服务未配置"）。改调服务层直接验。
+- **作用域唯一入口是查询串、不是 body/header**：测试里 `POST /assets` 若把 `projectId` 放 body，资产会落进默认项目，一片"素材不属于当前项目"。
+- **JPEG 测试夹具自相矛盾**：APP0 段声明长度 16 却只给 8 字节负载 → 解析器按声明跳段会跳过 SOF0，尺寸读不出。且 SOF0 是**高在前、宽在后**。
+
+**口径变更（重要）**：`README.md` / `AGENTS.md` 里"唯一生成引擎 = 创作 CLI（dreamina）"的说法已改为 —— **视频生成唯一引擎 = dreamina；图片资产生图 = 可选 Work Fisher 接入（未配密钥时功能完全不可见）**。加这句是因为 0.35.1 曾按旧口径误删 revChatGPT 相关代码；不澄清的话后来者会再次把 Work Fisher 模块当冗余删掉。
+
+**验证**：`test` 288/288（12 文件；源码头 `^\s*test\(` 口径 283，与文档数量口径一致）· `lint` 7/7（33 文件）· `check` 46 项中 45 过（仅 §15 git remote `EBUSY` 环境失败）· `build` ✓（dist 517.3 KB）· `smoke:web` ✓（端口无残留）· `e2e` 53/53 断言 ✓。**全程假传输，未产生任何真实调用费用。**
+
+**本版本未做**：阶段 3（密钥配置桌面链路 `safeStorage` + 具名 IPC、网页版 `WORK_FISHER_API_KEY` 环境变量）、阶段 4（素材库详情 + 分镜预览弹窗两处界面）、阶段 6（干净环境验收）。
+
 #### `0.38.11` — 2026-09-25（两项：设置中的数据目录布局优化 · 分镜表提示词框的复制 / 全屏按钮统一为详情同款）
 
 > 本版本合并了两个同日完成的独立改动（各自验证通过后共用一个版本号提交）。

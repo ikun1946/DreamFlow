@@ -1,11 +1,12 @@
 # DreamFlow · 即梦批量生成控制台
 
-面向 AI 短剧 / 分镜视频生产的**前后端完整项目**：前端是分镜批量管理工作台，后端是本地桥接服务，通过即梦官方**创作 CLI（`dreamina`）**完成真实视频生成。**无任何演示 / 模拟数据**。
+面向 AI 短剧 / 分镜视频生产的**前后端完整项目**：前端是分镜批量管理工作台，后端是本地桥接服务，通过即梦官方**创作 CLI（`dreamina`）**完成真实视频生成，并可接入 **Work Fisher** 生成素材库图片资产（可选，未配密钥时不出现）。**无任何演示 / 模拟数据**。
 
 - **仓库名 / 产物名**：`DreamFlow`（`git clone` 下来的文件夹也是它；安装包是 `DreamFlow-<版本>-x64-Setup.exe`，主程序 `DreamFlow.exe`）
 - **中文产品名**：即梦批量生成控制台（界面标题、托盘、快捷方式显示的都是它）
 - **两处仍叫 `JimengConsole`，且刻意保留**：应用 ID（`appId`，决定 Windows 能否原地升级）与数据目录（`%USERPROFILE%\Videos\JimengConsole\`）。这两处界面上都看不到，改名会让老用户以为项目全没了。
-- **唯一生成引擎**：创作 CLI（`dreamina`）。画布 CLI（`dreamina-canvas`）已于 2026-09-18 彻底移除。
+- **视频生成引擎**：创作 CLI（`dreamina`），**视频唯一的生成引擎**。画布 CLI（`dreamina-canvas`）已于 2026-09-18 彻底移除。
+- **图片资产生图（可选）**：素材库图片可由第三方服务商 **Work Fisher**（模型 `workfisher-image-g-v2.5-flare`）生成。**未配置密钥时该功能完全不可见**，不影响任何既有流程。
 
 > 📖 **本文件只放入门与导航**，深层内容分三处：
 > **[docs/项目文档.md](docs/项目文档.md)** —— 完整说明书（结构 / 模块职责 / 依赖图 / 流程 / 配置 / 边界）
@@ -18,12 +19,12 @@
 
 | 项 | 值 |
 | --- | --- |
-| 当前版本 | `0.38.11`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
+| 当前版本 | `0.39.0`（唯一生效来源：`package.json`；`README`「当前版本」与 `docs/项目文档.md` 必须同步） |
 | 支持平台 | Windows x64（网页版可在任何能跑 Node 18+ 的系统上自建运行） |
 | 运行方式 | 网页版 `node server/index.js` → `http://127.0.0.1:8787/`；桌面版 `npm start`（开发）/ `npm run dist`（安装包） |
-| 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎） |
+| 生成引擎 | 视频：`dreamina` 创作 CLI（**唯一**视频生成引擎）；图片资产：Work Fisher 生图（**可选**，未配密钥时功能不可见） |
 | 运行时依赖 | **零 npm 依赖**：后端只用 Node 内置模块，前端是原生 HTML/CSS/JS；`electron` / `electron-builder` 只在打包期用到 |
-| 自动化测试 | **212 个用例**（`npm test`，Node 内置 test runner） |
+| 自动化测试 | **283 个用例**（`npm test`，Node 内置 test runner） |
 | 统一检查 | `npm run check`（16 节 46 项一致性检查）+ `npm run lint`（7 项静态检查） |
 | 端到端验收 | `npm run smoke:web`（网页版连通性）、`npm run e2e`（业务流 53 项断言）、桌面版 `JC_DESKTOP_SMOKE=1`（见下） |
 | 一键回归 | `npm run verify` = `check` + `lint` + `test` + `build:web` |
@@ -156,11 +157,11 @@ DreamFlow/
 
 ## 版本
 
-当前版本：**`0.38.11`**
+当前版本：**`0.39.0`**
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：**MAJOR** 不兼容变更 · **MINOR** 向后兼容的新增能力 · **PATCH** 缺陷修复与文档更新。
 
-门禁由 `npm test`（212 用例）、`npm run check`（46 项一致性检查）、`npm run lint`（7 项静态检查）、`npm run smoke:web`、`npm run e2e` 组成，`npm run verify` 一键串起。**这些数字由 `check-project.js` 第 16 节自动对账**，对不上就报错，所以不会悄悄过期。
+门禁由 `npm test`（283 用例）、`npm run check`（46 项一致性检查）、`npm run lint`（7 项静态检查）、`npm run smoke:web`、`npm run e2e` 组成，`npm run verify` 一键串起。**这些数字由 `check-project.js` 第 16 节自动对账**，对不上就报错，所以不会悄悄过期。
 
 **发版**：完整流程见 **[docs/版本发布与更新流程.md](docs/版本发布与更新流程.md)**。三句话版本：版本号要同步 `package.json`、README「当前版本」与 `docs/CHANGELOG.md` 新条目（另同步锁文件）；tag 要**单独 push**（普通 `git push` 不推 tag）；安装包只走 **GitHub Releases**，绝不进 git。
 

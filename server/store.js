@@ -42,6 +42,10 @@ function emptyDb() {
     seq: 0,
     idempotency: {},     // key -> { response, createdAt }
     cliJobs: {},         // storyboardId -> { submitId, state, command, argv, mode, cliModel, engine, projectId, workspaceId, ... }
+    /* 本地图片生图任务（2026-09-25，schema v4）：jobId -> { projectId, assetId, ... }
+       与 cliJobs 分开存：前者是"本地子进程 + 即梦积分"，这里是"外部付费 HTTP + 候选图文件"，
+       生命周期与清理规则都不同（见 server/image-jobs.js 顶部的状态机说明）。 */
+    imageJobs: {},
     logs: {},            // storyboardId -> [{ level, msg, ts }]
     records: [],         // 生成记录：追加式快照（见 records.js），新记录在前
     recordSeq: 0         // 累计落过多少条（删记录不回退，用于展示"第 N 条"）

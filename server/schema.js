@@ -25,7 +25,7 @@ const models = require('./models');
 const PATHS = require('./paths');   // 磁盘布局与资源 URL 形状的唯一事实来源
 
 /* 当前 schema 版本。每次改数据结构就 +1，并在 MIGRATIONS 里挂上对应的迁移函数。 */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 /* 旧数据迁移后的归属。
    ⚠ 项目 id 刻意沿用现有数据里已经在用的 `pj_1`（storyboards/assets/records 三处的
@@ -453,10 +453,31 @@ function migrateV2ToV3(db, ctx) {
   return { moved: byTo.size };
 }
 
-/* 版本 → 迁移函数。键是**迁移前**的版本号。 */
+/* ---------------- v3 → v4：图片生图任务集合 ----------------
+   2026-09-25（图片资产 GPT 生图计划 · 阶段 2）。
+
+   只加一个**空集合**，不改任何既有数据：
+     · `db.imageJobs`  —— 本地生图任务（见 server/image-jobs.js）。
+   为什么不复用 cliJobs：两者的生命周期与安全边界完全不同 ——
+   cliJobs 是"本地子进程 + 即梦积分"，imageJobs 是"外部付费 HTTP + 候选图文件"，
+   混在一个表里会让"清孤儿"与"判断是否有活动任务"两条逻辑互相干扰。
+
+   ⚠ 幂等：已存在且是对象就原样保留（连跑两次不得清空已有的任务记录）。
+   ⚠ 不在这里做"候选文件对账"：迁移函数**不能动磁盘**（文件操作不可回滚，
+     必须由 runMigrations 在校验通过后统一执行）；孤儿候选文件的清理是
+     image-jobs.js 启动期 GC 的职责。 */
+function migrateV3ToV4(db, ctx) {
+  const log = (ctx && ctx.log) || (() => {});
+
+  const had = db.imageJobs && typeof db.imageJobs === 'object' && !Array.isArray(db.imageJobs);
+  db.imageJobs = had ? db.imageJobs : {};
+  if (!had) log('已为图片生图任务建立空集合 imageJobs');
+  return {};
+}
 const MIGRATIONS = {
   1: migrateV1ToV2,
-  2: migrateV2ToV3
+  2: migrateV2ToV3,
+  3: migrateV3ToV4
 };
 
 /* 迁移结果校验：宁可在这里失败，也不要写出一份静默损坏的库。
@@ -534,7 +555,7 @@ function runMigrations(db, opts) {
 module.exports = {
   SCHEMA_VERSION, MIGRATIONS,
   LEGACY_PROJECT_ID, LEGACY_WORKSPACE_ID, LEGACY_PROJECT_NAME, LEGACY_WORKSPACE_NAME,
-  readVersion, runMigrations, migrateV1ToV2, migrateV2ToV3, normalizeModelName, validate,
+  readVersion, runMigrations, migrateV1ToV2, migrateV2ToV3, migrateV3ToV4, normalizeModelName, validate,
   /* 扫尾单独导出：给"已经迁过地址、但旧目录里还留着孤儿文件"的库补跑一次 */
   sweepLegacyFiles
 };

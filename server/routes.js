@@ -232,6 +232,36 @@ function makeRouter(cfg, adapter) {
     }, scopeOf(ctx)))],
     // 提示词文本导入资产：@ 分段 → 自动识别 场景/道具/角色 → apply=false 预览 / true 落库
     ['POST', /^\/assets\/import-prompts$/, async (ctx) => ok(ctx.res, S.importAssetPrompts(ctx.db, ctx.body, scopeOf(ctx)))],
+    /* ---------------- 图片资产生图（2026-09-25 · 阶段 2） ----------------
+       ⚠ 顺序要求：这些路径都带 `/assets/:id/image-jobs` 前缀，必须排在
+         `/assets/([^/]+)` 这类**带 $ 结尾**的路由**之前**吗？不必 —— 那些正则都有 `$`，
+         不会误吃更长的路径。但 `/assets/([^/]+)` 的 PATCH/DELETE 与这里方法不同，
+         真正需要小心的是 `GET /assets/:id`（计划 §4.2 的"取资产最新信息"）：
+         它必须排在 `/assets/:id/usage` 与 `/assets/:id/image-jobs/...` **之后**，
+         否则 `usage` 会被当成资产 id。这里按"深路径在前"排列。
+
+       所有接口都用 scopeOf(ctx)（**项目级**作用域）：
+       资产属于 Project（指令 §3.3），且计划 §4.2 明确要求"所有资产接口均校验 projectId，
+       不允许跨项目读取或采用任务"。校验的具体实现是 services.findScopedAsset。 */
+    ['GET', /^\/system\/image-provider$/, async (ctx) => ok(ctx.res, S.imageProviderStatus(adapter))],
+    // 取资产最新信息（供分镜预览弹窗获取当前提示词）。仅当前项目。
+    ['GET', /^\/assets\/([^/]+)\/image-jobs\/current$/, async (ctx) => ok(ctx.res, S.currentImageJob(ctx.db, ctx.params[0], scopeOf(ctx)))],
+    ['GET', /^\/assets\/([^/]+)\/image-jobs$/, async (ctx) => ok(ctx.res, S.listImageJobs(ctx.db, ctx.params[0], scopeOf(ctx)))],
+    /* 提交生图。带幂等包装（与 batch-submit 同一套）：
+       键 = 路径 + 作用域 + 客户端键，所以"双击两次"只会真正提交一次 ——
+       这是防重复**扣费**的第二道闸（第一道是 image-jobs 的活动任务检查）。 */
+    ['POST', /^\/assets\/([^/]+)\/image-jobs$/, async (ctx) => ok(ctx.res, await withIdempotency(
+      ctx, '/assets/image-jobs',
+      () => S.submitImageJob(ctx.db, ctx.params[0], ctx.body, adapter, scopeOf(ctx))
+    ))],
+    /* 候选图重试保存（结果下载失败后手动点"重新保存结果"）。
+       不是提交，所以**不**走幂等 —— 它本身幂等（有候选图就直接返回）。 */
+    ['POST', /^\/assets\/([^/]+)\/image-jobs\/([^/]+)\/resave$/, async (ctx) => ok(ctx.res, await S.resaveImageJob(ctx.db, ctx.params[0], ctx.params[1], scopeOf(ctx)))],
+    ['POST', /^\/assets\/([^/]+)\/image-jobs\/([^/]+)\/apply$/, async (ctx) => ok(ctx.res, await S.applyImageJob(ctx.db, ctx.params[0], ctx.params[1], scopeOf(ctx)))],
+    ['DELETE', /^\/assets\/([^/]+)\/image-jobs\/([^/]+)$/, async (ctx) => ok(ctx.res, S.discardImageJob(ctx.db, ctx.params[0], ctx.params[1], scopeOf(ctx)))],
+    /* 取资产最新信息。⚠ 必须排在 `/assets/:id/usage` 与上面几条之后，
+       否则 `usage` / `image-jobs` 会被这条当成资产 id（正则都会匹配成功）。 */
+    ['GET', /^\/assets\/([^/]+)$/, async (ctx) => ok(ctx.res, S.getAsset(ctx.db, ctx.params[0], scopeOf(ctx)))],
     ['DELETE', /^\/assets\/([^/]+)$/, async (ctx) => ok(ctx.res, S.deleteAsset(ctx.db, ctx.params[0], scopeOf(ctx)))]
   ];
 

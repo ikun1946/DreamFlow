@@ -100,7 +100,19 @@ function loadConfig(overrides) {
        由 URL / 查询串携带并由后端校验，后端不存在"当前项目"这种全局配置
        （指令 §3.4 / §34 明确禁止）。这个字段仅为兼容旧 config.json / 环境变量而保留，
        不再参与任何作用域判断；启动时会提示它已失效。 */
-    projectId: env.JC_PROJECT_ID || fileCfg.projectId || 'pj_1'
+    projectId: env.JC_PROJECT_ID || fileCfg.projectId || 'pj_1',
+    /* ---------------- 图片资产生图（2026-09-25 · 阶段 2） ----------------
+       网页版从这里读密钥（环境变量优先）；桌面版不吃这个字段 ——
+       它由 Electron 主进程经 safeStorage 管理，通过 configOverrides 注入
+       `imageKeyProvider` 函数（见 server.js 的注入链）。
+       ⚠ 这个值**绝不允许**出现在任何响应、日志或前端构建物里
+         （计划 §5.3：密钥不出现在页面响应、日志或仓库中）。 */
+    workFisherApiKey: env.WORK_FISHER_API_KEY || fileCfg.workFisherApiKey || '',
+    /* 服务商基址与模型：留空用 image-provider.js 的内置默认
+       （https://api.work-fisher.com 与 workfisher-image-g-v2.5-flare）。
+       可覆盖是为了"服务商换域名/换型号"时不必改代码，**不是**给用户配的选项。 */
+    imageProviderBase: env.JC_IMAGE_PROVIDER_BASE || fileCfg.imageProviderBase || null,
+    imageProviderModel: env.JC_IMAGE_PROVIDER_MODEL || fileCfg.imageProviderModel || null
   };
 
   if (overrides) Object.assign(cfg, overrides);

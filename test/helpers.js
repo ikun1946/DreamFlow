@@ -61,7 +61,7 @@ function readText(file) {
 function sampleDb(over) {
   const now = new Date().toISOString();
   return Object.assign({
-    schemaVersion: 3,
+    schemaVersion: 4,
     projects: [{ id: 'pj_t1', name: '测试项目', description: '', settings: {}, defaultWorkspaceId: 'ws_t1', createdAt: now, updatedAt: now, lastOpenedAt: now, deletedAt: null }],
     workspaces: [{ id: 'ws_t1', projectId: 'pj_t1', name: '默认分镜', description: '', createdAt: now, updatedAt: now, lastOpenedAt: now, deletedAt: null }],
     storyboards: [],
@@ -75,6 +75,7 @@ function sampleDb(over) {
     seq: 0,
     idempotency: {},
     cliJobs: {},
+    imageJobs: {},
     logs: {},
     records: [],
     recordSeq: 0

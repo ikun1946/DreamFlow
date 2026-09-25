@@ -1,7 +1,7 @@
 # AGENTS.md —— 给 AI agent 的项目约定
 
 > 本文件是**任何 agent 接手本仓库时的第一份必读**。人也可以看，但它主要写给 agent。
-> 最后核对：2026-09-25（版本 `v0.38.11`）
+> 最后核对：2026-09-25（版本 `v0.39.0`）
 > 看完整变更记录：[docs/CHANGELOG.md](docs/CHANGELOG.md)（0.29.0 → 最新）。
 >
 > 📖 **想「通读一遍就完整理解项目」** → 读 `docs/项目文档.md`（定位 / 结构 / 目录职责 / 模块依赖 / 主要流程 /
@@ -17,6 +17,12 @@ GitHub 仓库名与 clone 下来的文件夹名都是 `DreamFlow`；界面上显
 2. **Windows 桌面版**：Electron 壳（`desktop/`）内嵌同一个服务，`npm start` 跑开发态，`npm run dist` 出 NSIS 安装包
 
 技术栈刻意保持**零运行时依赖**：后端只用 Node 内置模块，前端是原生 HTML/CSS/JS。`package.json` 里的 electron / electron-builder 只是**打包期**依赖，不要往 dependencies 里加运行时库。
+
+**生成引擎口径（别按"唯一引擎"一刀切删代码）**：
+
+- **视频生成**的唯一引擎 = 即梦官方创作 CLI（`dreamina`）。这条没变。
+- **图片资产生图** = **可选**接入第三方服务商 **Work Fisher**（`server/image-provider.js` + `server/image-jobs.js`）。**未配置密钥时该功能完全不可见**（`/system/image-provider` 报未配置，界面不出现入口）。
+- ⚠️ 因此"唯一生成引擎"不再等于"代码里只允许出现 dreamina"。历史上 0.35.1 曾按旧口径误删 revChatGPT 相关代码 —— 见到 Work Fisher 相关模块**不要**当成冗余删除。
 
 ## 完成一项工作后的固定动作（Definition of Done）
 
@@ -86,7 +92,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 
 | 命令 | 管什么 | 现在的状态 |
 |---|---|---|
-| `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y / 错误码四件套 / 数据目录 十组） | **212 用例全通** |
+| `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y / 错误码四件套 / 数据目录 / 生图服务商 / 生图任务与文件 十二组） | **283 用例全通** |
 | `npm run check` | 一致性门禁：`scripts/check-project.js`（版本漂移、dist 同步、图标、许可、更新器、发布文档现状、旧名残留、过期表述、收尾清单一致性、docs 状态标记、路由计数、git remote、文档数量口径…） | **46 项全通** |
 | `npm run lint` | 静态检查：`scripts/lint.js`（语法 / `debugger` / 前端调试输出 / 相对 require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） | **7 项全通** |
 | `npm run smoke:web` | 网页版连通性：起真服务 → 首页 / 接口 / 鉴权 / 边界 → 关停无残留 | 通过 |
@@ -121,6 +127,8 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 | `server/cli-installer.js` | 创作 CLI 的下载 / 安装 / 更新（走官方 CDN，**不内置二进制**） |
 | `server/store.js` | JSON 持久化（原子写、滚动备份、迁移前备份） |
 | `server/schema.js` | schemaVersion 与迁移框架（旧库升级唯一入口） |
+| `server/image-provider.js` | 图片生图服务商适配（Work Fisher）。网络走**可注入传输层**（`transport()` / `setTransport()`），才能用假传输单测 |
+| `server/image-jobs.js` | 图片生图任务状态机：提交 / 轮询 / 下载落盘 / 采用。落库走 `PERSIST_FIELDS` 白名单（**禁止**把远端直链写进 `db.json`） |
 | `desktop/main.js` | Electron 主进程（单实例、窗口、托盘、优雅退出） |
 | `desktop/runtime-paths.js` | 桌面版目录布局唯一事实来源 |
 | `desktop/legacy-import.js` | 旧版数据导入 + 完整性体检 |

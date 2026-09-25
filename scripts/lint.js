@@ -382,6 +382,12 @@ for (const f of NO_UNDEF_FILES) {
   /* ⑤b 取值器/设值器（`get DATA_DIR() {...}`）—— 也是"定义了名字"，不是调用 */
   const accRe = /(?:^|[^\w$.])(?:get|set)\s+([A-Za-z_$][\w$]*)\s*\(/g;
   while ((m = accRe.exec(src))) defined.add(m[1]);
+  /* ⑤c 对象字面量里的**方法简写**：`{ request(url, opts, cb) {...} }`。
+     它既不是 `function NAME` 也不是 `NAME:`，不加这条会被误报成"调用了未定义的
+     request()"（2026-09-25 在 server/image-provider.js 的 defaultTransport 上真实踩到）。
+     ⚠ 只认"行首（含缩进）到名字再到 ( 且行尾是 {" 的形状"，避免把普通调用也算进来。 */
+  const methodRe = /(?:^|[{,;\n])\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{/g;
+  while ((m = methodRe.exec(src))) defined.add(m[1]);
   /* ⑥ import/require 的别名已由 ② 覆盖；再兜一层：形如 NAME.sub / NAME = require */
   const assignRe = /(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*=(?!=)/g;
   while ((m = assignRe.exec(src))) defined.add(m[1]);

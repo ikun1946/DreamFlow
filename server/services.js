@@ -1529,6 +1529,10 @@ function deleteAsset(db, id, scope) {
   // 删除本地文件（url 形如 /media/assets/as_xxx.png）
   const file = PATHS.assetFileOf(a);
   if (file) { try { fs.unlinkSync(file); } catch (e) { /* 文件可能已不存在 */ } }
+  /* 一并清掉这个资产的生图任务与候选文件（计划 §5.2 第 5 条）。
+     对已提交的远端任务**只停止本地使用其结果**，不承诺远端取消 ——
+     服务商没有取消接口，声称"已取消/已退款"是撒谎。 */
+  if (imageJobsMod) { try { imageJobsMod.dropAsset(id); } catch (e) { /* 清理失败不影响删除 */ } }
   store.save();
   return { deleted: id };
 }
@@ -1646,6 +1650,139 @@ async function replaceAsset(db, id, opts, scope) {
   a.name = name || filename.replace(/\.[^.]+$/, '').trim() || a.name;
   store.save();
   return viewAsset(a);
+}
+
+/* 取单个资产（**项目作用域**）。计划 §4.2 的 GET /assets/:id：
+   分镜预览弹窗要用它拿到该资产的**最新** prompt —— 分镜快照里只有图片与名称，
+   不能作为提示词来源（否则用户在素材库改了提示词，分镜入口还发的是旧文案）。 */
+function getAsset(db, id, scope) {
+  const a = findScopedAsset(db, id, scope);
+  return viewAsset(a);
+}
+
+/* ---------------- 图片资产生图（2026-09-25 · 阶段 2） ----------------
+   这一层只做**作用域与输入校验**，然后转交给 image-jobs.js 的状态机。
+   为什么要分层而不是把校验写在路由里：作用域校验的唯一出口是 findScopedAsset
+   （指令 §29/§43 的跨项目越权防线），路由里再写一份就会有两处规则。
+
+   ⚠ 提示词上限 10000 与 updateAsset 同源。**超限明确报错、不自动截断** ——
+     静默截断意味着"用户以为发出去的提示词"和"实际发给第三方的提示词"不一致，
+     而这是一次付费调用。 */
+
+/* image-jobs 实例由 createServer 注入（它需要 provider 与 store，属于运行态）。
+   为什么用"注入 + 模块级持有"而不是在 services 里 require：
+   services.js 被 records-layer 等模块循环依赖，在里面 new 一个持有 provider 的
+   实例会让依赖图出现环。注入点只有一个（server.js），注入后只读。 */
+let imageJobsMod = null;
+function setImageJobs(mod) { imageJobsMod = mod || null; }
+function requireImageJobs() {
+  if (!imageJobsMod) throw new ApiError(ERR.INTERNAL, '图片生图模块未初始化');
+  return imageJobsMod;
+}
+
+/* 生图服务配置状态（**只回"配了没有"**，绝不回密钥 —— 计划 §5.3） */
+function imageProviderStatus(adapter) {
+  const p = (adapter && adapter.imageProvider) || imageJobsMod && imageJobsMod.provider;
+  if (!p) return { configured: false, provider: 'work-fisher', model: null, available: false };
+  return Object.assign({ available: true }, p.status());
+}
+
+/* 取资产（作用域校验）；模型名从 provider 状态取，避免在两处写死字符串 */
+function imageJobModel(adapter) {
+  const p = (adapter && adapter.imageProvider) || imageJobsMod && imageJobsMod.provider;
+  return (p && p.status && p.status().model) || null;
+}
+
+/* 提交生图任务。返回 { created, job } —— created=false 表示已有活动任务，
+   调用方（与前端）据此提示"已有一个进行中的任务"，**不再新建**（防重复付费）。 */
+async function submitImageJob(db, assetId, body, adapter, scope) {
+  const a = findScopedAsset(db, assetId, scope);
+  const kind = ASSET_TYPE_KIND[a.type];
+  /* 音频资产不显示入口（计划 §1）。服务端也要挡 —— 界面隐藏只是体验。 */
+  if (kind !== 'image') throw new ApiError(ERR.PARAM, '只有图片资产可以使用生图（当前类型：' + a.type + '）');
+
+  const prompt = String((body && body.prompt) || '').trim();
+  if (!prompt) throw new ApiError(ERR.PARAM, '提示词不能为空（全空白文本不可提交）');
+  if (prompt.length > 10000) throw new ApiError(ERR.PARAM, '提示词不能超过 10000 字符（当前 ' + prompt.length + ' 字符）');
+
+  const IJ = requireImageJobs();
+  const p = adapter && adapter.imageProvider;
+  if (!p || !p.configured()) throw new ApiError(ERR.PARAM, '未配置生图服务的 API Key，请先在项目设置中填写');
+
+  const r = await IJ.submit(a, prompt, { model: imageJobModel(adapter) });
+  /* 提交前把用户这次的提示词也存进资产 —— 计划 §3.2 第 3 条：只保存提示词，
+     不顺带保存弹窗里尚未确认的名称 / 类型 / 待上传文件。 */
+  if (r.created && !r.failed) {
+    a.prompt = prompt;
+    a.updatedAt = nowIso();
+    store.save();
+  }
+  return r;
+}
+
+/* 当前任务（供分镜预览与素材库两个入口共用） */
+function currentImageJob(db, assetId, scope) {
+  const a = findScopedAsset(db, assetId, scope);
+  const IJ = requireImageJobs();
+  /* 优先回活动任务；没有活动任务时回**最近一条**已完成的任务，
+     这样"关闭弹窗再打开"能看到上一次的结果（已采用/已放弃的只回状态用于留痕）。 */
+  const all = IJ.listOfAsset(a.id);
+  if (!all.length) return { assetId: a.id, job: null, active: false };
+  const active = all.find((j) => IJ.ACTIVE_STATES.includes(j.state));
+  const target = active || all[all.length - 1];
+  return { assetId: a.id, job: target, active: !!active, history: all.length };
+}
+
+function listImageJobs(db, assetId, scope) {
+  const a = findScopedAsset(db, assetId, scope);
+  return { assetId: a.id, jobs: requireImageJobs().listOfAsset(a.id) };
+}
+
+/* 采用结果。
+   ⚠ 必须 await：IJ.apply 内部要读 / 写文件与强制刷盘，是 async 的。
+     曾经漏掉 await，拿到的是 Promise 对象，于是 `r.ok` 恒为 undefined →
+     每次采用都被误判成"状态不允许"（40900），而文件其实已经换了。 */
+async function applyImageJob(db, assetId, jobId, scope) {
+  const a = findScopedAsset(db, assetId, scope);
+  const IJ = requireImageJobs();
+  const job = IJ.rawJob(jobId);
+  /* 作用域必须再一次校验：任务记录的 projectId 与资产当前所属项目要一致，
+     否则就是跨项目用任务（计划 §4.2：不允许跨项目读取或采用任务）。 */
+  if (!job) throw new ApiError(ERR.NOTFOUND, '生图任务不存在：' + jobId);
+  if (job.projectId !== scope.projectId || job.assetId !== a.id) {
+    throw new ApiError(ERR.NOTFOUND, '生图任务不属于当前项目的该资产');
+  }
+  /* 采用前重新统计引用数（界面据此提示影响范围） */
+  const usage = assetUsage(db, a.id, scope);
+  const r = await IJ.apply(a, job);
+  if (!r.ok) throw new ApiError(ERR.CONFLICT, r.message || '无法采用该结果');
+  return Object.assign({}, r, { impact: { count: usage.count, storyboards: usage.storyboards } });
+}
+
+/* 放弃结果 */
+function discardImageJob(db, assetId, jobId, scope) {
+  const a = findScopedAsset(db, assetId, scope);
+  const IJ = requireImageJobs();
+  const job = IJ.rawJob(jobId);
+  if (!job) throw new ApiError(ERR.NOTFOUND, '生图任务不存在：' + jobId);
+  if (job.projectId !== scope.projectId || job.assetId !== a.id) {
+    throw new ApiError(ERR.NOTFOUND, '生图任务不属于当前项目的该资产');
+  }
+  const r = IJ.discard(a, job);
+  if (!r.ok) throw new ApiError(ERR.CONFLICT, r.message);
+  return r;
+}
+
+/* 重新保存结果（下载失败后的手动重试；不再向服务商提交新任务） */
+async function resaveImageJob(db, assetId, jobId, scope) {
+  const a = findScopedAsset(db, assetId, scope);
+  const IJ = requireImageJobs();
+  const job = IJ.rawJob(jobId);
+  if (!job) throw new ApiError(ERR.NOTFOUND, '生图任务不存在：' + jobId);
+  if (job.projectId !== scope.projectId || job.assetId !== a.id) {
+    throw new ApiError(ERR.NOTFOUND, '生图任务不属于当前项目的该资产');
+  }
+  return IJ.resave(a, job);
 }
 
 /* ---------------- 提示词文本导入资产（先解析归类，再按类型落库） ----------------
@@ -2292,7 +2429,11 @@ Object.assign(module.exports, {
   META, DEFAULT_SETTINGS, splitSegments, stats,
   listStoryboards, getProgress, getStoryboard, createStoryboard, patchStoryboard,
   batchDuration, batchSubmit, cancel, retry, batchDelete, reorder,
-  listAssets, createAsset, createAssetMeta, deleteAsset, updateAsset, assetUsage, replaceAsset, bindAsset, unbindAsset, autoMatchAssets, autoDuration, importPreview, importConfirm, dryRunStoryboard, importAssetPrompts,
+  listAssets, createAsset, createAssetMeta, deleteAsset, updateAsset, assetUsage, replaceAsset, bindAsset, unbindAsset, autoMatchAssets, autoDuration, importPreview, importConfirm, dryRunStoryboard, importAssetPrompts, getAsset,
+  /* 图片资产生图（2026-09-25 · 阶段 2）：作用域与输入校验在这一层，
+     状态机 / 下载 / 采用在 image-jobs.js。实例由 server.js 注入。 */
+  setImageJobs, imageProviderStatus, submitImageJob, currentImageJob, listImageJobs,
+  applyImageJob, discardImageJob, resaveImageJob,
   getSettings, putSettings, resetSettings, getOptions, adapterStatus, adapterCheck,
   cliStatus, cliInstall,
   adapterDreaminaLogin, adapterDreaminaSwitch,

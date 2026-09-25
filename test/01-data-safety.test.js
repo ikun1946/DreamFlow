@@ -380,15 +380,15 @@ describe('schema —— 版本读取与迁移回滚', () => {
 
     const a = JSON.parse(JSON.stringify(seed));
     const r1 = schema.runMigrations(a, { now });
-    assert.deepEqual(r1.ran, ['v1→v2', 'v2→v3'], '应从 v1 跑到 v3');
+    assert.deepEqual(r1.ran, ['v1→v2', 'v2→v3', 'v3→v4'], '应从 v1 跑到 v4（逐级迁移，不许跳级）');
 
     const b = JSON.parse(JSON.stringify(seed));
     const r2 = schema.runMigrations(b, { now });
-    assert.deepEqual(r2.ran, ['v1→v2', 'v2→v3']);
+    assert.deepEqual(r2.ran, ['v1→v2', 'v2→v3', 'v3→v4']);
 
     assert.equal(JSON.stringify(a), JSON.stringify(b), '★ 同一输入 + 同一时刻必须逐字节一致');
 
-    // 第二层幂等：已经是 v3 的库再跑，必须逐字节不动
+    // 第二层幂等：已经是当前版本的库再跑，必须逐字节不动
     const snapshot = JSON.stringify(a);
     const r3 = schema.runMigrations(a, { now });
     assert.equal(r3.skipped, true, '已是当前版本应跳过');
