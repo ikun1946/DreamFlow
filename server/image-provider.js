@@ -261,28 +261,47 @@ function makeImageProvider(cfg, opts) {
 
   /* ---------------- 提交生图任务 ----------------
      请求体严格按 v2.5-flare 官方示例（平铺参数）：
-       { model, prompt, n, resolution, quality, output_format }
+       { model, prompt, n, size, resolution, quality, output_format }
+     ⚠ `size` 是 2026-09-25 新增的可选项：接受**比例枚举**（16:9 / 1:1 / auto…）
+       或**精确像素**（`1920x1088`）。官方文档明确"指定精确像素尺寸时忽略
+       resolution"，所以像素模式下**不发 resolution** —— 发了也只是多一个被忽略的
+       字段，但少发一个能避免"以后有人以为它在生效"。
+     ⚠ 尺寸合法性由 server/image-size.js 统一校验（16 倍数 / 单边 ≤3840 /
+       总像素 655360–8294400 / 长短边比 ≤3:1）。本模块**不再重复实现**那套规则，
+       只做"有就带上、没有就不带"的透传 —— 规则写两遍必然漂移。
      ⚠ 不做自动重试（约束 3）。 */
-  async function submit(prompt) {
+  async function submit(prompt, opts) {
     if (!configured()) return mkErr('config', '未配置生图服务的 API Key');
     const text = String(prompt == null ? '' : prompt);
     /* 空 / 全空白在这里就拒绝，不花服务商一次往返（也不花一次钱）。
        长度上限由上层（image-jobs.js）按资产的 prompt 上限校验，这里不重复定义。 */
     if (!text.trim()) return mkErr('config', '提示词不能为空');
 
+    const o = opts || {};
+    const body = {
+      model: model,
+      prompt: text,
+      n: 1,
+      quality: 'auto',
+      output_format: 'png'
+    };
+    /* 尺寸：两种形态二选一。都没有时不带 size（服务商按 auto 处理）。 */
+    const size = o.size == null ? '' : String(o.size).trim();
+    if (size) {
+      body.size = size;
+      /* 像素模式（含 'x'）不发 resolution —— 服务商声明会忽略它。
+         比例枚举 / auto 才带 resolution。 */
+      if (size.indexOf('x') < 0) body.resolution = o.resolution || '1k';
+    } else {
+      body.resolution = o.resolution || '1k';
+    }
+
     const r = await callJson({
       url: base + '/v1/image/generations',
       method: 'POST',
       headers: authHeaders(),
       timeoutMs: SUBMIT_TIMEOUT_MS,
-      body: {
-        model: model,
-        prompt: text,
-        n: 1,
-        resolution: '1k',
-        quality: 'auto',
-        output_format: 'png'
-      }
+      body: body
     });
 
     /* 传输级失败：原样上抛（kind 已区分 timeout / network） */

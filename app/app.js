@@ -3357,6 +3357,306 @@
     return S.imgProvider;
   }
 
+  /* ============================================================
+     生图尺寸控件（2026-09-25）：宽高比 ⇄ 像素 双向联动
+     ------------------------------------------------------------
+     规则的**唯一事实来源在服务端**（server/image-size.js，经 /meta/options
+     的 imageSizes 下发）。前端这里只有两件事：
+       ① 即时反馈 —— 比例→预览像素、像素→比例猜测、非法输入的即时提示与回落；
+       ② 把用户的选择整理成提交体。
+     ⚠ 服务端在计费提交前会再校验一遍并可能回落；前端这套**不是**权威，
+       两边规则都出自 image-size 一处，漂移只会来自 /meta/options 未刷新
+       （那时 spec 为空，控件整体降级为「自动」）。
+     为什么不全放服务端：像素输入框每敲一个键都发请求是不成立的。 */
+
+  function imgSizeSpec() {
+    return (S.options && S.options.imageSizes) || null;
+  }
+
+  /* 客户端镜像 · 比例 → 预览像素（只用于显示；提交时比例模式发的是枚举本身） */
+  function imgSizeRatioPreview(spec, ratioId, res) {
+    if (!spec) return null;
+    const r = spec.ratios.find((x) => x.id === ratioId);
+    if (!r) return null;
+    const L = spec.limits;
+    const pxByRes = { '1k': 2073600, '2k': 3686400, '4k': L.maxPixels };
+    const target = Math.min(Math.max(pxByRes[String(res || '1k').toLowerCase()] || pxByRes['1k'], L.minPixels), L.maxPixels);
+    const step = L.step;
+    let w = Math.round(Math.sqrt(target * (r.w / r.h)) / step) * step;
+    w = Math.min(Math.max(w, L.min), L.max);
+    let h = Math.round((w * r.h / r.w) / step) * step;
+    h = Math.min(Math.max(h, L.min), L.max);
+    /* 收敛：沿长边回退直到合法（与服务端 ratioToSize 同思路的极简版） */
+    let guard = 0;
+    while (guard++ < 400) {
+      const long = Math.max(w, h), short = Math.min(w, h), px = w * h;
+      if (long / short <= L.maxRatio && px >= L.minPixels && px <= L.maxPixels) break;
+      if (w >= h) w = Math.max(L.min, w - step); else h = Math.max(L.min, h - step);
+      if (w === L.min && h === L.min) break;
+    }
+    return { width: w, height: h };
+  }
+
+  /* 客户端镜像 · 像素 → 比例猜测（2% 容差内命中枚举才算，否则 null = 自定义） */
+  function imgSizeRatioGuess(spec, w, h) {
+    if (!spec || !(w > 0) || !(h > 0)) return null;
+    const actual = w / h;
+    let best = null, bestErr = Infinity;
+    spec.ratios.forEach((r) => {
+      const err = Math.abs(actual - r.w / r.h) / (r.w / r.h);
+      if (err < bestErr) { bestErr = err; best = r.id; }
+    });
+    return bestErr <= 0.02 ? best : null;
+  }
+
+  /* 客户端镜像 · 非法输入回落：吸附 16 网格 → 钳单边 → 修总像素与长短边比。
+     与服务端 nearest 同策略（保比例、保方向），但这里求短小快，
+     最终以服务端校验为准。返回 { width, height, changed, why } */
+  function imgSizeFallback(spec, w, h) {
+    const L = spec.limits, step = L.step;
+    const reasons = [];
+    const int = (v) => isFinite(v) && Math.floor(v) === v;
+    let W = Number(w), H = Number(h);
+    if (!int(W) || !int(H)) { reasons.push('已取整'); W = Math.round(W) || L.min; H = Math.round(H) || L.min; }
+    const snap = (v) => Math.min(L.max, Math.max(L.min, Math.round(v / step) * step));
+    const sw = snap(W), sh = snap(H);
+    if (sw !== W) { reasons.push('宽已对齐到 ' + sw + '（16 的倍数）'); W = sw; }
+    if (sh !== H) { reasons.push('高已对齐到 ' + sh + '（16 的倍数）'); H = sh; }
+    /* 长短边比超限：先钳比例意图（保方向），再收敛 */
+    let aspect = W >= H ? W / H : H / W;
+    if (aspect > L.maxRatio) { reasons.push('长宽比已钳到 3:1 内'); }
+    let guard = 0;
+    while (guard++ < 600) {
+      const long = Math.max(W, H), short = Math.min(W, H), px = W * H;
+      if (short <= 0) break;
+      if (long / short > L.maxRatio) { if (W >= H) W -= step; else H -= step; continue; }
+      if (px > L.maxPixels) { W -= step; H -= step; continue; }
+      if (px < L.minPixels) { const nw = W + step, nh = H + step; if (nw > L.max && nh > L.max) break; W = Math.min(nw, L.max); H = Math.min(nh, L.max); continue; }
+      break;
+    }
+    W = Math.min(Math.max(W, L.min), L.max); H = Math.min(Math.max(H, L.min), L.max);
+    const changed = W !== Number(w) || H !== Number(h);
+    return { width: W, height: H, changed: changed, why: reasons.join('；') };
+  }
+
+  /* 尺寸控件 HTML。idp 前缀避免生图面板与设置页两份实例的 id 打架。
+     val: { sizeMode, ratio, width, height, resolution }（来自设置里的生效默认值） */
+  function imageSizeControlHTML(idp, val) {
+    const spec = imgSizeSpec();
+    const v = val || {};
+    if (!spec) {
+      /* /meta/options 尚未包含 imageSizes（服务端比前端新）：诚实地降级 */
+      return '<div class="isz" id="' + idp + 'Size"><p class="hint-sm">尺寸选项需要刷新页面后可用（当前页面缓存早于服务端）。</p></div>';
+    }
+    const mode = v.sizeMode === 'pixels' ? 'pixels' : 'ratio';
+    const quick = ['1:1', '4:3', '16:9', '9:16'];
+    const ratioSel = spec.ratios.map((r) =>
+      '<option value="' + esc(r.id) + '"' + (r.id === v.ratio ? ' selected' : '') + '>' + esc(r.id) + '</option>').join('');
+    const resSel = spec.resolutions.map((r) =>
+      '<option value="' + esc(r) + '"' + (r === (v.resolution || '1k') ? ' selected' : '') + '>' + esc(r) + '</option>').join('');
+    const presets = spec.presets.map((p) =>
+      '<button type="button" class="chip" data-iszpreset="' + p.width + 'x' + p.height + '" title="' + esc(p.hint || '') + '">' + esc(p.label) + '</button>').join('');
+    return '' +
+      '<div class="isz" id="' + idp + 'Size" data-iszroot="' + idp + '">' +
+        '<div class="isz-row">' +
+          '<div class="chips" role="tablist">' +
+            '<button type="button" class="chip' + (mode === 'ratio' ? ' on' : '') + '" data-iszmode="ratio">宽高比</button>' +
+            '<button type="button" class="chip' + (mode === 'pixels' ? ' on' : '') + '" data-iszmode="pixels">像素</button>' +
+          '</div>' +
+          '<span class="grow"></span>' +
+          '<span class="hint-sm" id="' + idp + 'Prev"></span>' +
+        '</div>' +
+        /* 比例面板：快捷比例 + 全量枚举 + 分辨率档位 */
+        '<div class="isz-pane" data-iszpane="ratio"' + (mode === 'ratio' ? '' : ' hidden') + '>' +
+          '<div class="chips">' +
+            quick.map((r) => '<button type="button" class="chip' + (v.ratio === r ? ' on' : '') + '" data-iszratio="' + r + '">' + r + '</button>').join('') +
+            '<select class="input-sm" data-iszratiosel aria-label="全部宽高比">' + ratioSel + '</select>' +
+          '</div>' +
+          '<div class="isz-inline"><span class="hint-sm">分辨率</span>' +
+            '<select class="input-sm" data-iszres>' + resSel + '</select>' +
+            '<span class="hint-sm">由服务商按档位出图；「自动」交给它决定</span></div>' +
+        '</div>' +
+        /* 像素面板：宽 × 高 + 预设。选择像素后服务商按精确尺寸出图（忽略分辨率档） */
+        '<div class="isz-pane" data-iszpane="pixels"' + (mode === 'pixels' ? '' : ' hidden') + '>' +
+          '<div class="isz-inline">' +
+            '<input class="input-sm" type="number" id="' + idp + 'W" min="' + spec.limits.min + '" max="' + spec.limits.max + '" step="' + spec.limits.step + '" value="' + (v.width || '') + '" aria-label="宽度（像素）" style="width:96px" />' +
+            '<span class="hint-sm">×</span>' +
+            '<input class="input-sm" type="number" id="' + idp + 'H" min="' + spec.limits.min + '" max="' + spec.limits.max + '" step="' + spec.limits.step + '" value="' + (v.height || '') + '" aria-label="高度（像素）" style="width:96px" />' +
+            '<span class="hint-sm">px · 须为 16 的倍数</span>' +
+          '</div>' +
+          '<div class="chips">' + presets + '</div>' +
+        '</div>' +
+        '<p class="hint-sm" id="' + idp + 'Warn" style="color:var(--warn,#B45309)" hidden></p>' +
+      '</div>';
+  }
+
+  /* 尺寸控件接线。返回 { get, set }：
+     get()   → 提交体用的 { sizeMode, ratio, width, height, resolution }
+     set(v)  → 外部整体替换状态（回落采纳等） */
+  function wireImageSizeControl(root, idp, initial, onChange) {
+    const spec = imgSizeSpec();
+    const q = (s) => root.querySelector(s);
+    const st = {
+      sizeMode: (initial && initial.sizeMode === 'pixels') ? 'pixels' : 'ratio',
+      ratio: (initial && initial.ratio) || (spec ? spec.ratios[0].id : '16:9'),
+      resolution: (initial && initial.resolution) || '1k',
+      width: (initial && initial.width) || null,
+      height: (initial && initial.height) || null
+    };
+    if (!spec) return { get: () => null, set: () => {} };   // 降级：无规格不可调
+
+    const pane = (m) => q('[data-iszpane="' + m + '"]');
+    const prevEl = q('#' + idp + 'Prev');
+    const warnEl = q('#' + idp + 'Warn');
+    const fire = () => { if (typeof onChange === 'function') onChange(st); };
+
+    function refreshPreview() {
+      if (!prevEl) return;
+      if (st.sizeMode === 'ratio') {
+        if (st.ratio === spec.auto) { prevEl.textContent = '尺寸：自动'; return; }
+        const px = imgSizeRatioPreview(spec, st.ratio, st.resolution);
+        prevEl.textContent = px ? ('约 ' + px.width + ' × ' + px.height + ' px（' + st.ratio + ' · ' + st.resolution + '）') : (st.ratio + ' · ' + st.resolution);
+      } else {
+        const w = Number(st.width), h = Number(st.height);
+        if (!(w > 0) || !(h > 0)) { prevEl.textContent = '输入宽高后显示比例'; return; }
+        const guess = imgSizeRatioGuess(spec, w, h);
+        const px = w * h;
+        prevEl.textContent = (guess ? guess : '自定义') + ' · ' + (px / 10000).toFixed(0) + ' 万像素';
+      }
+    }
+
+    function setMode(m) {
+      st.sizeMode = m;
+      q('[data-iszmode="ratio"]').classList.toggle('on', m === 'ratio');
+      q('[data-iszmode="pixels"]').classList.toggle('on', m === 'pixels');
+      pane('ratio').hidden = m !== 'ratio';
+      pane('pixels').hidden = m !== 'pixels';
+      /* 联动：比例 → 像素时把预览像素填进输入框；像素 → 比例时反猜枚举 */
+      if (m === 'pixels' && !(st.width > 0)) {
+        const px = imgSizeRatioPreview(spec, st.ratio, st.resolution);
+        if (px) { st.width = px.width; st.height = px.height; }
+      }
+      if (m === 'pixels') {
+        const wEl = q('#' + idp + 'W'), hEl = q('#' + idp + 'H');
+        if (wEl && st.width) wEl.value = st.width;
+        if (hEl && st.height) hEl.value = st.height;
+      }
+      if (m === 'ratio') {
+        const guess = imgSizeRatioGuess(spec, Number(st.width), Number(st.height));
+        if (guess) {
+          st.ratio = guess;
+          const sel = q('[data-iszratiosel]');
+          if (sel) sel.value = guess;
+          q('[data-iszratio="' + guess + '"]');
+          root.querySelectorAll('[data-iszratio]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-iszratio') === guess));
+        }
+        /* 猜不到（自定义比例）：保持原枚举不动 —— 精确自定义请留在像素模式（面板上说明） */
+      }
+      refreshPreview(); fire();
+    }
+
+    function markRatio(id) {
+      st.ratio = id;
+      root.querySelectorAll('[data-iszratio]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-iszratio') === id));
+      const sel = q('[data-iszratiosel]');
+      if (sel) sel.value = id;
+      refreshPreview(); fire();
+    }
+
+    /* 像素输入的校验 + 回落（blur / change 时执行；输入中只做即时提示） */
+    function applyPixels(fromBlur) {
+      const wEl = q('#' + idp + 'W'), hEl = q('#' + idp + 'H');
+      if (!wEl || !hEl) return;
+      const rawW = wEl.value === '' ? null : Number(wEl.value);
+      const rawH = hEl.value === '' ? null : Number(hEl.value);
+      st.width = rawW; st.height = rawH;
+      if (rawW == null || rawH == null) {
+        if (warnEl) { warnEl.hidden = false; warnEl.textContent = '请输入宽度和高度'; }
+        refreshPreview(); fire(); return;
+      }
+      const L = spec.limits;
+      const problems = [];
+      const int = (x) => isFinite(x) && Math.floor(x) === x;
+      if (!int(rawW) || !int(rawH)) problems.push('宽高须为整数');
+      if (int(rawW) && int(rawH)) {
+        if (rawW % L.step !== 0 || rawH % L.step !== 0) problems.push('须为 16 的倍数');
+        if (rawW > L.max || rawH > L.max) problems.push('单边 ≤ ' + L.max);
+        if (rawW < L.min || rawH < L.min) problems.push('单边 ≥ ' + L.min);
+        const px = rawW * rawH;
+        if (px < L.minPixels || px > L.maxPixels) problems.push('总像素须在 ' + L.minPixels + '–' + L.maxPixels);
+        const long = Math.max(rawW, rawH), short = Math.min(rawW, rawH);
+        if (long / short > L.maxRatio) problems.push('长宽比 ≤ 3:1');
+      }
+      if (problems.length) {
+        const fb = imgSizeFallback(spec, rawW, rawH);
+        if (fb.changed) {
+          st.width = fb.width; st.height = fb.height;
+          wEl.value = fb.width; hEl.value = fb.height;
+          if (warnEl) { warnEl.hidden = false; warnEl.textContent = problems.join('；') + '。已回落到 ' + fb.width + ' × ' + fb.height; }
+        } else if (warnEl) {
+          warnEl.hidden = false; warnEl.textContent = problems.join('；');
+        }
+      } else if (warnEl) {
+        warnEl.hidden = true; warnEl.textContent = '';
+      }
+      refreshPreview(); fire();
+    }
+
+    root.addEventListener('click', (e) => {
+      const modeBtn = e.target.closest('[data-iszmode]');
+      if (modeBtn) { setMode(modeBtn.getAttribute('data-iszmode')); return; }
+      const ratioBtn = e.target.closest('[data-iszratio]');
+      if (ratioBtn) { markRatio(ratioBtn.getAttribute('data-iszratio')); return; }
+      const presetBtn = e.target.closest('[data-iszpreset]');
+      if (presetBtn) {
+        const wh = presetBtn.getAttribute('data-iszpreset').split('x');
+        st.sizeMode = 'pixels'; st.width = Number(wh[0]); st.height = Number(wh[1]);
+        const wEl = q('#' + idp + 'W'), hEl = q('#' + idp + 'H');
+        if (wEl) wEl.value = st.width;
+        if (hEl) hEl.value = st.height;
+        /* 点预设 = 明确要用像素：把模式切过去（复用 setMode 的联动） */
+        if (q('[data-iszmode="pixels"]').classList.contains('on') === false) setMode('pixels');
+        else { refreshPreview(); fire(); }
+        applyPixels(false);
+        return;
+      }
+    });
+    const rsel = q('[data-iszratiosel]');
+    if (rsel) rsel.addEventListener('change', () => markRatio(rsel.value));
+    const resSel = q('[data-iszres]');
+    if (resSel) resSel.addEventListener('change', () => { st.resolution = resSel.value; refreshPreview(); fire(); });
+    const wEl = q('#' + idp + 'W'), hEl = q('#' + idp + 'H');
+    if (wEl) {
+      wEl.addEventListener('input', () => { st.width = wEl.value === '' ? null : Number(wEl.value); refreshPreview(); });
+      wEl.addEventListener('change', () => applyPixels(true));
+    }
+    if (hEl) {
+      hEl.addEventListener('input', () => { st.height = hEl.value === '' ? null : Number(hEl.value); refreshPreview(); });
+      hEl.addEventListener('change', () => applyPixels(true));
+    }
+    refreshPreview();
+    return {
+      get: () => ({
+        sizeMode: st.sizeMode, ratio: st.ratio, resolution: st.resolution,
+        width: st.sizeMode === 'pixels' ? Number(st.width) : null,
+        height: st.sizeMode === 'pixels' ? Number(st.height) : null
+      }),
+      set: (v) => {
+        if (!v) return;
+        Object.assign(st, {
+          sizeMode: v.sizeMode === 'pixels' ? 'pixels' : 'ratio',
+          ratio: v.ratio || st.ratio, resolution: v.resolution || st.resolution,
+          width: v.width, height: v.height
+        });
+        const wEl2 = q('#' + idp + 'W'), hEl2 = q('#' + idp + 'H');
+        if (wEl2 && st.width) wEl2.value = st.width;
+        if (hEl2 && st.height) hEl2.value = st.height;
+        if (resSel) resSel.value = st.resolution;
+        setMode(st.sizeMode);
+      }
+    };
+  }
+
   /* 渲染「生图区」的静态骨架。参数：
      asset       资产对象（图片类型）
      opts        { showPromptEcho } —— 无输入框的入口（分镜预览）需要回声区
@@ -3384,6 +3684,11 @@
         ? '<div class="asset-promptwrap"><div class="imgjob-prompt-body" id="ipPromptEcho">读取中…</div>' +
           '<span class="hint-sm">提示词取自素材库中该资产的最新记录；要修改请到素材详情里编辑。</span></div>'
         : '') +
+      /* 尺寸配置（2026-09-25）：两处入口共用。初值取设置里的生效默认
+         （S.settings.imageDefaults，GET /settings 已带回）；弹窗内的调整只影响
+         这一次提交，不改默认值 —— 「保存后可复用」在设置页的那张卡片上。 */
+      '<div class="sec-title" style="margin-top:10px">尺寸</div>' +
+      imageSizeControlHTML('ip', S.settings && S.settings.imageDefaults) +
       /* 状态条：进度 / 结果提示都在这里更新（不重建 DOM，避免输入框失焦） */
       '<div class="imgjob" id="ipBox" hidden>' +
         '<div class="imgjob-head">' +
@@ -3410,6 +3715,9 @@
     const q = (s) => mask.querySelector(s);
     const box = q('#ipBox'), body = q('#ipBody'), foot = q('#ipFoot');
     const stateEl = q('#ipState'), usageEl = q('#ipUsage'), cmpEl = q('#ipCmp');
+    /* 尺寸控件（2026-09-25）：与面板同生命周期。降级（无规格）时 get() 回 null，
+       提交体保持与旧版一致（不带尺寸字段）。 */
+    const szCtl = wireImageSizeControl(mask, 'ip', (S.settings && S.settings.imageDefaults) || null);
     let job = null;
     let pollTimer = null;
     let disposed = false;
@@ -3578,16 +3886,22 @@
       if (prompt.length > 10000) { toast('提示词不能超过 10000 字符（当前 ' + prompt.length + '）', 'err'); return { ok: false }; }
 
       const p = S.imgProvider || {};
+      /* 尺寸描述进付费确认 —— 用户应当知道这次按什么尺寸扣费 */
+      const sz = szCtl ? szCtl.get() : null;
+      const szText = !sz ? '自动（1k）'
+        : (sz.sizeMode === 'pixels'
+            ? (sz.width + ' × ' + sz.height + ' px（精确像素）')
+            : (sz.ratio === 'auto' ? '自动' : sz.ratio + '（' + sz.resolution + '）'));
       const confirmed = await uiConfirm('确认发起付费生图',
         '资产：' + (o.assetName || '(未命名)') + '\n' +
         '模型：' + (p.model || 'workfisher-image-g-v2.5-flare') + '\n' +
-        '张数：1 张 · 分辨率：1k · 格式：png\n' +
+        '张数：1 张 · 尺寸：' + szText + ' · 格式：png\n' +
         '提示词：' + (prompt.length > 120 ? prompt.slice(0, 120) + '…' : prompt) + '\n' +
         '服务商按实际消耗收费，这次提交会产生真实调用。');
       if (!confirmed) return { ok: false, canceled: true };
 
       try {
-        const r = await Api.submitImageJob(assetId, prompt);
+        const r = await Api.submitImageJob(assetId, prompt, sz);
         /* created=false 表示已有活动任务（后端拦住第二次提交，防重复扣费） */
         if (r && r.created === false) {
           toast('该资产已有进行中的生图任务，已为你显示它的进度', 'warn');
@@ -3599,7 +3913,15 @@
         startPoll();
         return { ok: true };
       } catch (e) {
-        fail(e);
+        /* 服务端驳回尺寸（40000 + data.nearest）：自动采纳回落值并说明 ——
+           服务端是权威校验，前端镜像可能有它没有的边界情况。 */
+        const near = e && e.data && e.data.nearest;
+        if (near && near.mode === 'pixels' && near.width && szCtl) {
+          szCtl.set({ sizeMode: 'pixels', width: near.width, height: near.height });
+          toast('尺寸不合法：' + ((e.data.sizeErrors && e.data.sizeErrors[0]) || '') + '。已回落到 ' + near.width + ' × ' + near.height, 'warn');
+        } else {
+          fail(e);
+        }
         return { ok: false, error: e };
       }
     }
@@ -6214,6 +6536,21 @@
           '<p class="hint-sm">画幅 / 分辨率 / 时长跟随当前默认模型（' + esc(labelOf(o.models, s.defaults.model) || s.defaults.model) + '）的实时规格，仅列出受支持的值</p>' +
         '</div>' +
       '</section>' +
+      /* —— 卡片 1b · 图片生成默认尺寸（2026-09-25）。与视频默认值分开一张卡：
+             两套约束体系（dreamina 模型规格 vs Work Fisher 像素规则），混在一起
+             会互相误伤校验。保存走 PUT /settings 的 imageDefaults 键。 —— */
+      '<section class="scard" id="iszCard">' +
+        '<div class="scard-hd"><div class="scard-hd-t">' +
+          '<h3>图片生成默认尺寸</h3><p>素材生图面板打开时的初始尺寸；弹窗内可临时改，不影响这里</p></div></div>' +
+        '<div class="scard-bd">' +
+          imageSizeControlHTML('isz', s.imageDefaults || null) +
+          '<div class="row-inline" style="margin-top:8px">' +
+            '<button class="btn-outline" data-iszact="save">保存默认尺寸</button>' +
+            '<button class="btn-outline" data-iszact="reset">恢复默认</button>' +
+            '<span class="hint-sm">比例模式按档位出图；像素模式按精确尺寸出图（自定义比例请用像素模式）</span>' +
+          '</div>' +
+        '</div>' +
+      '</section>' +
       /* —— 卡片 2 · 提示词分隔符 —— */
       '<section class="scard">' +
         '<div class="scard-hd"><div class="scard-hd-t">' +
@@ -6331,6 +6668,12 @@
       /* —— 卡片 6 · 数据目录（2026-09-23 新增）。全库级设置、切完必须重启，
              按本面板"低频高风险放最后"的惯例收尾。 —— */
       dataDirCardHTML();
+    /* 尺寸默认值控件接线（2026-09-25）。⚠ innerHTML 每次重建后旧监听随 DOM 一起废弃，
+       所以必须**每渲染一次接一次**。onChange 把控件状态实时写回 S.settings.imageDefaults ——
+       与上面 data-set 系列控件同一模式：设置总保存（#settingsSave）因此天然带上最新尺寸。 */
+    S.iszCtl = wireImageSizeControl($('#settingsBody'), 'isz', S.settings && S.settings.imageDefaults, (v) => {
+      if (S.settings) S.settings.imageDefaults = v;
+    });
   }
 
   /* ---------------------------------------------------------- 详情 / 预览 */
@@ -6861,6 +7204,43 @@
       }
     });
 
+    /* 图片生成默认尺寸卡片的交互（2026-09-25）。又是一个独立监听 —— 同一条纪律：
+       既有分派分支已经很多，新功能各管各的，互不碰。 */
+    $('#settingsBody').addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-iszact]');
+      if (!b || b.disabled) return;
+      const act = b.dataset.iszact;
+
+      if (act === 'save') {
+        const v = S.iszCtl && S.iszCtl.get();
+        if (!v) { toast('尺寸规格未加载，请刷新页面后再试', 'warn'); return; }
+        b.disabled = true;
+        try {
+          S.settings = await Api.putSettings(Object.assign({}, S.settings, { imageDefaults: v }));
+          toast('默认尺寸已保存，之后打开生图面板默认用它', 'ok');
+        } catch (err) {
+          /* 服务端驳回（含回落建议）：采纳 nearest 再让用户确认保存 */
+          const near = err && err.data && err.data.nearest;
+          if (near && near.mode === 'pixels' && S.iszCtl) {
+            S.iszCtl.set({ sizeMode: 'pixels', width: near.width, height: near.height });
+            toast('尺寸不合法，已回落到 ' + near.width + ' × ' + near.height + '；确认后请再点一次保存', 'warn');
+          } else {
+            toast(errText(err), 'err');
+          }
+        } finally { b.disabled = false; }
+        return;
+      }
+
+      if (act === 'reset') {
+        b.disabled = true;
+        try {
+          S.settings = await Api.resetSettings(['imageDefaults']);
+          renderSettings();
+          toast('已恢复默认尺寸（16:9 · 1k）', 'ok');
+        } catch (err) { toast(errText(err), 'err'); }
+      }
+    });
+
     $('#settingsSave').addEventListener('click', async () => {
       try {
         S.settings = await Api.putSettings(S.settings);
@@ -6886,7 +7266,7 @@
     $('#settingsReset').addEventListener('click', async () => {
       if (!(await uiConfirm('恢复默认', '恢复分隔符、默认参数与队列设置为默认值？'))) return;
       try {
-        S.settings = await Api.resetSettings(['delimiter', 'defaults', 'queue']);
+        S.settings = await Api.resetSettings(['delimiter', 'defaults', 'imageDefaults', 'queue']);
         renderSettings(); toast('已恢复默认', 'ok');
       } catch (e) { fail(e); }
     });

@@ -1356,6 +1356,9 @@ function getSettings(db, scope) {
   const out = {
     delimiter: JSON.parse(JSON.stringify(del)),
     defaults: JSON.parse(JSON.stringify(eff)),
+    /* 生图尺寸默认值（2026-09-25）：项目覆盖 ⊕ 全局。缺省时给一份内置默认
+       （16:9 比例 / 1k），这样前端**总是**拿到可直接用的值，不必自己兜底。 */
+    imageDefaults: JSON.parse(JSON.stringify(effectiveImageDefaults(db, scope))),
     queue: JSON.parse(JSON.stringify(db.settings.queue || {})),
     adapter: JSON.parse(JSON.stringify(db.settings.adapter || {}))
   };
@@ -1365,6 +1368,28 @@ function getSettings(db, scope) {
     out.overridden = Object.keys((scope.project.settings && scope.project.settings.defaults) || {});
   }
   return out;
+}
+
+/* 生图尺寸默认值的生效值（项目覆盖 ⊕ 全局 ⊕ 内置默认）。
+   内置默认取 16:9 + 1k —— 与首版一直以来的隐含行为一致（此前写死 1:1 比例的 1k）。 */
+const IMAGE_DEFAULT_SIZE = { sizeMode: 'ratio', ratio: '16:9', width: null, height: null, resolution: '1k' };
+function effectiveImageDefaults(db, scope) {
+  const g = (db.settings && db.settings.imageDefaults) || null;
+  const p = (scope && scope.project && scope.project.settings && scope.project.settings.imageDefaults) || null;
+  const merged = Object.assign({}, IMAGE_DEFAULT_SIZE, g || {}, p || {});
+  /* 归一：比例模式下不该留着像素，像素模式下不该留着比例 ——
+     否则前端渲染时会同时命中两条分支。 */
+  if (merged.sizeMode === 'pixels') {
+    if (!(merged.width > 0) || !(merged.height > 0)) return Object.assign({}, IMAGE_DEFAULT_SIZE);
+    merged.ratio = null;
+  } else {
+    merged.sizeMode = 'ratio';
+    merged.width = null; merged.height = null;
+    if (!merged.ratio) merged.ratio = IMAGE_DEFAULT_SIZE.ratio;
+  }
+  const SZ = require('./image-size');
+  merged.resolution = SZ.normResolution(merged.resolution);
+  return merged;
 }
 
 /* ---------------- 默认值变更 → 同步到已有分镜 ----------------
@@ -1418,7 +1443,7 @@ function syncDefaultsToStoryboards(db, before, after, scope) {
    请求体里**任何**顶层键都会原样落进库，没有白名单。单项目时危害有限，
    多项目之后这就成了隔离漏洞：一个 `{"projects":[…]}` 或 `{"workspaces":[…]}` 就能直接改写
    项目集合本身。白名单之外的键一律丢弃，并在响应里如实回报被忽略的键。 */
-const WRITABLE_SETTINGS = ['delimiter', 'defaults', 'queue'];
+const WRITABLE_SETTINGS = ['delimiter', 'defaults', 'queue', 'imageDefaults'];
 
 async function putSettings(db, s, adapter, scope) {
   const body = s || {};
@@ -1491,6 +1516,43 @@ async function putSettings(db, s, adapter, scope) {
      adapter 保持只读，前端回传的旧字段一律不采纳。 */
   project.settings = Object.assign({}, project.settings || {});
   project.settings.defaults = nextDefaults;
+  /* 生图尺寸默认值（2026-09-25）：项目级覆盖，与视频 defaults **分开存**。
+     为什么不塞进 defaults：那套的键（model/ratio/resolution/durationSec）受
+     dreamina 模型能力表校验，而这里的是 Work Fisher 的像素规则 —— 两套
+     约束体系混在一起会让"改视频默认值"意外触发像素校验（反之亦然）。 */
+  if (body.imageDefaults !== undefined) {
+    const SZ = require('./image-size');
+    const raw = body.imageDefaults || {};
+    const mode = raw.sizeMode === 'pixels' ? 'pixels' : (raw.sizeMode === 'ratio' ? 'ratio' : null);
+    if (!mode) {
+      throw new ApiError(ERR.PARAM, '参数校验失败', {
+        fields: [{ path: 'imageDefaults.sizeMode', message: '必须是 ratio 或 pixels' }]
+      });
+    }
+    /* 比例模式下校验比例 id；像素模式下校验宽高（并**回落**到最近合法值，
+       与界面上的"非法输入回落"同一套逻辑 —— 见 image-size.nearest）。 */
+    const r = SZ.resolveSize({
+      mode: mode,
+      ratio: raw.ratio,
+      width: raw.width,
+      height: raw.height,
+      resolution: raw.resolution
+    });
+    let w = raw.width, h = raw.height;
+    if (!r.ok) {
+      const n = r.nearest;
+      if (!n) throw new ApiError(ERR.PARAM, '图片尺寸不合法：' + r.errors.join('；'));
+      w = n.width; h = n.height;
+      adjustments.push('生图尺寸 ' + raw.width + '×' + raw.height + ' → ' + w + '×' + h + '（' + r.errors[0] + '）');
+    }
+    project.settings.imageDefaults = {
+      sizeMode: mode,
+      ratio: mode === 'ratio' ? (r.ratio || SZ.RATIO_AUTO) : (r.ratio || null),
+      width: mode === 'pixels' ? Number(w) : null,
+      height: mode === 'pixels' ? Number(h) : null,
+      resolution: SZ.normResolution(raw.resolution)
+    };
+  }
   if (body.delimiter) project.settings.delimiter = Object.assign({}, project.settings.delimiter || {}, body.delimiter);
   if (body.queue) db.settings.queue = Object.assign({}, db.settings.queue || {}, body.queue);
   project.updatedAt = nowIso();
@@ -1693,6 +1755,37 @@ function imageJobModel(adapter) {
   return (p && p.status && p.status().model) || null;
 }
 
+/* 生图尺寸的校验与归一（2026-09-25）。规则全部在 server/image-size.js，
+   这里只负责"把 body 里的尺寸意图翻译成 provider 能发的 { size, resolution }"。
+   ⚠ 必须在**计费提交之前**校验：非法尺寸发给服务商要么被拒（浪费一次往返）、
+     要么被它自行调整（用户拿到与预期不符的图却已扣费）。 */
+function resolveImageSize(body) {
+  const SZ = require('./image-size');
+  const b = body || {};
+  /* 前端已把用户的选择整理成 { sizeMode, ratio, width, height, resolution }。
+     兼容老客户端（只发 prompt）：一律当 auto，不要因此报错。 */
+  const hasSize = b.sizeMode != null || b.ratio != null || (b.width != null && b.height != null);
+  if (!hasSize) {
+    /* 落库 'auto' 而非 null：快照可读（界面能显示"自动"），
+       且 auto 是服务商合法枚举 —— 与 resolution 组合原样透传，语义与旧行为一致。 */
+    return { ok: true, size: 'auto', resolution: SZ.normResolution(b.resolution) };
+  }
+  const r = SZ.resolveSize({
+    mode: b.sizeMode === 'pixels' ? 'pixels' : 'ratio',
+    ratio: b.ratio,
+    width: b.width,
+    height: b.height,
+    resolution: b.resolution
+  });
+  if (!r.ok) {
+    const e = new ApiError(ERR.PARAM, '图片尺寸不合法：' + r.errors.join('；'));
+    /* 把"最近的合法值"附给前端，让界面能一键采纳（而不是让用户自己试） */
+    e.data = { sizeErrors: r.errors, nearest: r.nearest || null };
+    throw e;
+  }
+  return { ok: true, size: r.size, resolution: r.resolution };
+}
+
 /* 提交生图任务。返回 { created, job } —— created=false 表示已有活动任务，
    调用方（与前端）据此提示"已有一个进行中的任务"，**不再新建**（防重复付费）。 */
 async function submitImageJob(db, assetId, body, adapter, scope) {
@@ -1705,11 +1798,14 @@ async function submitImageJob(db, assetId, body, adapter, scope) {
   if (!prompt) throw new ApiError(ERR.PARAM, '提示词不能为空（全空白文本不可提交）');
   if (prompt.length > 10000) throw new ApiError(ERR.PARAM, '提示词不能超过 10000 字符（当前 ' + prompt.length + ' 字符）');
 
+  /* 尺寸校验要在计费提交之前（见 resolveImageSize 的注释） */
+  const sz = resolveImageSize(body);
+
   const IJ = requireImageJobs();
   const p = adapter && adapter.imageProvider;
   if (!p || !p.configured()) throw new ApiError(ERR.PARAM, '未配置生图服务的 API Key，请先在项目设置中填写');
 
-  const r = await IJ.submit(a, prompt, { model: imageJobModel(adapter) });
+  const r = await IJ.submit(a, prompt, { model: imageJobModel(adapter), size: sz.size, resolution: sz.resolution });
   /* 提交前把用户这次的提示词也存进资产 —— 计划 §3.2 第 3 条：只保存提示词，
      不顺带保存弹窗里尚未确认的名称 / 类型 / 待上传文件。 */
   if (r.created && !r.failed) {
@@ -1927,12 +2023,14 @@ function importAssetPrompts(db, b, scope) {
    （而不是把项目值写成硬编码常量 —— 那样"恢复默认"会把项目钉死在当前内置值上，
    之后改全局默认也带不动它）。queue 是系统级，直接复位为内置默认。 */
 function resetSettings(db, b, scope) {
-  const scopes = (b && b.scopes) || ['delimiter', 'defaults', 'queue'];
+  const scopes = (b && b.scopes) || ['delimiter', 'defaults', 'imageDefaults', 'queue'];
   const project = scope ? scope.project : null;
   if (project) {
     project.settings = Object.assign({}, project.settings || {});
     if (scopes.includes('delimiter')) delete project.settings.delimiter;   // 清覆盖 → 回落全局
     if (scopes.includes('defaults')) delete project.settings.defaults;
+    /* 生图尺寸默认值同理：清覆盖 → 回落全局 → 再回落内置 16:9 / 1k */
+    if (scopes.includes('imageDefaults')) delete project.settings.imageDefaults;
     project.updatedAt = nowIso();
   }
   if (scopes.includes('queue')) db.settings.queue = DEFAULT_SETTINGS().queue;
@@ -2040,6 +2138,10 @@ async function getOptions(db, adapter, scope) {
   meta.models.forEach((m) => m.resolutions.forEach((v) => allRes.push(v)));
   if (allRes.length) meta.resolutions = dedupeLevels(allRes).map((v) => ({ value: v, label: v }));
   meta.ratios = models.DREAMINA_RATIOS.map((v) => ({ value: v, label: v }));
+  /* 生图尺寸规格（2026-09-25）：比例枚举 / 像素预设 / 硬边界**统一下发**，
+     前端不硬编码 —— 规则只在 server/image-size.js 定义一处（见那里的注释）。
+     与上面 meta.ratios（视频画幅）是**两套东西**，别混用：视频那套受模型规格锁定。 */
+  meta.imageSizes = require('./image-size').spec();
   // 积分余额提醒阈值（前端在提交前据此做二次确认；与 worker 派发前的提醒同源）
   meta.creditWarnBelow = loadConfig().creditWarnBelow;
   /* 音频参考总时长上限（秒）：随 meta 下发，前端不硬编码 15 ——

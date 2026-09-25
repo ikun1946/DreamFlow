@@ -13,6 +13,42 @@
 
 ---
 
+#### `0.41.0` — 2026-09-25（新增：生图「分辨率 + 宽高比」可配置项 —— 比例联动 / 像素预设 / 非法回落 / 全局默认）
+
+> **版本号口径**：`0.40.0 → 0.41.0`（MINOR：新增面向使用者的能力；无破坏性接口变更，老客户端只发 `prompt` 照常工作）。
+
+**为什么改**：`0.40.0` 的生图面板只能按服务商默认出图（`resolution=1k`，比例由模型自定）。本版本让使用者在提交前就锁定构图：选比例（含快捷与自定义枚举）或直接输宽高像素（含 1080p / 2K / 4K 预设），两者联动换算，非法输入即时回落最近合法值，并可将当前选择存为全局默认。
+
+**新增（`server/image-size.js`，规则唯一事实来源）**：Work Fisher v2.5-flare `size` 契约的完整实现 —— 比例枚举 15 种（auto / 1:1 / 3:2 / … / 21:9 / 3:1）或精确像素 `WxH`。硬约束：宽高为 **16 的倍数**、均 ≤3840、长短边比 ≤3:1、总像素 655360–8294400。核心函数：`validate`（校验 + `nearest` 最近合法值）、`nearest`（**保方向与比例意图**的回落：先钳比例 → 按目标比例解宽高 → 16 网格吸附收敛）、`ratioToSize`（面积反算）、`sizeToRatio`（2% 容差反算枚举）、`resolveSize`（ratio / pixels / auto 三路径主入口）、`spec()`（下发前端的只读规格）。**服务端计费提交前校验与 `/meta/options` 的 `imageSizes` 下发都出自这一处，禁止在前端复制规则。**
+
+> ⚠ **1080 不是 16 的倍数**（1080/16=67.5）—— 1080p 预设用 **1920×1088**（2K=2560×1440、4K=3840×2160 均天然对齐），界面 hint 如实标注「16 倍数对齐」。
+
+**改动（服务端）**：
+- `server/image-provider.js`：`submit()` 透传 `size`；**像素模式（含 `x`）不发 `resolution`**（服务商文档声明像素场景下会忽略它），比例 / auto 模式才带。
+- `server/image-jobs.js`：`PERSIST_FIELDS` 白名单加 `size` / `resolution`，任务快照落库并在 `viewJob` 回显。
+- `server/services.js`：`resolveImageSize()` 在**计费提交之前**校验 —— 失败抛 `40001` 且 `e.data = { sizeErrors, nearest }`（**绝不发服务商请求**）；老客户端（只发 `prompt`）归一为 `size:'auto'` 照常提交。设置新增 `imageDefaults` 卡（`{ sizeMode, ratio, width, height, resolution }`），`PUT /settings` 非法值**回落保存**并在 `adjustments[]` 里说明；`resetSettings` 支持 `imageDefaults` 作用域；`GET /meta/options` 下发 `meta.imageSizes`。
+
+**改动（前端）**：
+- `app/app.js`：尺寸控件全家桶 —— `imageSizeControlHTML` / `wireImageSizeControl`（模式切换联动：选比例自动填像素、改像素反猜枚举并锁定）；像素输入 blur/change 即校验 + 回落 + 提示；生图面板与设置页共用，spec 未下发时诚实降级（隐藏控件而非假装可用）。提交体按模式组装 `ratio+resolution` 或 `width/height`，幂等键掺入尺寸（改尺寸不再撞幂等缓存）；服务商驳回 `nearest` 时一键采纳。
+- `app/api.js`：`submitImageJob(id, prompt, size)`；`imageSubmitKey` 掺尺寸。
+- `app/styles.css`：`.isz*` 样式族，全部真实主题令牌。
+
+**修的真实缺陷（开发中发现并修复）**：
+
+1. **预设初版用了教科书 1920×1080**：违反 16 倍数硬约束，validate 全 FAIL。改用 1920×1088 / 1088×1088 / 1088×1920。
+2. **`nearest` 初版丢比例意图**：1920×100 被压成 1120×608（近 16:9），用户想要的横向条幅没了。重写为先钳比例意图（保方向）再解宽高：5000×500 → 2736×912（3:1 横向）、100×1920 → 480×1408（纵向）。
+3. **编辑事故吞掉 `imagePanelHTML` 函数头**：整文件 SyntaxError，`node --check` 兜底发现并补回。
+4. **测试期望写反 ×3**：`validate(4000,288)` 误期望「总像素」（115.2 万在区间内，实际命中单边超限 + 比例超限）；`validate(3840,1280)` 恰好 3:1 是**合法边界**却断言 errors 含 `3:1`；非法提交错误码写错（实际 `40001`/`ERR.PARAM`，非 `40000`）。
+5. **老客户端落库语义**：无尺寸时最初落 `null`，改为归一 `'auto'` —— 快照可读、发给服务商的是确定合法枚举，与旧行为语义一致。
+
+**新增测试**：`test/15-image-size.test.js`（18 例 / 4 组）—— 预设全合法与 16 倍数钉死、五条硬边界逐条、nearest 保方向必合法、45 组比例×分辨率全合法、`sizeToRatio` 容差、provider 透传三态（比例带 resolution / 像素不带 / 无尺寸仅 resolution）、非法像素 40001 + nearest + **零服务商请求**、未知比例拒绝、老客户端兼容、`imageDefaults` 缺省 / 回落 / 重置、`/meta/options` 下发规格。
+
+**文档与版本**：`docs/前端页面与接口对接说明.md` §4.6 补尺寸参数契约与提交体两形态；`docs/项目文档.md` 接口分组补尺寸说明 + 文件地图补 `server/image-size.js`；`AGENTS.md` 门禁表补「生图尺寸」组；版本号 `0.40.0 → 0.41.0` 六处同步；用例口径 305 → 323（check §16 自动对账）。
+
+**验证**：`test` **328/328**（15 文件）· `lint` 7/7 · `check` 通过（§15 git remote 为沙箱环境限制）· `build` ✓（dist 563.4 KB 重建）· `smoke:web` / `e2e` ✓。**全程假传输，未产生任何真实调用费用。**
+
+---
+
 #### `0.40.0` — 2026-09-25（新增：图片资产 GPT 生图功能全量交付 —— 实施计划阶段 3–6）
 
 > 本版本接续 `0.39.0`（阶段 1–2 后端骨架），补齐**密钥配置 / 两处界面 / 文档版本 / 验收**，生图功能自此对使用者可见。

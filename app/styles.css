@@ -1908,6 +1908,24 @@ html.nav-back::view-transition-new(root){animation:nav-in-left .24s cubic-bezier
 .imgcmp-cell.new{border-color:var(--primary)}
 .imgcmp-cell figcaption{font-size:12px;padding:5px 8px;color:var(--ink48);border-bottom:1px solid var(--divider)}
 .imgcmp-cell.new figcaption{color:var(--primary-ink);font-weight:600}
+
+/* ---- 生图尺寸控件（2026-09-25）：比例 ⇄ 像素 双向联动 ----
+   两处实例：生图面板（.modal.narrow 内，id 前缀 ip）与设置页卡片（前缀 isz）。
+   全部走真实主题令牌；布局用 flex + wrap，窄弹窗自动折行，不依赖容器查询
+   （0.40.0 的教训：@container 在非 container 弹窗里静默失效）。 */
+.isz{border:1px solid var(--hairline);border-radius:10px;padding:10px 12px;background:var(--pearl);margin-top:6px}
+.isz-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.isz-row .chips{gap:6px}
+.isz-pane{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.isz-pane[hidden]{display:none}
+.isz-pane .chips{gap:6px}
+.isz-pane .chips button{font-size:12px;padding:5px 12px}
+.isz-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.isz-inline .input-sm{font-weight:600}
+/* 宽高输入框去掉浏览器自旋钮（step=16 的自旋毫无意义，还占宽度） */
+.isz-inline input[type=number]::-webkit-outer-spin-button,
+.isz-inline input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.isz-inline input[type=number]{-moz-appearance:textfield;appearance:textfield}
 .imgcmp-cell img{display:block;width:100%;height:170px;object-fit:contain;background:var(--parchment);cursor:zoom-in}
 .imgcmp-cell .empty-ph{height:170px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
   color:var(--ink48);font-size:12px}

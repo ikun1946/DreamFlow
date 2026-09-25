@@ -1,7 +1,7 @@
 # AGENTS.md —— 给 AI agent 的项目约定
 
 > 本文件是**任何 agent 接手本仓库时的第一份必读**。人也可以看，但它主要写给 agent。
-> 最后核对：2026-09-25（版本 `v0.40.0`）
+> 最后核对：2026-09-25（版本 `v0.41.0`）
 > 看完整变更记录：[docs/CHANGELOG.md](docs/CHANGELOG.md)（0.29.0 → 最新）。
 >
 > 📖 **想「通读一遍就完整理解项目」** → 读 `docs/项目文档.md`（定位 / 结构 / 目录职责 / 模块依赖 / 主要流程 /
@@ -92,7 +92,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 
 | 命令 | 管什么 | 现在的状态 |
 |---|---|---|
-| `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y / 错误码四件套 / 数据目录 / 生图服务商 / 生图任务与文件 / 生图密钥 / 生图凭据边界 十四组） | **305 用例全通** |
+| `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y / 错误码四件套 / 数据目录 / 生图服务商 / 生图任务与文件 / 生图密钥 / 生图凭据边界 / 生图尺寸 十五组） | **323 用例全通** |
 | `npm run check` | 一致性门禁：`scripts/check-project.js`（版本漂移、dist 同步、图标、许可、更新器、发布文档现状、旧名残留、过期表述、收尾清单一致性、docs 状态标记、路由计数、git remote、文档数量口径…） | **46 项全通** |
 | `npm run lint` | 静态检查：`scripts/lint.js`（语法 / `debugger` / 前端调试输出 / 相对 require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） | **7 项全通** |
 | `npm run smoke:web` | 网页版连通性：起真服务 → 首页 / 接口 / 鉴权 / 边界 → 关停无残留 | 通过 |
@@ -129,6 +129,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 | `server/schema.js` | schemaVersion 与迁移框架（旧库升级唯一入口） |
 | `server/image-provider.js` | 图片生图服务商适配（Work Fisher）。网络走**可注入传输层**（`transport()` / `setTransport()`），才能用假传输单测 |
 | `server/image-jobs.js` | 图片生图任务状态机：提交 / 轮询 / 下载落盘 / 采用。落库走 `PERSIST_FIELDS` 白名单（**禁止**把远端直链写进 `db.json`） |
+| `server/image-size.js` | 生图尺寸规则**唯一事实来源**：比例枚举 / 像素校验（16 倍数、≤3840、总像素区间、长短边比 ≤3:1）/ 最近合法值回落 / 预设。服务端校验与 `/meta/options` 的 `imageSizes` 下发都出自这一处，**禁止在前端复制一份规则** |
 | `desktop/main.js` | Electron 主进程（单实例、窗口、托盘、优雅退出） |
 | `desktop/runtime-paths.js` | 桌面版目录布局唯一事实来源 |
 | `desktop/legacy-import.js` | 旧版数据导入 + 完整性体检 |

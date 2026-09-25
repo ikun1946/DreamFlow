@@ -254,6 +254,7 @@ const activeOfAsset = (db, assetId) => byAsset(db, assetId).find((j) => ACTIVE_S
    明确允许持久化的字段，一律不写。 */
 const PERSIST_FIELDS = [
   'id', 'projectId', 'assetId', 'prompt', 'model', 'state',
+  'size', 'resolution',
   'providerTaskId', 'candidateFile', 'appliedFile', 'usage', 'error', 'errorKind',
   'imageWidth', 'imageHeight', 'imageFormat', 'queryFailures',
   'createdAt', 'updatedAt'
@@ -285,6 +286,8 @@ function viewJob(j, assetId) {
     state: j.state,
     prompt: j.prompt,
     model: j.model,
+    size: j.size || null,
+    resolution: j.resolution || null,
     providerTaskId: j.providerTaskId || null,
     usage: j.usage || null,
     error: j.error || null,
@@ -384,6 +387,12 @@ function makeImageJobs(env) {
          而这次任务花的是这一版提示词的钱，审计时必须以快照为准。 */
       prompt: prompt,
       model: o.model || null,
+      /* 尺寸快照（2026-09-25）：这次任务用的是哪一档尺寸 —— 与 prompt 同理，
+         设置里的默认值之后会被改，而这次花的钱对应的是这一版尺寸，审计要看它。
+         `size` 是比例枚举（16:9 / auto）或像素（1920x1088）；`resolution` 只在
+         比例模式下有效（像素模式服务商会忽略它，provider 那边也不会发）。 */
+      size: o.size || null,
+      resolution: o.resolution || null,
       state: STATE.SUBMITTING,
       providerTaskId: null,
       candidateFile: null,
@@ -395,7 +404,7 @@ function makeImageJobs(env) {
     map[job.id] = job;
     saveAll();
 
-    const r = await e.provider.submit(prompt);
+    const r = await e.provider.submit(prompt, { size: job.size, resolution: job.resolution });
 
     if (r && r.kind) {
       /* ② 超时 → submission_unknown（**不**自动重发，约束 1）。

@@ -192,13 +192,14 @@
     return 'sb_' + h.toString(36) + '_' + bucket.toString(36);
   }
 
-  /* 生图提交的幂等键 = 资产 + 提示词 + 2 秒时间桶。
+  /* 生图提交的幂等键 = 资产 + 提示词 + 尺寸 + 2 秒时间桶。
      与 submitKey 同一套思路，但把**提示词内容**也掺进来：同一资产连点两次
      同一提示词被吸收（防重复扣费），而用户改了提示词再点就是新键（应当真提交）。
+     尺寸同理（2026-09-25）：改了尺寸再点 = 新意图，不该被旧键吸收。
      用哈希而不是原文，避免把长提示词塞进请求头。 */
-  function imageSubmitKey(assetId, prompt) {
+  function imageSubmitKey(assetId, prompt, size) {
     const bucket = Math.floor(Date.now() / 2000);
-    const src = String(assetId || '') + '|' + String(prompt || '') + '|' + bucket;
+    const src = String(assetId || '') + '|' + String(prompt || '') + '|' + String(size || '') + '|' + bucket;
     let h = 0;
     for (let i = 0; i < src.length; i++) h = (h * 31 + src.charCodeAt(i)) >>> 0;
     return 'ij_' + h.toString(36) + '_' + bucket.toString(36);
@@ -294,8 +295,17 @@
     // 取资产最新信息（分镜预览要用它拿**最新**提示词，分镜快照里的不能当来源）
     getAsset:     (id)        => request('GET', '/assets/' + id, { query: scopeQuery() }),
     // 提交生图。提交键 = 资产 + 提示词快照 + 2 秒时间桶（见 submitKey 的说明）
-    submitImageJob: (id, prompt) => request('POST', '/assets/' + id + '/image-jobs',
-      { body: { prompt }, idempotencyKey: imageSubmitKey(id, prompt), query: scopeQuery() }),
+    /* 尺寸参数（2026-09-25）：sz 是面板整理好的
+       { sizeMode:'ratio'|'pixels', ratio, width, height, resolution }。
+       只带用户实际选了的字段 —— 前端不替服务端做归一（那边 image-size.js 是唯一事实来源）。 */
+    submitImageJob: (id, prompt, sz) => {
+      const s = sz || {};
+      const body = { prompt: prompt };
+      if (s.sizeMode === 'pixels') { body.sizeMode = 'pixels'; body.width = s.width; body.height = s.height; }
+      else { body.sizeMode = 'ratio'; body.ratio = s.ratio; body.resolution = s.resolution; }
+      return request('POST', '/assets/' + id + '/image-jobs',
+        { body: body, idempotencyKey: imageSubmitKey(id, prompt, JSON.stringify(body)), query: scopeQuery() });
+    },
     // 当前任务（活动任务优先，否则最近一条）。关闭弹窗重开靠它恢复视图。
     currentImageJob: (id)     => request('GET', '/assets/' + id + '/image-jobs/current', { query: scopeQuery() }),
     listImageJobs: (id)       => request('GET', '/assets/' + id + '/image-jobs', { query: scopeQuery() }),
