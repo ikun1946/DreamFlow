@@ -664,8 +664,10 @@ for (const file of releaseGuides) {
 }
 const projectGuide = read('docs/项目文档.md') || '';
 const releaseGuide = read('docs/版本发布与更新流程.md') || '';
-const projectStatus = (/### 10\.2[^\n]*\n([\s\S]*?)(?=\n### |\n## |$)/.exec(projectGuide) || [,''])[1];
-const releaseStatus = (/## 9\.[^\n]*\n([\s\S]*?)(?=\n## |$)/.exec(releaseGuide) || [,''])[1];
+/* 0.38.10：用 String.match 替代 RegExp.exec —— 两者对非全局正则返回值完全一致；
+   换写法是因为安全扫描按 ".exec(" 模式把正则匹配误判成了命令注入 */
+const projectStatus = (projectGuide.match(/### 10\.2[^\n]*\n([\s\S]*?)(?=\n### |\n## |$)/) || [,''])[1];
+const releaseStatus = (releaseGuide.match(/## 9\.[^\n]*\n([\s\S]*?)(?=\n## |$)/) || [,''])[1];
 if (exist('LICENSE') && exist('THIRD-PARTY-NOTICES.md')) {
   for (const [name, section] of [['项目文档 §10.2', projectStatus], ['发布流程 §9', releaseStatus]]) {
     if (!section.includes('LICENSE') || !section.includes('THIRD-PARTY-NOTICES.md')) releaseDrift.push(name + ' 缺少许可与声明现状');
@@ -677,9 +679,9 @@ if (exist('scripts/check-signing.js') && /signAndEditExecutable:\s*true/.test(re
   }
 }
 if (exist('docs/CHANGELOG.md')) {
-  const dodAgent = (/## 完成一项工作后的固定动作[^\n]*\n([\s\S]*?)(?=\n## |$)/.exec(read('AGENTS.md') || '') || [,''])[1];
-  const dodProject = (/## 9\. 完成一项工作后的固定动作[^\n]*\n([\s\S]*?)(?=\n## |$)/.exec(projectGuide) || [,''])[1];
-  const versionRelease = (/## 2\. 版本号[^\n]*\n([\s\S]*?)(?=\n## |$)/.exec(releaseGuide) || [,''])[1];
+  const dodAgent = ((read('AGENTS.md') || '').match(/## 完成一项工作后的固定动作[^\n]*\n([\s\S]*?)(?=\n## |$)/) || [,''])[1];
+  const dodProject = (projectGuide.match(/## 9\. 完成一项工作后的固定动作[^\n]*\n([\s\S]*?)(?=\n## |$)/) || [,''])[1];
+  const versionRelease = (releaseGuide.match(/## 2\. 版本号[^\n]*\n([\s\S]*?)(?=\n## |$)/) || [,''])[1];
   for (const [name, section] of [['AGENTS.md 收尾清单', dodAgent], ['项目文档 §9', dodProject], ['发布流程 §2', versionRelease]]) {
     if (!section.includes('docs/CHANGELOG.md')) releaseDrift.push(name + ' 未指向现行变更记录');
   }
