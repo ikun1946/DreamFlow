@@ -517,7 +517,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 html[data-slotmode="deck"] .slots{flex-wrap:nowrap;position:relative}
 html[data-slotmode="deck"] .cell-slots{overflow:visible;position:relative}
 /* 收拢态的叠放边距由 layoutDecks()（app.js）按列宽实测后逐张写入行内样式：
-   能完整并排的排开，放不下的全部叠进牌堆（每张露 3px 边，最上面一张完整可见）。
+   能完整并排的排开，放不下的全部叠进牌堆（每张露 8px 边，最上面一张完整可见）。
    ⚠ CSS 不预置重叠量 —— 负 margin 全部由 JS 实测计算，避免与实测值互相打架。 */
 /* 摊开态：以**牌组所在位置为中心**向左右展开并整体上浮放大（translate -50% 居中 +
    scale 1.06），浮层压过相邻行/列（z-index:6），重阴影强化"悬浮"感；

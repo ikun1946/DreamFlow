@@ -609,7 +609,7 @@
     layoutDecks();   // 收起后恢复牌堆的叠放边距
   }
   /* 堆叠牌组布局（0.38.8）：按列宽**实际排布** —— 能完整并排几张排几张，
-     放不下的图片**全部**叠进牌堆（每张只露 3px 边，最上面一张完整可见，
+     放不下的图片**全部**叠进牌堆（每张只露 8px 边，最上面一张完整可见，
      "有几张叠几张"），「＋」槽位始终保持在牌堆之后可见。
      ⚠ 必须在渲染后调用（renderTable / 进出分镜表 / 窗口缩放 / 摊开收起切换），
        依赖真实布局宽度测量；CSS 不预置重叠量，全部由这里逐张写入行内样式。
@@ -631,7 +631,7 @@
       const gap = 8;
       const tw = Math.round(thumbs[0].getBoundingClientRect().width) || 44;
       const aw = add ? Math.round(add.getBoundingClientRect().width) || 44 : 0;
-      const strip = 3;   // 牌堆里每张露 3px 边
+      const strip = 8;   // 牌堆里每张露 8px 边（使用者 2026-09-25 定标：3px 太紧，放宽到 8px）
       const n = thumbs.length;
       /* 求最多能完整并排几张 F：其余 (n-F) 张各占 strip 像素叠进牌堆，
          总宽 = F*(宽+gap) + (n-F)*(strip+gap) + 宽(＋) + gap ≤ 列宽。 */
@@ -2729,10 +2729,12 @@
 
     /* 堆叠牌组（0.39.0）：收拢状态点一下 = 以牌组为中心上浮放大、向左右摊开成浮层
        （预览 / 替换 / 移除等原有动作在摊开后照常可用）。＋ 槽位与 × 移除不拦；
-       只有 2 张以内没有可摊的东西，点击直接走预览。 */
+       2 张同样算牌堆 —— 第 2 张压在第 1 张上、第 1 张只露 8px 边（0.38.8 按列宽实排
+       时 2 张放不下「＋」，F 只能给 1），所以点一下也摊开看全；
+       只有单张时没有可摊的东西，点击直接走预览。 */
     if (slotMode() === 'deck' && !t.closest('.slot-add') && !t.closest('[data-unbind]')) {
       const st = t.closest('.slots');
-      if (st && !st.classList.contains('deck-open') && st.querySelectorAll('.thumb').length > 2) {
+      if (st && !st.classList.contains('deck-open') && st.querySelectorAll('.thumb').length > 1) {
         S.deckOpen = S.deckOpen || {};
         S.deckOpen[st.dataset.deckkey] = true;
         st.classList.add('deck-open');
