@@ -588,19 +588,20 @@ html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--ch
 .cell.prompt:hover .prompt-ta{border-color:var(--hairline)}
 .prompt-ta:focus{outline:none;border-color:var(--primary);background:var(--surface);
   box-shadow:0 0 0 2px var(--primary-bg)}
-/* 文本框包裹层：给右上角的半透明复制按钮提供定位锚点 */
+/* 文本框包裹层：给右上角浮现的复制 / 全屏按钮提供定位锚点 */
 .prompt-tawrap{position:relative;flex:1;display:flex;min-width:0;min-height:64px}
-/* 复制 / 全屏两颗按钮：平时完全透明，悬停文本框时半透明浮现，悬停按钮本体时实心。
-   全屏按钮贴右上角，复制按钮在其左侧（0.39.x 全屏按钮从标题行移入文本框内）。 */
-.prompt-copy{
-  position:absolute;top:6px;right:8px;width:24px;height:24px;border-radius:6px;
-  border:1px solid var(--hairline);background:var(--surface);
-  display:grid;place-items:center;color:var(--ink80);cursor:pointer;
-  opacity:0;transition:opacity .15s;
+/* 复制 / 全屏两颗按钮（0.39.x）：平时完全透明且不可点，悬停文本框时一起浮现。
+   皮肤与「分镜 N · 详情」的复制钮同款（.glass-btn），这里只管定位与浮现时机。
+   ⚠ 用 flex 容器定位，不给单颗按钮写死 right 偏移：按钮尺寸会随档位 / 内容变，
+     写死偏移每次都要重算（0.38.x 按纯图标 24px 写死 right:8px / right:38px，
+     后来加文字标签就失效了 —— 容器法不用管按钮多宽）。
+   pointer-events 跟着一起开关 —— 否则隐形按钮仍会吃掉文本框右上角的点击（详情那颗同此约定）。 */
+.prompt-acts{
+  position:absolute;top:6px;right:8px;z-index:2;
+  display:flex;gap:6px;
+  opacity:0;pointer-events:none;transition:opacity .18s ease;
 }
-.prompt-tawrap .prompt-copy[data-promptcopy]{right:38px}
-.prompt-tawrap:hover .prompt-copy{opacity:.55}
-.prompt-copy:hover{opacity:1}
+.prompt-tawrap:hover .prompt-acts{opacity:1;pointer-events:auto}
 /* 全屏编辑视图：同一套文本框放大版，面板头右侧带字数与保存按钮 */
 .fs-promptedit .prompt-ta{min-height:52vh;max-height:none;font-size:13.5px;padding:12px 14px}
 
@@ -1303,6 +1304,36 @@ html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--ch
 }
 .copywrap.on-dark .copy-btn:hover{background:rgba(255,255,255,.3);border-color:rgba(255,255,255,.44);color:#fff}
 .copywrap.on-dark .copy-btn.done{background:rgba(36,138,61,.9);border-color:rgba(36,138,61,.95);color:#fff}
+
+/* ============================ 复制 / 全屏按钮的统一皮肤 ============================
+   ⚠ 这是**标准件**：2026-09-25 使用者定标 —— 皮肤以「分镜 N · 详情」里的复制钮
+     （.copywrap .copy-btn）为准。两处选择器不同、目前无法合并成一条规则，
+     所以改这一处就必须同步改那一处（下面数值与 L1260 一带的 .copy-btn 一一对应）。
+   构成：白 veil 磨砂底 + 白 veil 描边 + blur(4px) + 6px 圆角；
+     hover → 实心主色；.done → 实心绿（详情那颗原地显示「已复制」1.4s 后复原）。
+   基类只管"皮肤"——定位 / z-index / 浮现时机由各使用位置保留：
+     写进基类会覆盖调用方的定位（position:relative 顶掉 position:absolute 那次踩过）。 */
+.glass-btn{
+  display:inline-flex;align-items:center;gap:4px;cursor:pointer;
+  height:24px;padding:0 8px;border-radius:6px;
+  font-family:var(--font);font-size:11px;line-height:1;
+  color:var(--ink80);
+  border:1px solid var(--veil-border);
+  background:var(--veil);
+  -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+  transition:background .15s ease,border-color .15s ease,color .15s ease;
+}
+/* 纯图标档：24×24 方形。分镜表那两颗用它（使用者 2026-09-25 要求去掉按钮上的文字）。
+   ⚠ 尺寸只写在档位里，别并进基类：带文字的用法靠 padding:0 8px 由内容撑宽。 */
+.glass-btn.icon{width:24px;height:24px;padding:0;display:grid;place-items:center}
+.glass-btn svg{display:block}
+.glass-btn:hover{background:var(--primary);border-color:var(--primary);color:#fff}
+.glass-btn.done{background:var(--ok);border-color:var(--ok);color:#fff}
+/* 深色底反色（与 .copywrap.on-dark .copy-btn 同款）：深色代码块上白玻璃会糊成一片 */
+.on-dark .glass-btn{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.26);color:#E8E8EA}
+.on-dark .glass-btn:hover{background:rgba(255,255,255,.3);border-color:rgba(255,255,255,.44);color:#fff}
+.on-dark .glass-btn.done{background:rgba(36,138,61,.9);border-color:rgba(36,138,61,.95);color:#fff}
+
 .logline{font-family:var(--mono);font-size:11.5px;line-height:20px;color:var(--ink80)}
 .logline.err{color:var(--err)}
 .logline.ok{color:var(--ok)}

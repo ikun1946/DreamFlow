@@ -1,0 +1,146 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260925T082034625Z-26980-308f4168ab1d",
+  "runId": "20260925T082034625Z-26980-308f4168ab1d",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "6362220bcfa3ec125b6dfe5aaa47475b9266902f",
+  "diffHash": "d00652382709dd5555a779a74a6bbc8d5afc65fdcac9b4dc3b76354e1abf6b41",
+  "rulesVersion": "unavailable",
+  "sessionHash": "24eac4259e34790125801ceef337d3c6a479735b1e172315bc7bb20e2552bd1b",
+  "reportRef": ".mimosa/reports/task-review-sess_ca0cfedc-1ea3-4e81-9f2c-d3df28f69c35-20260925T082034625Z-26980-308f4168ab1d.json",
+  "events": [
+    {
+      "eventId": "hook-d87a6d241bff922b5cbb47c1c4be303c",
+      "findingId": "mimosa-e0c8517a770ca00c7291472d",
+      "type": "finding_blocked",
+      "at": "2026-09-25T08:14:58.938Z",
+      "identity": {
+        "projectRelativeFile": "test/03-build-release.test.js",
+        "ruleId": "security",
+        "codeEvidenceHash": "44d0cf74c38d0e845603a27a10055de389d8be4c7baca7c05791572ead14c55c",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 660,
+      "endLine": 660,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "44d0cf74c38d0e845603a27a10055de389d8be4c7baca7c05791572ead14c55c"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-0c324ded70b9b50319105713cc90d4de",
+      "findingId": "mimosa-d941b48e1dc275b643136ca3",
+      "type": "finding_blocked",
+      "at": "2026-09-25T08:14:58.938Z",
+      "identity": {
+        "projectRelativeFile": "test/03-build-release.test.js",
+        "ruleId": "security",
+        "codeEvidenceHash": "4ef0c1b3e2677227386f2bd7923046f5648c8c2df7b5bd939f96c15763be2813",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 664,
+      "endLine": 664,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "4ef0c1b3e2677227386f2bd7923046f5648c8c2df7b5bd939f96c15763be2813"
+      },
+      "sequence": 1
+    },
+    {
+      "eventId": "hook-a2ab4dc9d1a5de84046926175186158c",
+      "findingId": "mimosa-e0c8517a770ca00c7291472d",
+      "type": "static_fix_verified",
+      "at": "2026-09-25T08:15:41.758Z",
+      "identity": {
+        "projectRelativeFile": "test/03-build-release.test.js",
+        "ruleId": "security",
+        "codeEvidenceHash": "44d0cf74c38d0e845603a27a10055de389d8be4c7baca7c05791572ead14c55c",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 660,
+      "endLine": 660,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "44d0cf74c38d0e845603a27a10055de389d8be4c7baca7c05791572ead14c55c"
+      },
+      "sequence": 2
+    },
+    {
+      "eventId": "hook-86b655c15f6f5785715967811f5e62eb",
+      "findingId": "mimosa-d941b48e1dc275b643136ca3",
+      "type": "static_fix_verified",
+      "at": "2026-09-25T08:15:41.758Z",
+      "identity": {
+        "projectRelativeFile": "test/03-build-release.test.js",
+        "ruleId": "security",
+        "codeEvidenceHash": "4ef0c1b3e2677227386f2bd7923046f5648c8c2df7b5bd939f96c15763be2813",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 664,
+      "endLine": 664,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "4ef0c1b3e2677227386f2bd7923046f5648c8c2df7b5bd939f96c15763be2813"
+      },
+      "sequence": 3
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "app/app.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "scripts/bench-store.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "scripts/verify-release.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "test/03-build-release.test.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "test/01-data-safety.test.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-25T08:20:34.896Z"
+}

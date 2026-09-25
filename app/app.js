@@ -396,12 +396,16 @@
         '</span>' +
         /* 0.39.x：提示词改为**常驻文本框**（使用者要求去掉铅笔按钮、直接改）。
            保存时机见 renderTable 上方说明；素材名着色随之取消（着色需要只读富文本）。
-           悬停文本框 → 右上角浮现两颗半透明按钮（0.39.x 移入）：复制 + 全屏查看/编辑。 */
+           悬停文本框 → 右上角浮现两颗按钮（0.39.x 移入）：复制 + 全屏查看/编辑。
+           纯图标 .glass-btn.icon；皮肤取值以「分镜 N · 详情」的复制钮为准
+           （使用者 2026-09-25 定标），同日又要求去掉按钮上的文字标签。 */
         '<div class="prompt-tawrap">' +
           '<textarea class="prompt-ta" data-ptext="' + s.id + '" maxlength="2000" ' +
             'placeholder="填写提示词…">' + esc(s.prompt || '') + '</textarea>' +
-          '<button class="prompt-copy" data-promptcopy="1" title="复制提示词">' + I.copy + '</button>' +
-          '<button class="prompt-copy" data-zoom="' + s.id + '" title="全屏查看 / 编辑提示词">' + I.expandDark + '</button>' +
+          '<div class="prompt-acts">' +
+            '<button class="glass-btn icon" data-promptcopy="1" title="复制提示词">' + I.copy + '</button>' +
+            '<button class="glass-btn icon" data-zoom="' + s.id + '" title="全屏查看 / 编辑提示词">' + I.expandDark + '</button>' +
+          '</div>' +
         '</div>' +
         '<span class="prompt-meta">模型 ' + esc(labelOf(opts().models, s.model) || s.model) + ' · ' + s.ratio + ' · ' + s.resolution + ' · motion ' + Number(s.motion).toFixed(2) +
           /* 上限统计常驻（0.38.0，使用者要求不再依赖打开资产弹窗才看得到）：
@@ -2733,14 +2737,16 @@
 
     if (t.closest('[data-check]')) { S.sel.has(s.id) ? S.sel.delete(s.id) : S.sel.add(s.id); renderTable(); renderPanel(); renderStatusbar(); return; }
 
-    /* 复制提示词（0.39.x）：悬停文本框右上角浮现的半透明按钮。
+    /* 复制提示词（0.39.x）：悬停文本框右上角浮现的按钮。
        复制的是文本框**当前内容**（含未保存的改动）；点击按钮先触发 textarea
-       失焦自动保存，再落到这里复制 —— 拿到的始终是最新文本。 */
+       失焦自动保存，再落到这里复制 —— 拿到的始终是最新文本。
+       第三个参数把按钮传进去，让它短暂变绿（.done）。图标按钮上没有文字，
+       所以 flashCopied 只给变绿、不写字 —— 那个函数对没有 <span> 的按钮本就兼容。 */
     const pcopy = t.closest('[data-promptcopy]');
     if (pcopy) {
       const wrap = pcopy.closest('.prompt-tawrap');
       const ta = wrap && wrap.querySelector('.prompt-ta');
-      copyText(ta ? ta.value : '', '提示词已复制');
+      copyText(ta ? ta.value : '', '提示词已复制', pcopy);
       return;
     }
 
