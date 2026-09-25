@@ -5604,23 +5604,24 @@
        · 两个动作的完整解释收进各自的 title 悬停提示，删除常驻说明段；
        · 「立即重启应用」不再常驻 —— 只有配置目录 ≠ 运行目录（切换过还没重启）时
          才出现警告条 + 重启按钮（状态由服务端 configuredDir / dataDir 驱动）。 */
-    rows.push('<div class="srow"><span class="k">当前位置</span>' +
-      '<code style="word-break:break-all">' + esc(p.dataDir) + '</code>' +
+    rows.push('<div class="dd-row"><span class="dd-label">当前位置</span>' +
+      '<code class="dd-path" tabindex="0" title="' + esc(p.dataDir) +
+        '" aria-label="当前数据目录：' + esc(p.dataDir) + '">' + esc(p.dataDir) + '</code>' +
       (window.JCDesktop && window.JCDesktop.openDataDir
-        ? '<button class="btn-mini" data-ddact="open" title="在文件管理器中打开当前数据目录">打开</button>' : '') +
+        ? '<button class="btn-mini dd-side-btn" data-ddact="open" title="在文件管理器中打开当前数据目录">打开</button>' : '') +
       '</div>');
 
     if (!p.canChange) {
-      rows.push('<p class="hint-sm">' + esc(p.reason || '当前模式不支持更改数据目录') + '</p>');
-      return '<section class="scard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
+      rows.push('<p class="hint-sm dd-reason">' + esc(p.reason || '当前模式不支持更改数据目录') + '</p>');
+      return '<section class="scard">' + head + '<div class="scard-bd dd-card-body">' + rows.join('') + '</div></section>';
     }
 
-    rows.push('<div class="srow"><span class="k">新的位置</span>' +
-      '<input class="input-sm" id="ddInput" style="flex:1;min-width:200px" placeholder="例如 D:\\JimengData（迁移要求空目录）">' +
+    rows.push('<div class="dd-row"><label class="dd-label" for="ddInput">新的位置</label>' +
+      '<input class="input-sm dd-input" id="ddInput" placeholder="例如 D:\\JimengData（迁移要求空目录）">' +
       (window.JCDesktop && window.JCDesktop.chooseDirectory
-        ? '<button class="btn-outline" data-ddact="pick">浏览…</button>' : '') +
+        ? '<button class="btn-outline dd-side-btn" data-ddact="pick">浏览…</button>' : '') +
       '</div>');
-    rows.push('<div class="cli-actions">' +
+    rows.push('<div class="cli-actions dd-actions">' +
       '<button class="btn-primary" data-ddact="move"' + (S.pathsBusy ? ' disabled' : '') +
         ' title="把库复制到新目录并改指向；原目录保留作为回退，确认无误后可自行删除。目标目录必须是空目录。">迁移并切换</button>' +
       '<button class="btn-outline" data-ddact="switch"' + (S.pathsBusy ? ' disabled' : '') +
@@ -5635,7 +5636,7 @@
         '</div>');
     }
 
-    return '<section class="scard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
+    return '<section class="scard">' + head + '<div class="scard-bd dd-card-body">' + rows.join('') + '</div></section>';
   }
 
   /* 数据目录状态只请求一次；失败也记下来，避免每次重绘都重试。 */

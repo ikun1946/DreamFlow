@@ -1226,6 +1226,25 @@ html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--ch
 .srow{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:44px;padding:2px 0}
 .srow .k{font-size:13px;color:var(--ink80)}
 .srow .v{font-size:13px;color:var(--primary-ink);cursor:pointer}
+/* 数据目录同时有长路径、可编辑路径和右侧按钮；独立列宽让两行始终对齐。
+   用容器宽度适配抽屉，因为桌面窗口宽时右侧抽屉仍只有 480px。 */
+.dd-card-body{container-type:inline-size}
+.dd-row{display:grid;grid-template-columns:76px minmax(0,1fr) 68px;align-items:center;gap:10px;min-height:38px}
+.dd-label{font-size:13px;color:var(--ink80);white-space:nowrap}
+.scard .dd-path{
+  display:block;min-width:0;box-sizing:border-box;padding:8px 10px;border-radius:8px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.dd-path:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.dd-input{width:100%;min-width:0;box-sizing:border-box}
+.dd-side-btn{display:inline-flex;align-items:center;justify-content:center;justify-self:stretch;padding-left:8px;padding-right:8px}
+.dd-actions,.dd-reason{margin-left:86px}
+.dd-reason{margin-top:0;margin-bottom:0}
+@container (max-width:420px){
+  .dd-row{grid-template-columns:minmax(0,1fr) 68px;row-gap:6px}
+  .dd-label{grid-column:1 / -1}
+  .dd-actions,.dd-reason{margin-left:0}
+}
 .switch{width:44px;height:26px;border-radius:999px;background:var(--track);position:relative;transition:background .18s;flex:none}
 .switch.on{background:var(--primary)}
 .switch i{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:999px;background:#fff;transition:transform .18s}
