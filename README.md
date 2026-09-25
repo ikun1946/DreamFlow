@@ -24,7 +24,7 @@
 | 生成引擎 | `dreamina` 创作 CLI（**唯一**生成引擎） |
 | 运行时依赖 | **零 npm 依赖**：后端只用 Node 内置模块，前端是原生 HTML/CSS/JS；`electron` / `electron-builder` 只在打包期用到 |
 | 自动化测试 | **212 个用例**（`npm test`，Node 内置 test runner） |
-| 统一检查 | `npm run check`（16 节 45 项一致性检查）+ `npm run lint`（7 项静态检查） |
+| 统一检查 | `npm run check`（16 节 46 项一致性检查）+ `npm run lint`（7 项静态检查） |
 | 端到端验收 | `npm run smoke:web`（网页版连通性）、`npm run e2e`（业务流 53 项断言）、桌面版 `JC_DESKTOP_SMOKE=1`（见下） |
 | 一键回归 | `npm run verify` = `check` + `lint` + `test` + `build:web` |
 
@@ -35,7 +35,7 @@
 - 长时间批量生成依赖本地 `dreamina` 登录态；登录失效需重新登录后手动续跑。
 - 网页版**没有鉴权**，默认只监听 `127.0.0.1`；`token` 只在需要给同机其它程序访问时开启。
 
-> ⚠ **对外公开分发前的阻塞项尚未全部解决**（安装包未签名、`dreamina` 再分发授权未确认、干净 Windows 环境验收未做）。完整清单见 **[AGENTS.md](AGENTS.md)「已知发布阻塞项」**。
+> ⚠ **对外公开分发前的阻塞项尚未全部解决**（签名证书未就位、`dreamina` 再分发授权未确认、干净 Windows 环境验收未做）。具体安装包是否签名须逐件验签；完整清单见 **[AGENTS.md](AGENTS.md)「已知发布阻塞项」**。
 
 ---
 
@@ -160,9 +160,9 @@ DreamFlow/
 
 采用语义化版本 `MAJOR.MINOR.PATCH`：**MAJOR** 不兼容变更 · **MINOR** 向后兼容的新增能力 · **PATCH** 缺陷修复与文档更新。
 
-门禁由 `npm test`（212 用例）、`npm run check`（45 项一致性检查）、`npm run lint`（7 项静态检查）、`npm run smoke:web`、`npm run e2e` 组成，`npm run verify` 一键串起。**这些数字由 `check-project.js` 第 16 节自动对账**，对不上就报错，所以不会悄悄过期。
+门禁由 `npm test`（212 用例）、`npm run check`（46 项一致性检查）、`npm run lint`（7 项静态检查）、`npm run smoke:web`、`npm run e2e` 组成，`npm run verify` 一键串起。**这些数字由 `check-project.js` 第 16 节自动对账**，对不上就报错，所以不会悄悄过期。
 
-**发版**：完整流程见 **[docs/版本发布与更新流程.md](docs/版本发布与更新流程.md)**。三句话版本：版本号要同步**两处三地**（`package.json` + README 两处）；tag 要**单独 push**（普通 `git push` 不推 tag）；安装包只走 **GitHub Releases**，绝不进 git。
+**发版**：完整流程见 **[docs/版本发布与更新流程.md](docs/版本发布与更新流程.md)**。三句话版本：版本号要同步 `package.json`、README「当前版本」与 `docs/CHANGELOG.md` 新条目（另同步锁文件）；tag 要**单独 push**（普通 `git push` 不推 tag）；安装包只走 **GitHub Releases**，绝不进 git。
 
 ### 变更记录
 

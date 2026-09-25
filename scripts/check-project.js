@@ -107,17 +107,15 @@ if (!PKG) {
       ok('README 当前版本与 package.json 一致：' + V);
     }
 
-    // README 是否包含当前版本的变更记录 —— 0.29.2 起**全部**搬到 docs/CHANGELOG.md。
-    // 0.29.0 / 0.29.1 的条目同时在 README 末尾的指针与 CHANGELOG.md 里（搬迁后
-    // 仍带 #### `V` 标记），所以两处都能命中；这里兼容两种形态。
+    // 0.29.2 起新版本的完整记录只写在 docs/CHANGELOG.md；只认这一处，
+    // 否则 README 残留的历史条目可能让「忘写现行变更记录」静默过关。
     const changelog = read('docs/CHANGELOG.md') || '';
-    const hasEntry = readme.includes('#### `' + V + '`') || readme.includes('## ' + V) || readme.includes('### ' + V) ||
-                    (changelog.includes('#### `' + V + '`') || changelog.includes('## ' + V));
+    const hasEntry = changelog.includes('#### `' + V + '`') || changelog.includes('## ' + V);
     if (!hasEntry) {
-      fail('README / docs/CHANGELOG.md 缺少 ' + V + ' 的变更记录',
-        '在 docs/CHANGELOG.md（0.29.2 起）或 README 历史段（0.29.0 / 0.29.1 兼容）里加一节「#### `' + V + '` — <日期>」');
+      fail('docs/CHANGELOG.md 缺少 ' + V + ' 的变更记录',
+        '在 docs/CHANGELOG.md 里加一节「#### `' + V + '` — <日期>」');
     } else {
-      ok('当前版本 ' + V + ' 的变更记录存在（README 或 docs/CHANGELOG.md）');
+      ok('当前版本 ' + V + ' 的变更记录存在于 docs/CHANGELOG.md');
     }
   }
 
@@ -649,6 +647,45 @@ if (outdatedHits.length) {
 } else {
   ok('无"没有自动化测试"类过期表述（历史记录类文件已豁免）');
 }
+
+/* 发布说明曾把已入库的 LICENSE 写成「没有」，又把已实现的 CLI 安装写成
+   「只做检测」；两份指南均标为现行，通用的状态标记检查抓不到这种事实漂移。
+   只读现行入口和现状小节，不扫描 CHANGELOG 等历史记录，避免旧事实误报。 */
+const releaseGuides = ['AGENTS.md', 'README.md', 'docs/项目文档.md', 'docs/版本发布与更新流程.md'];
+const releaseDrift = [];
+for (const file of releaseGuides) {
+  const lines = (read(file) || '').split('\n');
+  lines.forEach((raw, i) => {
+    const line = raw.replace(/[\*`]/g, '');
+    if (exist('LICENSE') && /仓库(?:目前)?(?:没有|无)\s*LICENSE/.test(line)) releaseDrift.push(file + ':' + (i + 1) + ' 许可状态');
+    if (exist('server/cli-installer.js') && /桌面版只做检测/.test(line)) releaseDrift.push(file + ':' + (i + 1) + ' CLI 安装状态');
+    if (exist('scripts/check-signing.js') && /安装包(?:目前)?(?:没有|无)\s*代码签名/.test(line)) releaseDrift.push(file + ':' + (i + 1) + ' 签名状态');
+  });
+}
+const projectGuide = read('docs/项目文档.md') || '';
+const releaseGuide = read('docs/版本发布与更新流程.md') || '';
+const projectStatus = (/### 10\.2[^\n]*\n([\s\S]*?)(?=\n### |\n## |$)/.exec(projectGuide) || [,''])[1];
+const releaseStatus = (/## 9\.[^\n]*\n([\s\S]*?)(?=\n## |$)/.exec(releaseGuide) || [,''])[1];
+if (exist('LICENSE') && exist('THIRD-PARTY-NOTICES.md')) {
+  for (const [name, section] of [['项目文档 §10.2', projectStatus], ['发布流程 §9', releaseStatus]]) {
+    if (!section.includes('LICENSE') || !section.includes('THIRD-PARTY-NOTICES.md')) releaseDrift.push(name + ' 缺少许可与声明现状');
+  }
+}
+if (exist('scripts/check-signing.js') && /signAndEditExecutable:\s*true/.test(read('electron-builder.yml') || '')) {
+  for (const [name, section] of [['项目文档 §10.2', projectStatus], ['发布流程 §9', releaseStatus]]) {
+    if (!section.includes('--require') || !section.includes('--verify')) releaseDrift.push(name + ' 缺少签名前后核验步骤');
+  }
+}
+if (exist('docs/CHANGELOG.md')) {
+  const dodAgent = (/## 完成一项工作后的固定动作[^\n]*\n([\s\S]*?)(?=\n## |$)/.exec(read('AGENTS.md') || '') || [,''])[1];
+  const dodProject = (/## 9\. 完成一项工作后的固定动作[^\n]*\n([\s\S]*?)(?=\n## |$)/.exec(projectGuide) || [,''])[1];
+  const versionRelease = (/## 2\. 版本号[^\n]*\n([\s\S]*?)(?=\n## |$)/.exec(releaseGuide) || [,''])[1];
+  for (const [name, section] of [['AGENTS.md 收尾清单', dodAgent], ['项目文档 §9', dodProject], ['发布流程 §2', versionRelease]]) {
+    if (!section.includes('docs/CHANGELOG.md')) releaseDrift.push(name + ' 未指向现行变更记录');
+  }
+}
+if (releaseDrift.length) fail('发布文档现状漂移：' + releaseDrift.join('；'), '以实际许可、CLI 安装、签名配置及 CHANGELOG 位置同步现行指南');
+else ok('发布文档现状与许可、CLI 安装、签名配置、CHANGELOG 位置一致');
 
 // ════════════════════════════════════════════════════════════════
 // 12. 收尾清单一致性（AGENTS.md ↔ docs/项目文档.md §9，P0-3）

@@ -24,8 +24,8 @@ GitHub 仓库名与 clone 下来的文件夹名都是 `DreamFlow`；界面上显
 
 1. **改完 `app/` 必须重建网页版**：`node build.js`。脚本自带校验（`$$` 是否被吞、script/style 块数量、有无残留外部引用），不通过会报错退出。忘了这步，`dist/` 里留的就是旧代码。
 2. **真跑一遍才算完成**：`npm run verify`（check + test + build）全绿只是**入场券**，**"语法通过"不等于"能用"**。改 UI 就 `npm start` 或跑 `npm run smoke:web` / `npm run e2e` 实际点一遍；改后端就发真实请求验证。**不要把"应该能跑"当结论。**
-3. **更新版本号（两处三地）**：`package.json`（唯一生效来源）+ `README.md` 的「当前版本」+「变更记录」。新增能力 → MINOR，修缺陷 / 改文档 → PATCH。
-4. **写变更记录**：在 README「变更记录」顶部加一段。**写清"为什么改"和"踩过什么坑"**，不要只写"优化了 X" —— 这段是后来者唯一的上下文来源。
+3. **更新版本号（三份文件、三个位置）**：`package.json`（唯一生效来源）+ `README.md` 的「当前版本」+ `docs/CHANGELOG.md` 的新版本条目；有锁文件时同步 `package-lock.json`。新增能力 → MINOR，修缺陷 / 改文档 → PATCH。
+4. **写变更记录**：在 `docs/CHANGELOG.md` 顶部加一段。**写清"为什么改"和"踩过什么坑"**，不要只写"优化了 X" —— 这段是后来者唯一的上下文来源。
 5. **同步受影响的文档**：改了接口 → 更新 `docs/前端页面与接口对接说明.md`；改了发布方式 → 更新 `docs/版本发布与更新流程.md`；**任何会改变架构描述的改动，都要在 `docs/更改文档.md` 留痕**（这份文档历史上就因为漏记而落后过好几个版本，2026-09-21 才补回来）；**改了本清单本身 → 同步 `docs/项目文档.md` §9**（两处内容必须一致，不一致时以本文件为准）。
 6. **提交并推送**：`git add -A` → `git commit` → `git push origin main`。
 7. **发版（可选，取决于是否要交付给使用者）**：见 `docs/版本发布与更新流程.md`。两个最容易忘的点：tag **必须单独 push**（`git push origin vX.Y.Z`，普通 push 不推 tag）；安装包只走 GitHub Releases，**绝不进 git**。
@@ -40,7 +40,7 @@ GitHub 仓库名与 clone 下来的文件夹名都是 `DreamFlow`；界面上显
 
 发版相关的三件事，一句话版本：
 
-1. 版本号要同步**两处三地**：`package.json`（唯一生效来源）+ `README.md` 的「当前版本」+「变更记录」
+1. 版本号要同步**三份文件、三个位置**：`package.json`（唯一生效来源）+ `README.md` 的「当前版本」+ `docs/CHANGELOG.md` 的新版本条目；有锁文件时同步 `package-lock.json`
 2. tag 必须**单独 push**：`git push origin vX.Y.Z`（普通 `git push` 不推 tag）
 3. 安装包只走 **GitHub Releases**，绝不进 git（`release/` 已 gitignore）
 
@@ -87,7 +87,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 | 命令 | 管什么 | 现在的状态 |
 |---|---|---|
 | `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y / 错误码四件套 / 数据目录 十组） | **212 用例全通** |
-| `npm run check` | 一致性门禁：`scripts/check-project.js`（版本漂移、dist 同步、图标、许可、更新器、旧名残留、过期表述、收尾清单一致性、docs 状态标记、路由计数、git remote、文档数量口径…） | **45 项全通** |
+| `npm run check` | 一致性门禁：`scripts/check-project.js`（版本漂移、dist 同步、图标、许可、更新器、发布文档现状、旧名残留、过期表述、收尾清单一致性、docs 状态标记、路由计数、git remote、文档数量口径…） | **46 项全通** |
 | `npm run lint` | 静态检查：`scripts/lint.js`（语法 / `debugger` / 前端调试输出 / 相对 require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） | **7 项全通** |
 | `npm run smoke:web` | 网页版连通性：起真服务 → 首页 / 接口 / 鉴权 / 边界 → 关停无残留 | 通过 |
 | `npm run e2e` | 端到端业务流：建项目 → 工作区 → 素材（元数据 + 上传）→ 分镜（创建 + 时长钳制）→ 提示词导入 → 绑定/解绑 → 干跑 → 硬删除预检 → 彻底删除 + 归档 + 审计 → 磁盘一致性 | **53 项断言全通** |
@@ -169,14 +169,14 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 
 **自动化测试真实应用时的坑**（2026-09-21 踩到）：必须先让 `desktop-config.json` 里 `legacyImportChecked: true`，否则首次启动会弹**旧数据导入对话框**并阻塞窗口创建。表现是调试端口 `/json` 一直返回 0 个目标、应用日志停在"外部工具"那一行 —— 看起来像"应用起不来"，实际是在等用户点按钮。
 
-## 已知发布阻塞项（2026-09-21 复核）
+## 已知发布阻塞项（2026-09-25 复核）
 
-对外公开分发前必须处理。**前两项已落地，后三项仍未解决** —— 别把"已配置"当成"已可用"：
+对外公开分发前逐项核验。许可文件、CLI 获取路径、FFmpeg 分发边界与签名配置已有实现；CLI 授权、签名证书和干净 Windows 环境验收仍待完成。别把"已配置"当成"已可用"：
 
-1. ~~仓库**没有 `LICENSE``~~ → **已解决**：新增 `LICENSE`（专用协议，明确禁止再分发）+ `THIRD-PARTY-NOTICES.md`（六节：随包分发 / 调用但不分发 / 开发期依赖 / 运行期零依赖 / 字体素材 / 全文获取）；`package.json` 的 `license` 字段改为 `SEE LICENSE IN LICENSE`；两者已写入 `electron-builder.yml` 的 `files`，随包分发。
+1. **许可文件已入库**：`LICENSE`（专用协议，明确禁止再分发）+ `THIRD-PARTY-NOTICES.md`（六节：随包分发 / 调用但不分发 / 开发期依赖 / 运行期零依赖 / 字体素材 / 全文获取）；`package.json` 的 `license` 字段为 `SEE LICENSE IN LICENSE`；两者已写入 `electron-builder.yml` 的 `files`，随包分发。
 2. `dreamina.exe` 未签名、**未确认允许再分发** → 因此**不内置**，改为运行时从官方 CDN 下载（见上一节；这不改变分发主体，但"官方是否允许"这个问题本身仍未答复）。
 3. FFmpeg 是 **GPL 构建**且单个约 212 MB → 同样未内置。合规路径锁定为"**只调用、不分发**"，已在 `THIRD-PARTY-NOTICES.md` 写明边界在**进程边界**上、不在代码边界上。
-4. ~~安装包**无代码签名**`~~ → **已配置，但证书未就位**：`electron-builder.yml` 加了 `signAndEditExecutable: true` + `signtoolOptions`（sha256 / publisherName / RFC3161 时间戳），配套 `scripts/check-signing.js`（自检 / `--verify` 逐文件验签 / `--require` 发布卡点）。**证书与密码只走环境变量** `CSC_LINK` + `CSC_KEY_PASSWORD`，绝不入库；**未配置时构建仍会成功**（开发机通路），所以正式发布前**必须**跑 `node scripts/check-signing.js --require` 卡住。
+4. **签名配置已具备，证书未就位**：`electron-builder.yml` 加了 `signAndEditExecutable: true` + `signtoolOptions`（sha256 / publisherName / RFC3161 时间戳），配套 `scripts/check-signing.js`（自检 / `--verify` 逐文件验签 / `--require` 发布卡点）。**证书与密码只走环境变量** `CSC_LINK` + `CSC_KEY_PASSWORD`，绝不入库；**未配置时构建仍会成功**（开发机通路），所以正式发布前**必须**跑 `node scripts/check-signing.js --require`，出包后跑 `node scripts/check-signing.js --verify`，不能从配置推断产物已签名。
    - **不需要装 Windows SDK**（2026-09-23 实测）：electron-builder 26 自带 signtool，缓存在 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\<id>\windows-10\x64\`。`check-signing.js` 已加这条兜底查找（SDK 优先、自带版兜底），所以 `--verify` 在没有 SDK 的机器上也能跑。
    - ⚠ `--verify` 会扫 `release/` 下**全部** `Setup.exe`，历史安装包未签名会让整体报失败。跑之前先把旧包移进 `release-archive/`。
 5. **干净 Windows 环境验收未做**：安装包在无 Node、无缓存的干净机器上的**首次安装 / 首启 / 升级 / 卸载**四步，尚未在真实干净环境完整跑过。
