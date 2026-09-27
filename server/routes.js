@@ -243,7 +243,23 @@ function makeRouter(cfg, adapter) {
        所有接口都用 scopeOf(ctx)（**项目级**作用域）：
        资产属于 Project（指令 §3.3），且计划 §4.2 明确要求"所有资产接口均校验 projectId，
        不允许跨项目读取或采用任务"。校验的具体实现是 services.findScopedAsset。 */
-    ['GET', /^\/system\/image-provider$/, async (ctx) => ok(ctx.res, S.imageProviderStatus(adapter))],
+    /* 0.42.0：列出所有 provider 及其 model，附带 configured 标记。
+       未配置的 provider 也列出（页面要让用户看到"还有别的可选"），但 configured=false。 */
+    ['GET', /^\/system\/image-providers$/, async (ctx) => {
+      const REGISTRY = require('./image-registry');
+      const out = REGISTRY.listProviders().map((p) => ({
+        providerId: p.providerId,
+        label: p.providerLabel,
+        description: p.description || '',
+        configured: !!(adapter.imageProviders && adapter.imageProviders[p.providerId] && adapter.imageProviders[p.providerId].configured()),
+        models: p.models.map((m) => ({ id: m.modelId, label: m.modelLabel, sizeSpec: m.sizeSpec }))
+      }));
+      ok(ctx.res, out);
+    }],
+    /* 0.42.0 兼容：旧端点 /system/image-provider 现在回**默认 provider**的状态。
+       形状与 0.41.x 完全一致（configured / provider / model / baseUrl），
+       旧前端能继续读这个字段集。新代码应该用 /system/image-providers。 */
+    ['GET', /^\/system\/image-provider$/, async (ctx) => ok(ctx.res, (adapter.imageProvider && adapter.imageProvider.status()) || { configured: false, provider: null, model: null })],
     // 取资产最新信息（供分镜预览弹窗获取当前提示词）。仅当前项目。
     ['GET', /^\/assets\/([^/]+)\/image-jobs\/current$/, async (ctx) => ok(ctx.res, S.currentImageJob(ctx.db, ctx.params[0], scopeOf(ctx)))],
     ['GET', /^\/assets\/([^/]+)\/image-jobs$/, async (ctx) => ok(ctx.res, S.listImageJobs(ctx.db, ctx.params[0], scopeOf(ctx)))],

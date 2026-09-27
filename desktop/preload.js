@@ -43,14 +43,14 @@ const api = {
     ipcRenderer.on('update:state', h);
     return () => { try { ipcRenderer.removeListener('update:state', h); } catch (e) { /* 忽略 */ } };
   },
-  /* 图片生图密钥（2026-09-25 阶段 3）。
-     ★ 只有这三个动作，且**没有 getKey** —— 密钥存进去就拿不回来。
-       keyStatus 只回 { hasKey, encryption } 布尔状态；
-       setKey 收明文（单向），clearKey 只删除。
-     这样即使页面被塞进恶意脚本，也只能"写入/删除"，读不到已存的密钥。 */
-  imageKeyStatus: () => ipcRenderer.invoke('image:keyStatus'),
-  imageSetKey: (plain) => ipcRenderer.invoke('image:setKey', plain),
-  imageClearKey: () => ipcRenderer.invoke('image:clearKey')
+  /* 图片生图密钥（多 provider · 0.42.0）。
+     ★ 仍然没有 getKey —— 密钥存进去就拿不回来。
+     listProviders / keyStatus / setKey / clearKey 都带 providerId；
+     旧调用 imageKeyStatus / imageSetKey / imageClearKey 仍工作（不带 providerId → 默认 provider）。 */
+  imageListProviders: () => ipcRenderer.invoke('image:listProviders'),
+  imageKeyStatus: (providerId) => ipcRenderer.invoke('image:keyStatus', providerId),
+  imageSetKey: (providerId, plain) => ipcRenderer.invoke('image:setKey', providerId, plain),
+  imageClearKey: (providerId) => ipcRenderer.invoke('image:clearKey', providerId)
 };
 
 contextBridge.exposeInMainWorld('JCDesktop', api);

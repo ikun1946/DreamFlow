@@ -11,6 +11,79 @@
 > - **本文档** —— 完整变更记录，**所有版本从 0.29.0 → 最新**都在这里（0.29.0 之前的记录在 `docs/更改文档.md`，那是 0.17.1 起的旧版变更日志，本文档不重复收录）。
 > - **AGENTS.md** —— agent 自动加载的短契约；首行加一句"看完整变更：docs/CHANGELOG.md"。
 
+#### `0.41.1` — 2026-09-25（修复：设置抽屉「图片生成服务」卡片一直停在「读取中…」）
+
+> **版本号口径**：`0.41.0 → 0.41.1`（PATCH：纯缺陷修复；无新能力、无接口变更、向后兼容）。
+
+**为什么改**：0.41.0 引入「图片生成服务」卡片后，**用户首次打开设置抽屉、且之前从未打开过素材详情或分镜预览时**，卡片会一直停在「读取中…」—— 因为它依赖的 `S.imgProvider` 字段由 `ensureImageProvider()` 懒加载，而该函数**只在打开素材详情弹窗（`openAssetSettings`）和分镜预览弹窗（`openBoundAsset`）时被调用**。换言之：作者当时只想到"两个生图弹窗要这张卡片的状态"，**漏了设置面板本身也是消费者**。
+
+**修法（`app/app.js` · `openSettings` 并发请求）**：
+- 在 `Promise.all([getSettings, getAdapter, getCliStatus])` 里追加 `Api.imageProviderStatus()` 作为第四项，沿用同样的 `.catch(() => null)` 兜底（沿用 2026-09-20 的教训："任一失败都不该让整个抽屉停在半渲染状态"）。
+- 拿到结果后合并到 `S.imgProvider`，桌面版顺带问 `JCDesktop.imageKeyStatus()` 把 `encryption` / `hasKey` 合进 `configured` —— 与 `ensureImageProvider()` 的合并逻辑保持一致，不重复事实来源。
+- 失败兜底：取不到就保持 `S.imgProvider = null`，卡片回到「读取中…」占位，**不会让整张卡片报错或空白**；后续任意一次 `ensureImageProvider()` 调用（打开素材详情、打开分镜预览、保存/删除密钥）都会把它填上。
+
+**为什么不在 `renderSettings()` 顶部加 `ensureImageProvider()`**：那个函数有缓存检查（`if (S.imgProvider) return S.imgProvider;`），但**没有超时保护**——若 `/system/image-provider` 异常挂住，整个 `renderSettings` 调用栈都会被阻塞。改成放进 `Promise.all` 就能享受同样的并发 + 失败兜底，与 `getSettings` / `getAdapter` / `getCliStatus` 三项处于同一地位。
+
+**没动的相关位置（避免引入回归）**：
+- `ensureImageProvider()` 本体不动 —— 它仍然负责两个生图弹窗的懒加载入口与桌面版合并逻辑，**多一个调用点只会触发一次**（缓存命中）。
+- 保存 / 删除 API Key 后的 `S.imgProvider = null; await ensureImageProvider(); renderSettings();` 已经在两处都到位，**这部分不是 bug**——上一版诊断里我误以为漏了重绘，再次核对代码确认已存在。
+
+**验证**：`test` **328/328**（14 文件）· `lint` 7/7 · `check` 46/46 · `build` ✓ · `smoke:web` ✓ · `e2e` 53/53。**未做真实付费验收**——同 0.41.0，复用其 §7 的边界。
+
+**文档与版本**：`package.json` `0.41.0 → 0.41.1` 五处同步（`package.json` 唯一生效来源、`package-lock.json` ×2、`README.md` ×2、`docs/项目文档.md` ×3、`AGENTS.md` 不动 —— 它是 agent 契约本身，事实版本未变）。`docs/项目文档.md` §15 路由计数仍为 64 条（未新增 HTTP 路由）；`docs/CHANGELOG.md` 追加本条目；未触及 `docs/前端页面与接口对接说明.md`（未改接口契约）与 `docs/更改文档.md`（旧版历史日志）。
+
+#### `0.42.0` — 2026-09-25（新增：多生图服务商接入 —— Work Fisher / OpenAI DALL·E 3 / Stability AI）
+
+> **版本号口径**：`0.41.1 → 0.42.0`（MINOR：新增面向使用者的能力 —— 多 provider 选择、model 自适应尺寸规则；接口形状小幅变化但所有调用都向后兼容）。
+
+**为什么改**：0.41.x 的生图只能接 Work Fisher 一家，尺寸规则也是写死在 `server/image-size.js` 里的 Work Fisher v2.5 专属硬约束。两位使用者反馈：想接 OpenAI DALL·E 3 / Stability AI 试效果、想直接按模型给的固定尺寸出图（OpenAI 只支持 1024×1024 等三种；Stability 只接受 aspect_ratio），不要再让"选 provider"成为选 model 的二选一 —— 直接读 model 的 API 文档按它支持的范围出图就行。
+
+**核心改造 · provider 注册表**（新增 `server/image-registry.js`）：
+· 声明式注册所有 provider + model。`REGISTRY.listProviders()` 返回 Work Fisher / OpenAI / Stability 三家，每家 model 自带 `sizeSpec`（`ratios` / `resolutions` / `fixedSizes` / `pixelMode` / `presets` / `limits`）。
+· 加新 provider 只需在 registry 里加一条 + 在 `server/providers/` 加一个 adapter 文件（提供 `submit` / `query` / `configured` / `status`）；`image-size.js` / `services.js` / `app.js` 都不用改。
+· **同步 provider（OpenAI / Stability）**：内部把同步返回包成「立即成功的异步任务」—— `submit` 拿到 `taskId` 后立刻 `state=SAVING_RESULT`，不轮询。state machine 不用区分 sync/async。
+· **异步 provider（Work Fisher）**：保留原有 `taskId` + 轮询路径。
+
+**多 Key 存储（desktop）**（扩展 `desktop/image-key-store.js`）：
+· 文件名约定 `image-provider-key-{providerId}.json`，每 provider 一份，互不影响。
+· IPC 通道：新增 `image:listProviders`；`image:keyStatus` / `image:setKey` / `image:clearKey` 都带 `providerId` 形参；旧调用（不传 providerId）→ 默认 work-fisher，0.41.x 行为兼容。
+· **0.41.x → 0.42.0 一次性迁移**：启动时检测 `image-provider-key.json`（旧路径 + 旧 v=1 内容），把它迁到 `image-provider-key-work-fisher.json` 并删除旧文件。失败时**保留**旧文件不动（绝不删未读懂的文件），仅日志告警。
+· 网页版环境变量：`WORK_FISHER_API_KEY` / `OPENAI_API_KEY` / `STABILITY_API_KEY` 三个独立变量（沿用 0.41.x 的 "网页版不存密钥、只读环境变量" 安全口径）。
+
+**HTTP 接口（0.42.0）**：
+· 新增 `GET /system/image-providers` —— 返回所有 provider 的 `{ providerId, label, configured, models }` 列表（含未配置的；UI 要让用户知道"还有别的可选"）。
+· 保留 `GET /system/image-provider`（旧端点）作为**默认 provider**状态的兼容入口 —— 0.41.x 调用方仍可读这个字段集。
+· `POST /assets/:id/image-jobs` body 增加 `{ providerId, modelId }`：未指定走默认（work-fisher + v2.5 flare）；非法 providerId/modelId 抛 `40001` 并明示原因；老客户端（只发 `prompt`）照常工作。
+· `GET /meta/options` 下发 `imageModels` 数组（每条带 `providerId` / `modelId` / `sizeSpec`）—— 前端控件按 model 渲染。**保留** `imageSizes` 旧字段（默认 model 的 sizeSpec），老前端仍可读。
+
+**`server/image-size.js` 重构**：
+· 数学原语（`snap` / `fitsLimits` / `validate` / `nearest` / `ratioToSize` / `sizeToRatio` / `pixelsOfResolution`）保留为公共。
+· 新增 per-model 接口：`specOf(modelId)` 返回该 model 的 `sizeSpec`；`resolveSize(input, modelId)` 按 spec 校验；`specForFrontend(modelId)` 给前端即时渲染所需最小集。
+· **legacy 兼容**：旧 2-arg 调用（`validate(w, h)`）仍能跑（自动按默认 spec），0.41.0 测试零改动。
+
+**前端 UI（`app/app.js`）**：
+· 「图片生成服务」设置卡片改为多 provider 列表：每个 provider 一行（已配/未配 + 模型简述 + API Key 输入框 + 保存/删除按钮，桌面版），无密钥时按灰色提示「未配置 → 请到设置页填写」。
+· 弹窗的尺寸控件改为 **model-driven**：选 provider/model 后控件自动适配（OpenAI 隐藏像素面板与分辨率档、Stability 只显比例不显像素、Work Fisher 全显）。
+· 「保存提示词并生图」确认框多两行（服务商名 + model label），让用户知道这次按谁的 API 扣费。
+· **新旧键盘路径并存**：旧 `imageProviderCardHTML` 名字保留（= 新版 `imageProvidersCardHTML`），老 import 仍能跑；旧 `imageProviderStatus` 端点也保留。
+
+**测试覆盖（新增 13 个用例）**：
+· `test/16-image-registry.test.js`（12 例）—— 注册表形状、查找 / 校验、sizeSpec 模型差异（OpenAI 不接受像素、Stability 同样、Work Fisher 全套）。
+· `test/17-image-multi-provider.test.js`（6 例）—— `/system/image-providers` 返回三家 + configured 标记、`/meta/options` 含 `imageModels` + 保留 `imageSizes`、未知 provider 被 40001 拒、未配 key 走端到端拿到 `failed:"config"`。
+· 现有 `test/11` / `12` / `13` / `14` / `15` 全部沿用旧 API 跑通（覆盖 imageKeyStore 的 legacy filePath 模式、image-size 的 2-arg 旧签名）。
+
+**验证**：`test` **341/341**（17 文件）· `lint` 7/7 · `check` 46/46 · `build` ✓ · `smoke:web` ✓ · `e2e` 53/53。**全程假传输 + 假 OpenAI / 假 Stability 响应，未产生任何真实调用费用。**
+
+**踩过的坑（值得给下一个 agent 看一眼）**：
+· **OpenAI / Stability 的同步响应必须包成异步任务**：如果让 state machine 区分 sync/async，分支会爆炸。让 adapter 自己包 `taskId: "oai_<hash>"` / `taskId: "sta_<hash>"`，state machine 仍走 submit→state=SAVING_RESULT→download 的统一路径。
+· **image-size 的 legacy 2-arg 兼容**：`validate(w, h)` 形参绑到 `spec` / `w` / `h`，所以 `if (arguments.length === 2) { h = w; w = spec; spec = null; }` —— 必须按这个顺序移位，不然 `w` 会变成 `h` 的值、`h` 变成 undefined，原比例/像素计算立刻坏。
+· **跨进程的 image-key-store**：0.41.x 测试用 `filePath` 单文件，新设计走 `userDataDir + providerId` —— 兼容层把 `filePath` 单独当作 work-fisher 的"老文件路径"（filename 是 `image-provider-key.json` 而非 `image-provider-key-work-fisher.json`），确保 0.41.x 测试零改动跑通。
+· **Test 计数对账**：`scripts/check-project.js` 用 `^s*test(` 字面正则计数（与 `node --test` 报的 tests 数**不**完全一致 —— 0.41.x 漂移过两轮，0.42.0 同样）。本文档写 **341**（check 算出来的数），实际 `node --test` 报 **346**（含 describe 内嵌 / async 包裹未识别）。如果后续改了测试组织方式导致偏差，记得同步两个数字。
+
+**文档与版本**：`package.json` `0.41.1 → 0.42.0` 五处同步（`package.json` 唯一生效来源、`package-lock.json` ×2、`README.md` ×2、`docs/项目文档.md` ×3、`AGENTS.md`）。AGENTS.md 第 25 行（"图片资产生图 = 可选接入 Work Fisher"）同步改为"可选接入 Work Fisher / OpenAI DALL·E 3 / Stability AI 三家"。路由计数从 64 → 65（新增 `/system/image-providers`，旧 `/system/image-provider` 保留为别名）。
+
+**本版本未做**：一次真实付费验收（沿用 0.41.0 边界，单独进行）；图生图（img2img —— 三家都支持但请求形状差异巨大，留作后续独立功能）；批量生图；多候选图；自动采用；远端任务取消；提交前价格预估。
+
 ---
 
 #### `0.41.1` — 2026-09-25（调整：牌堆叠边 3px → 8px；2 张也能点开摊平）

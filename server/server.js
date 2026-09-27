@@ -208,14 +208,39 @@ function createServer(opts) {
        适配器"路径每次 spawn 现取"是同一条教训。
      ⚠ 凭据来源由调用方注入（cfg.imageKeyProvider）；网页版是环境变量、
        桌面版是主进程 IPC。**绝不在 server/ 里读 Electron**。 */
-  const imageProvider = makeImageProvider({
-    apiKey: typeof cfg.imageKeyProvider === 'function'
-      ? cfg.imageKeyProvider
-      : () => cfg.workFisherApiKey || ''
-  }, {
-    baseUrl: cfg.imageProviderBase || undefined,
-    model: cfg.imageProviderModel || undefined
+  /* ---------------- 图片生图 · 多 provider 注册（0.42.0） ----------------
+     启动时为每个 provider 创建一个 adapter 实例，按 providerId 索引。
+     桌面版 cfg.imageKeyProvider(providerId) 返回该 provider 的 key；网页版按
+     providerKeyEnv 读环境变量。adapter 的 configured() 自己判断"是否有 key"。
+     默认 provider 仍指向 imageProvider（向后兼容 0.41.x 代码读 worker.imageProvider）。 */
+  const REGISTRY = require('./image-registry');
+  function imageKeyFor(providerId) {
+    if (typeof cfg.imageKeyProvider === 'function') return cfg.imageKeyProvider(providerId);
+    const entry = REGISTRY.findProvider(providerId);
+    if (!entry) return '';
+    const envName = entry.providerKeyEnv;
+    /* 兼容两种命名：
+       · 新：cfg[envName] / process.env[envName] —— 与 providerKeyEnv 对齐（WORK_FISHER_API_KEY 等）
+       · 旧（0.41.x）：cfg.workFisherApiKey
+     前者优先级高于后者；后者覆盖仅 Work Fisher provider。
+     桌面版：imageKeyProvider 是函数（由 main.js 注入），走上面那一支；这里只服务网页版 + 测试。 */
+    if (cfg[envName] != null) return String(cfg[envName]).trim();
+    if (process.env[envName]) return String(process.env[envName]).trim();
+    /* 旧命名 fallback —— 仅 work-fisher provider 用 cfg.workFisherApiKey */
+    if (providerId === 'work-fisher' && cfg.workFisherApiKey != null) return String(cfg.workFisherApiKey).trim();
+    return '';
+  }
+  const imageProviders = {};
+  REGISTRY.listProviders().forEach((p) => {
+    /* 每个 provider 的默认 model 是该 provider 的第一个 model（不再用 registry 默认，
+       否则 OpenAI/Stability 的实例会被配上 workfisher-... 而找不到 model）。 */
+    const def = p.models[0];
+    imageProviders[p.providerId] = makeImageProvider(
+      { apiKey: () => imageKeyFor(p.providerId) },
+      { providerId: p.providerId, modelId: def.modelId, baseUrl: cfg['imageProviderBase-' + p.providerId] || undefined }
+    );
   });
+  const imageProvider = imageProviders[REGISTRY.defaultProviderId()];
   const imageJobs = makeImageJobs({
     db: () => store.load(),
     save: () => store.save(),
@@ -225,6 +250,8 @@ function createServer(opts) {
        此时进程被杀，库里指向新图、而新图可能没写全，原图又没了。 */
     flush: () => store.flush(),
     provider: imageProvider,
+    /* 0.42.0 多 provider：按 providerId 取 adapter；缺省回退到默认 provider */
+    providerFor: (providerId) => imageProviders[providerId] || imageProvider,
     /* 任务推进与资产删除都会用到；每次现取，避免持有过期引用 */
     findAssetForJob: (job) => store.load().assets.find((a) => a && a.id === job.assetId) || null,
     assetFileOf: (asset) => P.assetFileOf(asset),
@@ -248,6 +275,7 @@ function createServer(opts) {
      循环依赖图多一个环（见 services.js 顶部那段警告）。 */
   S.setImageJobs(imageJobs);
   worker.imageProvider = imageProvider;
+  worker.imageProviders = imageProviders;
   worker.imageJobs = imageJobs;
 
   const dispatch = makeRouter(cfg, worker);
@@ -483,7 +511,7 @@ function createServer(opts) {
     start, stop, address,
     get url() { return address().url; },
     config: cfg,
-    server, worker, dreamina, imageProvider, imageJobs, store
+    server, worker, dreamina, imageProvider, imageProviders, imageJobs, store
   };
 }
 

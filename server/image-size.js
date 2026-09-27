@@ -1,296 +1,311 @@
 'use strict';
 /* ============================================================
-   image-size.js —— 生图尺寸（宽高比 / 像素）的唯一事实来源
+   image-size.js —— 生图尺寸（宽高比 / 像素）的数学原语 + per-model 适配（0.42.0）
 
-   为什么单独一个文件（2026-09-25）：
-   尺寸规则**同时**被三处需要 —— 前端要即时校验与联动换算、服务端要
-   在计费提交前再校验一次、测试要能把边界穷举掉。规则写两遍必然漂移，
-   而这里的漂移代价是"提交出去被服务商拒绝"或"扣了钱拿到意想不到的尺寸"。
-   所以规则只写在这一处，前端通过 /meta/options 拿同一份枚举与边界。
+   0.41.0 设计：所有尺寸规则**集中**在这一处（避免两处写必然漂移）。
+   0.42.0 变更：尺寸规则**变成 per-model** —— Work Fisher v2.5 的 16 倍数 ≤3840
+     与 OpenAI DALL·E 3 的 1024×1024 固定尺寸是两套不同的硬约束，硬塞进
+     "一份规则"会导致其中一个永远不对。
+   解法：把数学原语（snap / fitsLimits / validate / nearest / ratioToSize /
+     sizeToRatio / pixelsOfResolution）保留为公共；具体 LIMITS / RATIOS /
+     RESOLUTIONS / PRESETS 由 registry 的 sizeSpec 注入。
 
-   ⚠ 规则直接来自服务商官方文档（workfisher-image-g-v2.5-flare 的 size 参数）：
-     · `size` 接受**比例枚举**（1:1 / 16:9 / …）**或精确像素 `WxH`**；
-     · 宽高须为 **16 的倍数**，且均 **≤ 3840**；
-     · 最长边与最短边的比 **≤ 3:1**；
-     · 总像素 **655360 – 8294400**。
-   改这里之前先回查服务商文档 —— 这些数字不是我们定的。
+   ⚠ 调用方：
+     · 前端控件：读 specForFrontend() 拿到所有 model 的 sizeSpec；
+     · 服务端校验：resolveSize(input, modelId)；
+     · 服务商端请求体：把 resolveSize 结果透传给对应 provider。
+   不变量：所有这些都从同一份 registry 读，不会漂移。
+
+   ⚠ 0.42.0 老客户端兼容：未传 modelId 时按"默认 model"（Work Fisher v2.5
+     Flare）走 —— 与实施计划 §2 一致。
    ============================================================ */
+const REGISTRY = require('./image-registry');
 
-/* 比例枚举：与服务商文档逐项对齐（顺序按常用度排，界面直接按这个序渲染） */
-const RATIOS = [
-  { id: '1:1', w: 1, h: 1 },
-  { id: '4:3', w: 4, h: 3 },
-  { id: '3:4', w: 3, h: 4 },
-  { id: '16:9', w: 16, h: 9 },
-  { id: '9:16', w: 9, h: 16 },
-  { id: '3:2', w: 3, h: 2 },
-  { id: '2:3', w: 2, h: 3 },
-  { id: '5:4', w: 5, h: 4 },
-  { id: '4:5', w: 4, h: 5 },
-  { id: '2:1', w: 2, h: 1 },
-  { id: '1:2', w: 1, h: 2 },
-  { id: '21:9', w: 21, h: 9 },
-  { id: '9:21', w: 9, h: 21 },
-  { id: '3:1', w: 3, h: 1 },
-  { id: '1:3', w: 1, h: 3 }
-];
-/* 服务商还支持 `auto`（由它按提示词决定）。单独放，因为它不是"比例"。 */
-const RATIO_AUTO = 'auto';
+/* ---------------- 数学原语（与具体 model 无关） ---------------- */
 
-/* 分辨率档位（服务商文档：1k / 2k / 4k，默认 1k）。
-   指定精确像素尺寸时服务商会忽略 resolution —— 但我们仍然把档位保留下来，
-   因为"比例模式"下最终要把它一起发出去。 */
-const RESOLUTIONS = ['1k', '2k', '4k'];
-
-/* 像素预设：常见说法 → 具体尺寸。
-   ⚠ 全部**必须是 16 的倍数** —— 服务商硬性要求，且文档明确表示违规行为"未说明"
-      （既不保证报错也不保证自动调整），所以我们只能发确定合法的值。
-   副作用是**不能**用教科书上的 1920×1080 / 1080×1920（1080 / 16 = 67.5，不是整数）：
-     · 1080p  → 1920×1088（高度向上取到最近的 16 倍数）
-     · 方形 1080 → 1088×1088
-     · 竖屏 1080 → 1088×1920
-   hint 如实写出实际像素，避免用户以为拿到的是 1920×1080。 */
-const PRESETS = [
+/* 默认 limits —— 用于未传 modelId 的兜底，以及「与 model 无关的兜底校验」。
+   实际校验时按 model sizeSpec.limits 覆盖。 */
+const DEFAULT_LIMITS = {
+  step: 16, min: 256, max: 3840, minPixels: 655360, maxPixels: 8294400, maxRatio: 3
+};
+const DEFAULT_RATIOS = REGISTRY.RATIO_ENUM.slice();
+const DEFAULT_RESOLUTIONS = ['1k', '2k', '4k'];
+const DEFAULT_PRESETS = [
   { id: '1080p', label: '1080p', width: 1920, height: 1088, hint: '1920 × 1088（16 倍数对齐）' },
   { id: '2k', label: '2K', width: 2560, height: 1440, hint: '2560 × 1440' },
   { id: '4k', label: '4K', width: 3840, height: 2160, hint: '3840 × 2160（单边与总像素上限）' },
   { id: 'square', label: '方形', width: 1088, height: 1088, hint: '1088 × 1088' },
   { id: 'vertical', label: '竖屏 1080', width: 1088, height: 1920, hint: '1088 × 1920' }
 ];
+const RATIO_AUTO = 'auto';
 
-/* 边界（与服务商文档一致） */
-const LIMITS = {
-  step: 16,           // 宽高必须是它的倍数
-  min: 256,           // 单边下限：比"16 的倍数"更严一档，避免 16×16 这种无意义提交
-  max: 3840,          // 单边上限
-  minPixels: 655360,  // 总像素下限
-  maxPixels: 8294400, // 总像素上限
-  maxRatio: 3         // 长短边比上限
-};
+/* 取某个 model 的"有效 spec"；缺省时回默认（Work Fisher v2.5 Flare） */
+function specOf(modelId) {
+  const m = modelId ? REGISTRY.findModel(providerFromModelId(modelId), modelId) : null;
+  if (!m) {
+    return {
+      ratios: DEFAULT_RATIOS,
+      resolutions: DEFAULT_RESOLUTIONS,
+      fixedSizes: null,
+      pixelMode: true,
+      presets: DEFAULT_PRESETS,
+      limits: DEFAULT_LIMITS
+    };
+  }
+  return m.sizeSpec;
+}
+
+/* modelId 形如 "workfisher-image-g-v2.5-flare"，没有 providerId 前缀；
+   反查 provider 需要扫一遍 registry。model 数量很少（< 10），扫一次可接受。 */
+function providerFromModelId(modelId) {
+  const id = String(modelId || '');
+  for (const p of REGISTRY.listProviders()) {
+    if (p.models.some((m) => m.modelId === id)) return p.providerId;
+  }
+  return REGISTRY.defaultProviderId();
+}
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/* 把一个数吸附到最近的合法步长（16 的倍数），并钳在 [min, max]。
-   为什么吸附而**不是**直接拒绝：界面上的步进器/联动换算天然会算出
-   非 16 倍数的中间值（如 16:9 配 1080 得 1920×1080 没问题，
-   但 4:3 配 1080 得 1440×1080 —— 合法；而 5:4 配 1000 就得吸附）。
-   用户输入 1000 时"回落到最近的合法值"比"报错不改"体验好得多。 */
-function snap(v, lo, hi) {
+function snap(v, lo, hi, step) {
   const n = Number(v);
   if (!isFinite(n)) return null;
-  const stepped = Math.round(n / LIMITS.step) * LIMITS.step;
-  return clamp(stepped, lo == null ? LIMITS.min : lo, hi == null ? LIMITS.max : hi);
+  const s = step || DEFAULT_LIMITS.step;
+  const minV = lo == null ? DEFAULT_LIMITS.min : lo;
+  const maxV = hi == null ? DEFAULT_LIMITS.max : hi;
+  const stepped = Math.round(n / s) * s;
+  return clamp(stepped, minV, maxV);
 }
 
-function findRatio(id) {
+function findRatio(spec, id) {
   const key = String(id == null ? '' : id).trim();
-  return RATIOS.find((r) => r.id === key) || null;
+  return (spec.ratios || DEFAULT_RATIOS).find((rid) => rid === key) || null;
 }
 
-/* 比例 → 像素。以 area 为"目标总像素"反算，再吸附到合法网格。
-   ⚠ 这里刻意**先放宽再收敛**：直接按比例 + 取整会算出 16 的倍数以外的值，
-     所以吸附之后还要用 fitsLimits 复查一遍，必要时沿长边回退一格。
-   返回 { width, height } —— 一定是合法的。 */
-function ratioToSize(ratioId, targetPixels) {
-  const r = findRatio(ratioId);
+/* 比例 → 像素（保比例意图的回落，与 0.41.0 同算法，换 limits 参数） */
+function ratioToSize(spec, ratioId, targetPixels) {
+  if (arguments.length === 2) { targetPixels = ratioId; ratioId = spec; spec = null; }
+  if (!spec) spec = specOf(null);
+  const r = findRatio(spec, ratioId);
   if (!r) return null;
-  const target = clamp(Number(targetPixels) || LIMITS.minPixels, LIMITS.minPixels, LIMITS.maxPixels);
-  /* 由面积与比例解出宽：w = sqrt(area * rw / rh) */
-  let w = Math.sqrt(target * (r.w / r.h));
-  w = clamp(Math.round(w / LIMITS.step) * LIMITS.step, LIMITS.min, LIMITS.max);
-  let h = clamp(Math.round((w * r.h / r.w) / LIMITS.step) * LIMITS.step, LIMITS.min, LIMITS.max);
+  const lim = spec.limits || DEFAULT_LIMITS;
+  const targetPx = Number(targetPixels || (lim.minPixels + lim.maxPixels) / 2);
+  if (!isFinite(targetPx) || targetPx <= 0) return null;
+  const parts = String(r).split(':').map(Number);
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  const aspect = parts[0] / parts[1];
 
-  /* 收敛：沿长边逐步缩小，直到满足全部约束（最多试到下限，必然收敛）。 */
-  let guard = 0;
-  while (guard++ < 400) {
-    const info = fitsLimits(w, h);
-    if (info.ok) break;
-    if (w >= h) w = clamp(w - LIMITS.step, LIMITS.min, LIMITS.max);
-    else h = clamp(h - LIMITS.step, LIMITS.min, LIMITS.max);
-    if (w === LIMITS.min && h === LIMITS.min) break;
-  }
-  return { width: w, height: h };
-}
+  let w = clamp(Math.round(Math.sqrt(targetPx * aspect) / lim.step) * lim.step, lim.min, lim.max);
+  let h = clamp(Math.round((w / aspect) / lim.step) * lim.step, lim.min, lim.max);
 
-/* 由分辨率档位给一个"目标总像素"，供比例模式换算用。
-   取值落在合法区间中段偏上，避免一上来就贴上限。 */
-function pixelsOfResolution(res) {
-  switch (String(res || '').toLowerCase()) {
-    case '4k': return 8294400;   // 贴上限（3840×2160）
-    case '2k': return 3686400;   // 2560×1440
-    case '1k':
-    default: return 2073600;     // 1920×1080
-  }
-}
-
-/* 反算：给定像素尺寸，找一个"最贴近"的已知比例。
-   用途是"手动改分辨率时同步反算并锁定宽高比"。取相对误差最小者；
-   误差超过 2% 视为"自定义比例"（返回 null，界面显示"自定义"）。 */
-function sizeToRatio(width, height) {
-  const w = Number(width), h = Number(height);
-  if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) return null;
-  const actual = w / h;
-  let best = null, bestErr = Infinity;
-  RATIOS.forEach((r) => {
-    const err = Math.abs(actual - (r.w / r.h)) / (r.w / r.h);
-    if (err < bestErr) { bestErr = err; best = r; }
-  });
-  return bestErr <= 0.02 ? best.id : null;
-}
-
-/* 完整校验。返回 { ok, errors[], size }：
-   · ok=true  → size 是可直接提交的 "WxH" 字符串
-   · ok=false → errors 是给用户看的逐条原因；同时给出 nearest（回落建议） */
-function validate(width, height) {
-  const w = Number(width), h = Number(height);
-  const errors = [];
-  const int = (v) => isFinite(v) && Math.floor(v) === v;
-
-  if (!int(w) || !int(h)) errors.push('宽高必须是整数');
-  if (int(w) && int(h)) {
-    if (w % LIMITS.step !== 0 || h % LIMITS.step !== 0) errors.push('宽高必须是 16 的倍数（当前 ' + w + '×' + h + '）');
-    if (w > LIMITS.max || h > LIMITS.max) errors.push('单边不能超过 ' + LIMITS.max + ' 像素');
-    if (w < LIMITS.min || h < LIMITS.min) errors.push('单边不能小于 ' + LIMITS.min + ' 像素');
-    const px = w * h;
-    if (px < LIMITS.minPixels) errors.push('总像素不能低于 ' + LIMITS.minPixels + '（当前 ' + px + '）');
-    if (px > LIMITS.maxPixels) errors.push('总像素不能超过 ' + LIMITS.maxPixels + '（当前 ' + px + '）');
-    const long = Math.max(w, h), short = Math.min(w, h);
-    if (short > 0 && long / short > LIMITS.maxRatio) errors.push('长边与短边之比不能超过 3:1（当前 ' + (long / short).toFixed(2) + ':1）');
-  }
-
-  if (!errors.length) return { ok: true, errors: [], size: w + 'x' + h };
-  return { ok: false, errors: errors, nearest: nearest(width, height) };
-}
-
-/* 回落：把用户输入校正到最近的合法尺寸。
-   ⚠ 这里最重要的一条是**保住用户的构图意图（比例）**，而不是"随便给个合法的数"。
-     所以策略是：先按用户给的宽高比定出目标比例，再在这个比例上找一个
-     合法尺寸里"最接近用户输入总像素"的那一档。这样 1920×100（极端长条）
-     会回落成 3:1 的合法尺寸，而不是被压成接近 1:1 的方块。
-   返回 { width, height } —— 一定是合法的（最后有兜底）。 */
-function nearest(width, height) {
-  const rw = Number(width), rh = Number(height);
-  /* 输入完全不可用时退回一个通用安全值 */
-  if (!isFinite(rw) || !isFinite(rh) || rw <= 0 || rh <= 0) {
-    return ratioToSize('1:1', LIMITS.minPixels);
-  }
-
-  /* ① 定目标比例：把输入比例钳到 [1/3, 3]（服务商上限），保住"横/竖"方向 */
-  let aspect = rw / rh;
-  if (aspect > LIMITS.maxRatio) aspect = LIMITS.maxRatio;
-  if (aspect < 1 / LIMITS.maxRatio) aspect = 1 / LIMITS.maxRatio;
-
-  /* ② 目标总像素 = 用户输入的总像素，钳进合法区间 */
-  const targetPx = clamp(Math.round(rw * rh), LIMITS.minPixels, LIMITS.maxPixels);
-
-  /* ③ 在"目标比例 + 目标像素"上解出宽高，再吸附到 16 网格。
-        吸附会让比例略偏，所以拿吸附后的值做一次收敛（保持比例微调像素）。 */
-  let w = clamp(Math.round(Math.sqrt(targetPx * aspect) / LIMITS.step) * LIMITS.step, LIMITS.min, LIMITS.max);
-  let h = clamp(Math.round((w / aspect) / LIMITS.step) * LIMITS.step, LIMITS.min, LIMITS.max);
-
-  /* ④ 收敛到全部约束内。策略：优先沿"离目标像素更远的那一轴"调整，
-        这样最终尺寸在合法集合里离用户输入最近。 */
   let guard = 0;
   while (guard++ < 600) {
     const px = w * h;
     const long = Math.max(w, h), short = Math.min(w, h);
     if (short <= 0) break;
-    if (long / short > LIMITS.maxRatio) {
-      /* 比例超限：收长边 */
-      if (w >= h) w = clamp(w - LIMITS.step, LIMITS.min, LIMITS.max);
-      else h = clamp(h - LIMITS.step, LIMITS.min, LIMITS.max);
+    if (long / short > lim.maxRatio) {
+      if (w >= h) w = clamp(w - lim.step, lim.min, lim.max);
+      else h = clamp(h - lim.step, lim.min, lim.max);
       continue;
     }
-    if (px > LIMITS.maxPixels) {
-      /* 超总像素：两轴等比缩（缩小的那一轴就算偏了也比违规强） */
-      w = clamp(w - LIMITS.step, LIMITS.min, LIMITS.max);
-      h = clamp(h - LIMITS.step, LIMITS.min, LIMITS.max);
+    if (px > lim.maxPixels) {
+      w = clamp(w - lim.step, lim.min, lim.max);
+      h = clamp(h - lim.step, lim.min, lim.max);
       continue;
     }
-    if (px < LIMITS.minPixels) {
-      const nw = clamp(w + LIMITS.step, LIMITS.min, LIMITS.max);
-      const nh = clamp(h + LIMITS.step, LIMITS.min, LIMITS.max);
-      if (nw === w && nh === h) break;   /* 顶到单边上限仍不够 → 兜底 */
+    if (px < lim.minPixels) {
+      const nw = clamp(w + lim.step, lim.min, lim.max);
+      const nh = clamp(h + lim.step, lim.min, lim.max);
+      if (nw === w && nh === h) break;
       w = nw; h = nh;
       continue;
     }
-    if (fitsLimits(w, h).ok) break;
-    /* 还剩未知违规（理论到不了）—— 收一格避免死循环 */
-    w = clamp(w - LIMITS.step, LIMITS.min, LIMITS.max);
+    if (fitsLimits(spec, w, h).ok) break;
+    w = clamp(w - lim.step, lim.min, lim.max);
   }
-
-  /* ⑤ 兜底：必须给出确定合法的值 */
-  if (!fitsLimits(w, h).ok) {
-    const base = ratioToSize(aspect >= 1 ? '16:9' : '9:16', LIMITS.minPixels);
-    if (base) { w = base.width; h = base.height; }
-  }
+  if (!fitsLimits(spec, w, h).ok) return null;
   return { width: w, height: h };
 }
 
-/* 综合校验：既可校验像素，也可校验比例枚举 / auto。
-   这是**唯一**对外的主入口 —— 服务端与前端都走它。 */
-function resolveSize(input) {
-  const i = input || {};
-  if (i.mode === 'ratio') {
-    const id = String(i.ratio == null ? '' : i.ratio).trim();
-    if (id === RATIO_AUTO || !id) {
-      return { ok: true, mode: 'ratio', size: RATIO_AUTO, ratio: RATIO_AUTO,
-        resolution: normResolution(i.resolution), errors: [] };
-    }
-    const r = findRatio(id);
-    if (!r) return { ok: false, mode: 'ratio', errors: ['未知的宽高比：' + id], nearest: { mode: 'ratio', ratio: '1:1' } };
-    /* 比例模式下：界面会把比例换算成具体像素显示，但**提交时仍发比例枚举** ——
-       让服务商的 resolution 档位决定实际尺寸，比我们自己算的像素更贴近它的实现。 */
-    return { ok: true, mode: 'ratio', size: id, ratio: id,
-      resolution: normResolution(i.resolution), errors: [] };
-  }
-  /* 像素模式（默认）：显式给了宽高就按像素提交 */
-  if (i.width != null && i.height != null) {
-    const v = validate(i.width, i.height);
-    if (v.ok) {
-      return { ok: true, mode: 'pixels', size: v.size, width: Number(i.width), height: Number(i.height),
-        ratio: sizeToRatio(i.width, i.height), resolution: null, errors: [] };
-    }
-    return { ok: false, mode: 'pixels', errors: v.errors, nearest: Object.assign({ mode: 'pixels' }, v.nearest) };
-  }
-  /* 什么都不给：交给服务商默认（等价于 size=auto） */
-  return { ok: true, mode: 'ratio', size: RATIO_AUTO, ratio: RATIO_AUTO,
-    resolution: normResolution(i.resolution), errors: [] };
+/* 像素 → 比例（2% 容差反猜枚举）
+   ⚠ 兼容旧 2-arg sizeToRatio(w, h)。 */
+function sizeToRatio(spec, w, h) {
+  if (arguments.length === 2) { h = w; w = spec; spec = null; }
+  if (!spec) spec = specOf(null);
+  const ratios = spec.ratios || DEFAULT_RATIOS;
+  const target = w / h;
+  let best = null, bestDiff = Infinity;
+  ratios.forEach((rid) => {
+    const parts = String(rid).split(':').map(Number);
+    const ratio = parts[0] / parts[1];
+    const diff = Math.abs(ratio - target);
+    if (diff < bestDiff) { bestDiff = diff; best = rid; }
+  });
+  return bestDiff / target <= 0.02 ? best : null;
 }
 
-function normResolution(res) {
-  const v = String(res == null ? '' : res).trim().toLowerCase();
-  return RESOLUTIONS.indexOf(v) >= 0 ? v : '1k';
-}
-
-/* 单个尺寸是否满足全部硬约束（供 ratioToSize 的收敛循环使用） */
-function fitsLimits(w, h) {
+/* 单尺寸是否满足所有硬约束（供收敛循环复用）
+   ⚠ 兼容旧 2-arg fitsLimits(w, h)。 */
+function fitsLimits(spec, w, h) {
+  if (arguments.length === 2) { h = w; w = spec; spec = null; }
+  if (!spec) spec = specOf(null);
+  const lim = spec.limits || DEFAULT_LIMITS;
   const long = Math.max(w, h), short = Math.min(w, h);
   const px = w * h;
   const errors = [];
-  if (w % LIMITS.step !== 0 || h % LIMITS.step !== 0) errors.push('step');
-  if (long > LIMITS.max) errors.push('max');
-  if (short < LIMITS.min) errors.push('min');
-  if (px < LIMITS.minPixels) errors.push('minPixels');
-  if (px > LIMITS.maxPixels) errors.push('maxPixels');
-  if (short > 0 && long / short > LIMITS.maxRatio) errors.push('ratio');
-  return { ok: errors.length === 0, errors: errors };
+  if (!Number.isInteger(w) || !Number.isInteger(h)) errors.push('宽高必须是整数');
+  else if (w % lim.step !== 0 || h % lim.step !== 0) errors.push('宽高必须是 ' + lim.step + ' 的倍数');
+  if (long > lim.max) errors.push('单边超过 ' + lim.max);
+  if (short < lim.min) errors.push('单边不能低于 ' + lim.min);
+  if (px < lim.minPixels) errors.push('总像素不能低于 ' + lim.minPixels);
+  if (px > lim.maxPixels) errors.push('总像素超过 ' + lim.maxPixels);
+  if (short > 0 && long / short > lim.maxRatio) errors.push('长宽比超过 ' + lim.maxRatio + ':1');
+  return { ok: errors.length === 0, errors };
 }
 
-/* 发给前端的一份"只读规格"（/meta/options 用）。
-   前端据此渲染选项，不硬编码 —— 边界只会有一处定义。 */
-function spec() {
+/* 完整校验（像素）—— 给前端 reject 用。
+   ⚠ 兼容旧 2-arg 调用 validate(w, h) —— 0.41.0 测试仍在用。 */
+function validate() {
+  let spec, w, h;
+  if (arguments.length >= 3) { spec = arguments[0]; w = arguments[1]; h = arguments[2]; }
+  else { spec = null; w = arguments[0]; h = arguments[1]; }
+  if (!spec) spec = specOf(null);
+  const lim = spec.limits || DEFAULT_LIMITS;
+  w = Number(w); h = Number(h);
+  if (!isFinite(w) || !isFinite(h)) {
+    return { ok: false, errors: ['非数字'], nearest: nearest(spec, w, h) };
+  }
+  const v = fitsLimits(spec, w, h);
+  if (v.ok) {
+    return { ok: true, size: w + 'x' + h, width: w, height: h, ratio: sizeToRatio(spec, w, h), errors: [] };
+  }
+  return { ok: false, errors: v.errors, nearest: nearest(spec, w, h) };
+}
+
+/* 非法 → 离合法集最近（保方向 + 比例意图）
+   ⚠ 兼容旧 2-arg nearest(w, h)。 */
+function nearest(spec, w, h) {
+  if (arguments.length === 2) { h = w; w = spec; spec = null; }
+  if (!spec) spec = specOf(null);
+  const lim = spec.limits || DEFAULT_LIMITS;
+  const landscape = Number(w) >= Number(h);
+  const ratio = (Number(w) || 1) / (Number(h) || 1);
+  const targetPx = Math.max(lim.minPixels, Math.min(lim.maxPixels, (Number(w) || 1) * (Number(h) || 1)));
+  /* 找方向一致 + 比例最近的枚举 */
+  let bestR = null, bestDiff = Infinity;
+  (spec.ratios || DEFAULT_RATIOS).forEach((rid) => {
+    const parts = String(rid).split(':').map(Number);
+    const r = parts[0] / parts[1];
+    const dirOk = landscape ? r >= 1 : r <= 1;
+    if (!dirOk) return;
+    const d = Math.abs(r - ratio);
+    if (d < bestDiff) { bestDiff = d; bestR = rid; }
+  });
+  if (!bestR) {
+    /* 同方向找不到 → 回退用最接近原比例的（哪怕方向变了）；后面手工翻 */
+    (spec.ratios || DEFAULT_RATIOS).forEach((rid) => {
+      const parts = String(rid).split(':').map(Number);
+      const r = parts[0] / parts[1];
+      const d = Math.abs(r - ratio);
+      if (d < bestDiff) { bestDiff = d; bestR = rid; }
+    });
+  }
+  const sized = ratioToSize(spec, bestR, targetPx);
+  if (sized) {
+    /* 校准方向：用户原本是竖向（h > w）→ 翻成竖向；反之亦然 */
+    if (!landscape && sized.width > sized.height) {
+      return { mode: 'pixels', width: sized.height, height: sized.width };
+    }
+    return { mode: 'pixels', width: sized.width, height: sized.height };
+  }
+  return { mode: 'pixels', width: lim.min, height: lim.min };
+}
+
+function normResolution(spec, res) {
+  if (arguments.length === 1) { res = spec; spec = null; }
+  if (!spec) spec = specOf(null);
+  const v = String(res == null ? '' : res).trim().toLowerCase();
+  const list = spec.resolutions || [];
+  return list.indexOf(v) >= 0 ? v : (list[0] || '1k');
+}
+
+function pixelsOfResolution(spec, res) {
+  /* ⚠ 兼容旧 1-arg pixelsOfResolution(res) —— 0.41.0 测试仍在用。 */
+  if (arguments.length === 1) { res = spec; spec = null; }
+  if (!spec) spec = specOf(null);
+  const map = { '1k': 1024 * 1024, '2k': 2560 * 1440, '4k': 3840 * 2160 };
+  return map[normResolution(spec, res)] || 1024 * 1024;
+}
+
+/* ---------------- 综合 resolveSize（per-model） ---------------- */
+function resolveSize(input, modelId) {
+  const spec = specOf(modelId);
+  const i = input || {};
+  /* 像素模式：仅当 model 允许 */
+  if (i.mode === 'pixels' || (i.width != null && i.height != null && i.sizeMode !== 'ratio')) {
+    if (!spec.pixelMode) {
+      return { ok: false, mode: 'pixels', errors: ['该模型不接受自定义像素'], nearest: { mode: 'ratio', ratio: (spec.ratios || DEFAULT_RATIOS)[0] } };
+    }
+    const v = validate(spec, i.width, i.height);
+    if (v.ok) {
+      return { ok: true, mode: 'pixels', size: v.size, width: v.width, height: v.height,
+        ratio: v.ratio, resolution: null, errors: [] };
+    }
+    return { ok: false, mode: 'pixels', errors: v.errors, nearest: v.nearest };
+  }
+  /* 比例模式 */
+  if (i.mode === 'ratio' || i.ratio != null) {
+    const id = String(i.ratio == null ? '' : i.ratio).trim();
+    if (!id || id === RATIO_AUTO) {
+      return { ok: true, mode: 'ratio', size: RATIO_AUTO, ratio: RATIO_AUTO,
+        resolution: normResolution(spec, i.resolution), errors: [] };
+    }
+    if (spec.fixedSizes && id.indexOf(':') < 0 && /^\d+\s*[\u00d7x]\s*\d+$/i.test(id)) {
+      /* OpenAI 路径：'1024x1024' 这种像素写法直接当 fixed size 透传 */
+      return { ok: true, mode: 'ratio', size: id.toLowerCase().replace(/\s*[\u00d7]\s*/, 'x'),
+        ratio: null, resolution: null, errors: [] };
+    }
+    const r = findRatio(spec, id);
+    if (!r) return { ok: false, mode: 'ratio', errors: ['未知的宽高比：' + id], nearest: { mode: 'ratio', ratio: (spec.ratios || DEFAULT_RATIOS)[0] } };
+    return { ok: true, mode: 'ratio', size: id, ratio: id,
+      resolution: spec.resolutions ? normResolution(spec, i.resolution) : null, errors: [] };
+  }
+  /* 什么都没给 → auto */
+  return { ok: true, mode: 'ratio', size: RATIO_AUTO, ratio: RATIO_AUTO,
+    resolution: spec.resolutions ? normResolution(spec, i.resolution) : null, errors: [] };
+}
+
+/* 给前端的最小集 —— 暴露 ratios / resolutions / fixedSizes / pixelMode / presets / limits。
+   之所以不带 provider / model 标识：上层 (image-registry.specForFrontend) 已经包了。 */
+function specForFrontend(modelId) {
+  const spec = specOf(modelId);
   return {
-    ratios: RATIOS.map((r) => ({ id: r.id, w: r.w, h: r.h })),
+    ratios: (spec.ratios || DEFAULT_RATIOS).slice(),
+    resolutions: spec.resolutions ? spec.resolutions.slice() : null,
+    fixedSizes: spec.fixedSizes ? spec.fixedSizes.slice() : null,
+    pixelMode: !!spec.pixelMode,
+    presets: spec.presets ? spec.presets.slice() : null,
     auto: RATIO_AUTO,
-    resolutions: RESOLUTIONS.slice(),
-    presets: PRESETS.map((p) => Object.assign({}, p)),
-    limits: Object.assign({}, LIMITS)
+    limits: Object.assign({}, spec.limits || DEFAULT_LIMITS)
   };
 }
 
 module.exports = {
-  RATIOS, RATIO_AUTO, RESOLUTIONS, PRESETS, LIMITS,
+  DEFAULT_LIMITS, DEFAULT_RATIOS, DEFAULT_RESOLUTIONS, DEFAULT_PRESETS,
+  RATIO_AUTO,
+  /* 0.41.0 老接口别名（测试在用） */
+  LIMITS: DEFAULT_LIMITS,
+  RATIOS: DEFAULT_RATIOS.map((rid, i) => {
+    const parts = String(rid).split(':').map(Number);
+    return { id: rid, w: parts[0], h: parts[1], _i: i };
+  }),
+  RESOLUTIONS: DEFAULT_RESOLUTIONS,
+  PRESETS: DEFAULT_PRESETS,
+  /* 0.42.0 新接口 */
+  specOf, providerFromModelId,
   findRatio, ratioToSize, sizeToRatio, pixelsOfResolution,
-  validate, nearest, resolveSize, normResolution, fitsLimits, spec, snap
+  validate, nearest, resolveSize, normResolution, fitsLimits, snap,
+  specForFrontend,
+  /* 0.41.0 老接口别名 —— /meta/options 还在下发 imageSizes */
+  spec: specForFrontend
 };

@@ -255,7 +255,8 @@ const activeOfAsset = (db, assetId) => byAsset(db, assetId).find((j) => ACTIVE_S
 const PERSIST_FIELDS = [
   'id', 'projectId', 'assetId', 'prompt', 'model', 'state',
   'size', 'resolution',
-  'providerTaskId', 'candidateFile', 'appliedFile', 'usage', 'error', 'errorKind',
+  'providerId', 'modelId',
+  'providerTaskId', 'syncResultUrl', 'candidateFile', 'appliedFile', 'usage', 'error', 'errorKind',
   'imageWidth', 'imageHeight', 'imageFormat', 'queryFailures',
   'createdAt', 'updatedAt'
 ];
@@ -286,9 +287,12 @@ function viewJob(j, assetId) {
     state: j.state,
     prompt: j.prompt,
     model: j.model,
+    providerId: j.providerId || null,
+    modelId: j.modelId || null,
     size: j.size || null,
     resolution: j.resolution || null,
     providerTaskId: j.providerTaskId || null,
+    syncResultUrl: j.syncResultUrl || null,
     usage: j.usage || null,
     error: j.error || null,
     /* 候选图**相对名** → 本地预览地址。只在这一处拼，页面拿不到直链。 */
@@ -387,6 +391,10 @@ function makeImageJobs(env) {
          而这次任务花的是这一版提示词的钱，审计时必须以快照为准。 */
       prompt: prompt,
       model: o.model || null,
+      /* provider / model 也做快照（0.42.0）：默认值之后可能被用户改，
+         而这次花的钱对应的是这一组 provider/model，审计要看它。 */
+      providerId: o.providerId || null,
+      modelId: o.modelId || null,
       /* 尺寸快照（2026-09-25）：这次任务用的是哪一档尺寸 —— 与 prompt 同理，
          设置里的默认值之后会被改，而这次花的钱对应的是这一版尺寸，审计要看它。
          `size` 是比例枚举（16:9 / auto）或像素（1920x1088）；`resolution` 只在
@@ -404,7 +412,9 @@ function makeImageJobs(env) {
     map[job.id] = job;
     saveAll();
 
-    const r = await e.provider.submit(prompt, { size: job.size, resolution: job.resolution });
+    /* 0.42.0：按 job.providerId 路由到对应 adapter；缺省回退到默认 provider */
+    const adapter = (e.providerFor && e.providerFor(job.providerId)) || e.provider;
+    const r = await adapter.submit(prompt, { size: job.size, resolution: job.resolution });
 
     if (r && r.kind) {
       /* ② 超时 → submission_unknown（**不**自动重发，约束 1）。
@@ -424,6 +434,34 @@ function makeImageJobs(env) {
     }
 
     job.providerTaskId = r.taskId;
+    /* 同步 provider（OpenAI / Stability）：submit 阶段就拿到了结果，state 直接
+       跳到 SAVING_RESULT，不轮询；syncResultUrl 入库是为了「结果下载失败 → 手动
+       重新保存」（resave）能拿到原链接。syncInlineBase64 是 Stability 的 base64
+       内联结果，**不入库**（约束 6 + 用户已付费生成的图不进备份）；重新提交一次即可。 */
+    if (r.syncResult) {
+      if (r.syncInlineBase64) {
+        /* Stability 同步 base64：暂存到 job 上（运行态 _syncInlineBase64，不入 PERSIST），
+           立刻让 step() 处理 —— 见 step() 里的同步分支。 */
+        job._syncInlineBase64 = r.syncInlineBase64;
+        job.state = STATE.SAVING_RESULT;
+        job.usage = r.usage || null;
+        job.updatedAt = now();
+        saveAll();
+        log('info', '图片生图同步完成（本地 ' + job.id + ' / Stability ' + r.taskId + '，资产 ' + asset.id + '）');
+        await step(job);
+        return { job: viewJob(job, asset.id), created: true };
+      }
+      if (r.resultUrl) {
+        job.syncResultUrl = String(r.resultUrl);
+        job.state = STATE.SAVING_RESULT;
+        job.usage = r.usage || null;
+        job.updatedAt = now();
+        saveAll();
+        log('info', '图片生图同步完成（本地 ' + job.id + ' / OpenAI ' + r.taskId + '，资产 ' + asset.id + '）');
+        await step(job);
+        return { job: viewJob(job, asset.id), created: true };
+      }
+    }
     job.state = STATE.QUEUED;
     job.updatedAt = now();
     saveAll();
@@ -449,6 +487,108 @@ function makeImageJobs(env) {
     return (map[r.kind] || '生图服务调用失败') + (r.message ? '：' + r.message : '');
   }
 
+  /* 同步 provider inline base64 落盘（Stability 路径）—— 不经过 https 下载，
+     直接 decode 写候选文件。复用同样的"图片特征校验 + 路径安全"出口。 */
+  async function handleSyncInline(job, b64) {
+    /* base64 解码 + 图片特征校验。失败的失败语义与 https 路径一致（不丢失、保留可重存）。 */
+    let buf;
+    try { buf = Buffer.from(String(b64 || ''), 'base64'); }
+    catch (e) {
+      job.state = STATE.FAILED;
+      job.error = '同步结果 base64 解码失败：' + String((e && e.message) || e);
+      job.updatedAt = now();
+      saveAll();
+      return;
+    }
+    if (!buf || buf.length < 12) {
+      job.state = STATE.FAILED;
+      job.error = '同步结果 base64 解码后为空或过短';
+      job.updatedAt = now();
+      saveAll();
+      return;
+    }
+    const info = sniffImage(buf);
+    const prob = imageProblem(info);
+    if (prob) {
+      job.state = STATE.FAILED;
+      job.error = '同步结果不是合法图片：' + prob;
+      job.updatedAt = now();
+      saveAll();
+      return;
+    }
+    const asset = e.findAssetForJob ? e.findAssetForJob(job) : null;
+    if (!asset) {
+      job.state = STATE.FAILED;
+      job.error = '资产已被删除，结果不再保存';
+      job.updatedAt = now();
+      saveAll();
+      return;
+    }
+    const fname = job.assetId + '-' + stamp() + info.ext;
+    const dir = PATHS.ensureCandidateDir(job.projectId);
+    const abs = path.join(dir, fname);
+    try {
+      fs.writeFileSync(abs, buf);
+    } catch (err) {
+      job.state = STATE.FAILED;
+      job.error = '候选图写入失败：' + String((err && err.message) || err);
+      job.updatedAt = now();
+      saveAll();
+      return;
+    }
+    job.candidateFile = fname;
+    job.imageWidth = info.width;
+    job.imageHeight = info.height;
+    job.imageFormat = info.ext;
+    job.state = STATE.READY;
+    job._syncInlineBase64 = null;   /* 落盘即弃（不入 PERSIST） */
+    job.updatedAt = now();
+    saveAll();
+    log('info', '图片生图同步结果已落盘（本地 ' + job.id + '，资产 ' + job.assetId + '，' + info.width + '×' + info.height + ' ' + info.ext + '）');
+  }
+
+  /* 同步 provider URL 下载（OpenAI 路径） —— 与异步 query 返回 succeeded 后走的下载流程
+     一致；只是 resultUrl 来源是 submit 阶段直接给的，不经过 query()。 */
+  async function handleSyncUrl(job, resultUrl) {
+    const dl = await downloadImage(resultUrl, { transport: downloadTransport });
+    if (!dl.ok) {
+      job.state = STATE.RUNNING;
+      job.error = '结果下载失败：' + dl.message + '（链接可能很快过期，可稍后重试保存）';
+      job.updatedAt = now();
+      saveAll();
+      log('warn', '图片生图同步结果下载失败（本地 ' + job.id + '）：' + dl.message);
+      return;
+    }
+    const asset = e.findAssetForJob ? e.findAssetForJob(job) : null;
+    if (!asset) {
+      job.state = STATE.FAILED;
+      job.error = '资产已被删除，结果不再保存';
+      job.updatedAt = now();
+      saveAll();
+      return;
+    }
+    const fname = job.assetId + '-' + stamp() + dl.info.ext;
+    const dir = PATHS.ensureCandidateDir(job.projectId);
+    const abs = path.join(dir, fname);
+    try {
+      fs.writeFileSync(abs, dl.buf);
+    } catch (err) {
+      job.state = STATE.RUNNING;
+      job.error = '候选图写入失败：' + String((err && err.message) || err);
+      job.updatedAt = now();
+      saveAll();
+      return;
+    }
+    job.candidateFile = fname;
+    job.imageWidth = dl.info.width;
+    job.imageHeight = dl.info.height;
+    job.imageFormat = dl.info.ext;
+    job.state = STATE.READY;
+    job.updatedAt = now();
+    saveAll();
+    log('info', '图片生图同步结果已下载落盘（本地 ' + job.id + '，资产 ' + job.assetId + '，' + dl.info.width + '×' + dl.info.height + ' ' + dl.info.ext + '）');
+  }
+
   /* ---------------- 推进一个任务（查询 → 下载 → ready/failed） ----------------
      ⚠ 一个任务在同一时刻只应被推进一次。查询与下载都是异步的，
      "两个轮询周期重叠"会让同一个任务并发下载两次并写两个候选文件。
@@ -464,7 +604,18 @@ function makeImageJobs(env) {
 
     job._busy = true;
     try {
-      const r = await e.provider.query(job.providerTaskId);
+      /* 同步 provider 分支（OpenAI / Stability）：submit 阶段已拿到结果，
+         这里不再发请求给服务商，按「已是最终态」直接走下载/落盘。 */
+      if (job._syncInlineBase64) {
+        await handleSyncInline(job, job._syncInlineBase64);
+        return;
+      }
+      if (job.syncResultUrl) {
+        await handleSyncUrl(job, job.syncResultUrl);
+        return;
+      }
+      const adapter = (e.providerFor && e.providerFor(job.providerId)) || e.provider;
+      const r = await adapter.query(job.providerTaskId);
       if (r && r.kind) {
         /* 查询失败：保留 task_id，稍后再查（约束 1 只说提交不重试；查询可以）。
            退避靠轮询周期本身 + 连续失败计数，不做无限快重试。 */
