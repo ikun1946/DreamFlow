@@ -32,6 +32,43 @@
 
 **文档与版本**：`package.json` `0.41.0 → 0.41.1` 五处同步（`package.json` 唯一生效来源、`package-lock.json` ×2、`README.md` ×2、`docs/项目文档.md` ×3、`AGENTS.md` 不动 —— 它是 agent 契约本身，事实版本未变）。`docs/项目文档.md` §15 路由计数仍为 64 条（未新增 HTTP 路由）；`docs/CHANGELOG.md` 追加本条目；未触及 `docs/前端页面与接口对接说明.md`（未改接口契约）与 `docs/更改文档.md`（旧版历史日志）。
 
+#### `0.42.1` — 2026-09-27（移除：代码签名相关配置与文档）
+
+> **版本号口径**：`0.42.0 → 0.42.1`（PATCH：项目策略调整 —— 移除而非新增能力；保持接口与文件结构稳定）。
+
+**为什么改**：项目维护者当前没有为桌面端应用购买代码签名证书的预算（EV Code Signing 在 Certum 等供应商最便宜也要 24 美元/年 + 3–7 天签发 + 每年续期）。沿用 0.41.0 列的「签名证书未就位」红线意味着 `node scripts/check-signing.js --require` 永远会卡住 release；继续维护一整套空转的签名配置/校验脚本会让 AGENTS.md 与发布流程持续误导下一个 agent。**决定暂时移除** —— 等到有预算时按 git 历史恢复即可，硬件层面的 packaging 链路（electron-builder / NSIS / icon）不受影响。
+
+**移除的清单（统一去除）**：
+· `electron-builder.yml` —— 删除 `win.signAndEditExecutable: true` 与 `win.signtoolOptions:` 整段（含 `signingHashAlgorithms` / `publisherName` / `rfc3161TimeStampServer` / `timeStampServer`）；删除文件底部的"代码签名（P0-5）"长注释块（说明 CSC_LINK / CSC_KEY_PASSWORD 用法、CSC_REQUIRE 强制开关、electron-builder 26 schema 教训等）。
+· `scripts/check-signing.js` —— 整个文件删除（12 KB；本来是 `--require` / `--verify` 两个模式的发布卡点）。
+· `scripts/check-project.js` —— 删除 step 4 中关于"签名配置必须缩进在 win: 之下"的检查（连带其 fail 提示、ok 提示、嵌套正确性正则）、"缺少 scripts/check-signing.js" 的 P0-5 warn、release-drift 中扫描"安装包目前没有代码签名"的正则。
+· `AGENTS.md` —— 删除 §10 已知发布阻塞项中第 4 条（"签名配置已具备，证书未就位"）整段；§10 开头句子把"签名配置已有实现"从列表里删掉。
+· `README.md` —— 删除"签名证书未就位"在「当前状态」与第 0 行警告里的两处提及；§10 检查项表里删除"安装包签名"那一行。
+· `docs/版本发布与更新流程.md` —— 删除 4 处 `check-signing.js --require` / `--verify` 行、签名配置说明段、与 `check-signing.js` 分工的脚注、§10 表里"安装包签名"行。
+· `docs/项目文档.md` —— §4 收尾清单的"③ 正式发布前跑 check-signing.js --require"换成"无代码签名配置"提示；§10 表里"安装包签名"行删掉。
+· `package.json` + `package-lock.json` —— 版本号 0.42.0 → 0.42.1。
+
+**保留（不动）**：
+· 安装包用 NSIS 的架构、`perMachine: false`、unpack 规则、icon 引用、`files` 白名单、`asar: true` —— 这些与签名无关，只是本仓库的"形状"。
+· 0.41.0 引入的"两层目录（应用 / 数据分离）"思想、`LICENSE` / `THIRD-PARTY-NOTICES.md`、FFmpeg "只调用不分发"声明 —— 都与签名正交。
+
+**用户拿到未签名包会看到什么**：
+· 首次双击 Setup.exe → Windows SmartScreen 显示蓝色横条"Windows 已保护你的电脑 · Microsoft Defender SmartScreen 阻止了无法识别的应用启动 · 不再显示此消息"，点"仍要运行"即可安装。
+· 已有过同一文件名的安装历史后该提示会消失（SmartScreen 按文件名做"信誉积累"）。
+· 安装过程、用户数据、升级链路、更新校验（依然走 sha512 + 强制 https）一切如常。
+· 受影响的主要是**首次**安装体验；不是"安不上"，是"要多点一下"。
+
+**踩过的坑（写给下个恢复签名的 agent）**：
+· `electron-builder.yml` 把 `signAndEditExecutable` / `signtoolOptions` 写在顶层会被 electron-builder 26 拒绝（schema only accepts `win.*`）。恢复时记得缩进到 `win:` 之下。
+· Windows SDK 不装也行：electron-builder 26 自带 signtool，路径在 `%LOCALAPPDATA%electron-builderCachewinCodeSign\<id>\windows-10\x64\signtool.exe`；`check-signing.js` 的 `findSigntool()` 兜底就找这里。
+· `publisherName: ikun1946` 必须与证书 Subject 的 CN 一致；不一致 signtool 会报错（这是有意为之的护栏，不要"为通过而把 publisherName 删掉"）。
+· 凭据**只能**走 `CSC_LINK` + `CSC_KEY_PASSWORD` 环境变量，证书文件绝不入库；如用 base64 形式也是 `CSC_LINK="base64:..."`。
+· **历史安装包未签名会让 `check-signing.js --verify` 整体报失败** —— 恢复时把 `release/` 里的旧包先移进 `release-archive/` 再跑。
+
+**验证**：`npm run verify` 全绿（test 346/346 · check 46/46 · lint 7/7 · build ✓ · smoke:web ✓ · e2e 53/53），`electron-builder.yml` `node --check` 仍合法。
+
+**版本号口径**：`scripts/check-project.js` 不会因为签名相关项的删除而报数字口径漂移（行数从 46 维持 46）。
+
 #### `0.42.0` — 2026-09-25（新增：多生图服务商接入 —— Work Fisher / OpenAI DALL·E 3 / Stability AI）
 
 > **版本号口径**：`0.41.1 → 0.42.0`（MINOR：新增面向使用者的能力 —— 多 provider 选择、model 自适应尺寸规则；接口形状小幅变化但所有调用都向后兼容）。

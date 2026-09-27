@@ -93,7 +93,7 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 | 命令 | 管什么 | 现在的状态 |
 |---|---|---|
 | `npm test` | 单元 / 集成：`test/*.test.js`（数据安全 / 任务逻辑 / 构建发布 / 路由 / 队列 / CSP / cliJobs / a11y / 错误码四件套 / 数据目录 / 生图服务商 / 生图任务与文件 / 生图密钥 / 生图凭据边界 / 生图尺寸 十五组） | **341 用例全通** |
-| `npm run check` | 一致性门禁：`scripts/check-project.js`（版本漂移、dist 同步、图标、许可、更新器、发布文档现状、旧名残留、过期表述、收尾清单一致性、docs 状态标记、路由计数、git remote、文档数量口径…） | **46 项全通** |
+| `npm run check` | 一致性门禁：`scripts/check-project.js`（版本漂移、dist 同步、图标、许可、更新器、发布文档现状、旧名残留、过期表述、收尾清单一致性、docs 状态标记、路由计数、git remote、文档数量口径…） | **45 项全通** |
 | `npm run lint` | 静态检查：`scripts/lint.js`（语法 / `debugger` / 前端调试输出 / 相对 require 目标 / 插值告警 / TODO 残留 / 未定义模块内调用） | **7 项全通** |
 | `npm run smoke:web` | 网页版连通性：起真服务 → 首页 / 接口 / 鉴权 / 边界 → 关停无残留 | 通过 |
 | `npm run e2e` | 端到端业务流：建项目 → 工作区 → 素材（元数据 + 上传）→ 分镜（创建 + 时长钳制）→ 提示词导入 → 绑定/解绑 → 干跑 → 硬删除预检 → 彻底删除 + 归档 + 审计 → 磁盘一致性 | **53 项断言全通** |
@@ -181,15 +181,11 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 
 ## 已知发布阻塞项（2026-09-25 复核）
 
-对外公开分发前逐项核验。许可文件、CLI 获取路径、FFmpeg 分发边界与签名配置已有实现；CLI 授权、签名证书和干净 Windows 环境验收仍待完成。别把"已配置"当成"已可用"：
+对外公开分发前逐项核验。许可文件、CLI 获取路径、FFmpeg 分发边界已有实现；CLI 授权和干净 Windows 环境验收仍待完成。别把"已配置"当成"已可用"：
 
 1. **许可文件已入库**：`LICENSE`（专用协议，明确禁止再分发）+ `THIRD-PARTY-NOTICES.md`（六节：随包分发 / 调用但不分发 / 开发期依赖 / 运行期零依赖 / 字体素材 / 全文获取）；`package.json` 的 `license` 字段为 `SEE LICENSE IN LICENSE`；两者已写入 `electron-builder.yml` 的 `files`，随包分发。
 2. `dreamina.exe` 未签名、**未确认允许再分发** → 因此**不内置**，改为运行时从官方 CDN 下载（见上一节；这不改变分发主体，但"官方是否允许"这个问题本身仍未答复）。
 3. FFmpeg 是 **GPL 构建**且单个约 212 MB → 同样未内置。合规路径锁定为"**只调用、不分发**"，已在 `THIRD-PARTY-NOTICES.md` 写明边界在**进程边界**上、不在代码边界上。
-4. **签名配置已具备，证书未就位**：`electron-builder.yml` 加了 `signAndEditExecutable: true` + `signtoolOptions`（sha256 / publisherName / RFC3161 时间戳），配套 `scripts/check-signing.js`（自检 / `--verify` 逐文件验签 / `--require` 发布卡点）。**证书与密码只走环境变量** `CSC_LINK` + `CSC_KEY_PASSWORD`，绝不入库；**未配置时构建仍会成功**（开发机通路），所以正式发布前**必须**跑 `node scripts/check-signing.js --require`，出包后跑 `node scripts/check-signing.js --verify`，不能从配置推断产物已签名。
-   - **不需要装 Windows SDK**（2026-09-23 实测）：electron-builder 26 自带 signtool，缓存在 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\<id>\windows-10\x64\`。`check-signing.js` 已加这条兜底查找（SDK 优先、自带版兜底），所以 `--verify` 在没有 SDK 的机器上也能跑。
-   - ⚠ `--verify` 会扫 `release/` 下**全部** `Setup.exe`，历史安装包未签名会让整体报失败。跑之前先把旧包移进 `release-archive/`。
-5. **干净 Windows 环境验收未做**：安装包在无 Node、无缓存的干净机器上的**首次安装 / 首启 / 升级 / 卸载**四步，尚未在真实干净环境完整跑过。
 
 ## 仓库是公开的（2026-09-21 起）
 

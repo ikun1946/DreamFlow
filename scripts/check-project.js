@@ -193,7 +193,7 @@ if (missingIcons.length) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 4. electron-builder.yml：图标引用与签名配置形状
+// 4. electron-builder.yml：图标引用与 nsis 形状
 // ════════════════════════════════════════════════════════════════
 head('[4] electron-builder.yml 形状');
 
@@ -266,22 +266,7 @@ if (yml === null) {
     ok('yml 未写不支持的 nsis.installDir');
   }
 
-  /* ⚠ 2026-09-22 加的：签名配置必须缩进在 `win:` 之下。
-     electron-builder 26 的 schema 只认 win.signAndEditExecutable / win.signtoolOptions，
-     写在**顶层**会让它直接中止构建（"configuration has an unknown property ..."）——
-     CI 首次跑红就是这个，而本地 `npm run check` 当时完全查不出来（只有真跑 pack 才炸）。
-     这一项把"要跑几分钟打包才能发现"的错，提前成一条 0.1 秒的门禁。 */
-  const nestedOk = /^ {2}signAndEditExecutable:\s*true\s*$/m.test(yml) && /^ {2}signtoolOptions:\s*$/m.test(yml);
-  const topLevelBad = /^signAndEditExecutable:/m.test(yml) || /^signtoolOptions:/m.test(yml);
-  if (topLevelBad) {
-    fail('签名配置写在顶层 —— electron-builder 26 会拒绝构建',
-      '把 signAndEditExecutable / signtoolOptions 缩进到 win: 之下（见 yml 内注释）');
-  } else if (!nestedOk) {
-    fail('yml 里找不到 win: 之下的签名配置（signAndEditExecutable / signtoolOptions）',
-      'P0-5 要求发布前有签名卡点；若确实要移除，请同步更新本检查与 test/03');
-  } else {
-    ok('签名配置嵌套正确（win.signAndEditExecutable / win.signtoolOptions）');
-  }
+  
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -535,7 +520,6 @@ if (!testFiles.length) {
 }
 
 if (!exist('scripts/check-project.js')) fail('scripts/check-project.js 不在（自我检查）');
-if (!exist('scripts/check-signing.js')) warn('缺少 scripts/check-signing.js（P0-5 签名自检）', '签名是发布阻塞项');
 
 // CI
 if (!exist('.github/workflows/ci.yml')) {
@@ -659,7 +643,6 @@ for (const file of releaseGuides) {
     const line = raw.replace(/[\*`]/g, '');
     if (exist('LICENSE') && /仓库(?:目前)?(?:没有|无)\s*LICENSE/.test(line)) releaseDrift.push(file + ':' + (i + 1) + ' 许可状态');
     if (exist('server/cli-installer.js') && /桌面版只做检测/.test(line)) releaseDrift.push(file + ':' + (i + 1) + ' CLI 安装状态');
-    if (exist('scripts/check-signing.js') && /安装包(?:目前)?(?:没有|无)\s*代码签名/.test(line)) releaseDrift.push(file + ':' + (i + 1) + ' 签名状态');
   });
 }
 const projectGuide = read('docs/项目文档.md') || '';
@@ -673,11 +656,6 @@ if (exist('LICENSE') && exist('THIRD-PARTY-NOTICES.md')) {
     if (!section.includes('LICENSE') || !section.includes('THIRD-PARTY-NOTICES.md')) releaseDrift.push(name + ' 缺少许可与声明现状');
   }
 }
-if (exist('scripts/check-signing.js') && /signAndEditExecutable:\s*true/.test(read('electron-builder.yml') || '')) {
-  for (const [name, section] of [['项目文档 §10.2', projectStatus], ['发布流程 §9', releaseStatus]]) {
-    if (!section.includes('--require') || !section.includes('--verify')) releaseDrift.push(name + ' 缺少签名前后核验步骤');
-  }
-}
 if (exist('docs/CHANGELOG.md')) {
   const dodAgent = ((read('AGENTS.md') || '').match(/## 完成一项工作后的固定动作[^\n]*\n([\s\S]*?)(?=\n## |$)/) || [,''])[1];
   const dodProject = (projectGuide.match(/## 9\. 完成一项工作后的固定动作[^\n]*\n([\s\S]*?)(?=\n## |$)/) || [,''])[1];
@@ -686,8 +664,8 @@ if (exist('docs/CHANGELOG.md')) {
     if (!section.includes('docs/CHANGELOG.md')) releaseDrift.push(name + ' 未指向现行变更记录');
   }
 }
-if (releaseDrift.length) fail('发布文档现状漂移：' + releaseDrift.join('；'), '以实际许可、CLI 安装、签名配置及 CHANGELOG 位置同步现行指南');
-else ok('发布文档现状与许可、CLI 安装、签名配置、CHANGELOG 位置一致');
+if (releaseDrift.length) fail('发布文档现状漂移：' + releaseDrift.join('；'), '以实际许可、CLI 安装及 CHANGELOG 位置同步现行指南');
+else ok('发布文档现状与许可、CLI 安装、CHANGELOG 位置一致');
 
 // ════════════════════════════════════════════════════════════════
 // 12. 收尾清单一致性（AGENTS.md ↔ docs/项目文档.md §9，P0-3）
