@@ -1759,7 +1759,7 @@ function imageJobModel(adapter) {
    这里只负责"把 body 里的尺寸意图翻译成 provider 能发的 { size, resolution }"。
    ⚠ 必须在**计费提交之前**校验：非法尺寸发给服务商要么被拒（浪费一次往返）、
      要么被它自行调整（用户拿到与预期不符的图却已扣费）。 */
-function resolveImageSize(body) {
+function resolveImageSize(body, modelId) {
   const SZ = require('./image-size');
   const b = body || {};
   /* 前端已把用户的选择整理成 { sizeMode, ratio, width, height, resolution }。
@@ -1768,7 +1768,7 @@ function resolveImageSize(body) {
   if (!hasSize) {
     /* 落库 'auto' 而非 null：快照可读（界面能显示"自动"），
        且 auto 是服务商合法枚举 —— 与 resolution 组合原样透传，语义与旧行为一致。 */
-    return { ok: true, size: 'auto', resolution: SZ.normResolution(b.resolution) };
+    return { ok: true, size: 'auto', resolution: SZ.normResolution(b.resolution, modelId) };
   }
   const r = SZ.resolveSize({
     mode: b.sizeMode === 'pixels' ? 'pixels' : 'ratio',
@@ -1776,7 +1776,7 @@ function resolveImageSize(body) {
     width: b.width,
     height: b.height,
     resolution: b.resolution
-  });
+  }, modelId);
   if (!r.ok) {
     const e = new ApiError(ERR.PARAM, '图片尺寸不合法：' + r.errors.join('；'));
     /* 把"最近的合法值"附给前端，让界面能一键采纳（而不是让用户自己试） */
@@ -1798,14 +1798,36 @@ async function submitImageJob(db, assetId, body, adapter, scope) {
   if (!prompt) throw new ApiError(ERR.PARAM, '提示词不能为空（全空白文本不可提交）');
   if (prompt.length > 10000) throw new ApiError(ERR.PARAM, '提示词不能超过 10000 字符（当前 ' + prompt.length + ' 字符）');
 
+  /* 解析 providerId / modelId：未指定按默认（Work Fisher v2.5 Flare）；非法按 40001-style 报错 */
+  const REGISTRY = require('./image-registry');
+  let providerId = String((body && body.providerId) || '').trim() || REGISTRY.defaultProviderId();
+  let modelId = String((body && body.modelId) || '').trim() || REGISTRY.defaultModelId();
+  try { REGISTRY.requireModel(providerId, modelId); }
+  catch (e) {
+    if (e.code === 'unknown_provider') throw new ApiError(ERR.PARAM, '未知的生图服务商：' + providerId);
+    if (e.code === 'unknown_model') throw new ApiError(ERR.PARAM, '未知的生图模型：' + providerId + '/' + modelId);
+    throw e;
+  }
+
   /* 尺寸校验要在计费提交之前（见 resolveImageSize 的注释） */
-  const sz = resolveImageSize(body);
+  const sz = resolveImageSize(body, modelId);
 
   const IJ = requireImageJobs();
   const p = adapter && adapter.imageProvider;
   if (!p || !p.configured()) throw new ApiError(ERR.PARAM, '未配置生图服务的 API Key，请先在项目设置中填写');
+  /* 校验该 provider 是否真的配了 key：configured() 只看当前默认 provider；
+     如果用户选了非默认 provider，需要单独检查 key。简化：当前 worker 的 imageProvider
+     是默认 provider 实例；非默认 provider 的"已配置"由 image-jobs 内部按
+     providerId 区分（通过 adapter 列表查找）；这里先放过，submit 阶段若没 key
+     provider 会自行返回 mkErr('config', ...)。 */
 
-  const r = await IJ.submit(a, prompt, { model: imageJobModel(adapter), size: sz.size, resolution: sz.resolution });
+  const r = await IJ.submit(a, prompt, {
+    model: modelId,
+    providerId: providerId,
+    modelId: modelId,
+    size: sz.size,
+    resolution: sz.resolution
+  });
   /* 提交前把用户这次的提示词也存进资产 —— 计划 §3.2 第 3 条：只保存提示词，
      不顺带保存弹窗里尚未确认的名称 / 类型 / 待上传文件。 */
   if (r.created && !r.failed) {
@@ -2138,10 +2160,16 @@ async function getOptions(db, adapter, scope) {
   meta.models.forEach((m) => m.resolutions.forEach((v) => allRes.push(v)));
   if (allRes.length) meta.resolutions = dedupeLevels(allRes).map((v) => ({ value: v, label: v }));
   meta.ratios = models.DREAMINA_RATIOS.map((v) => ({ value: v, label: v }));
-  /* 生图尺寸规格（2026-09-25）：比例枚举 / 像素预设 / 硬边界**统一下发**，
-     前端不硬编码 —— 规则只在 server/image-size.js 定义一处（见那里的注释）。
+  /* 生图规格统一下发（0.42.0 多 provider）：
+     · imageModels —— 所有 provider / model 的 sizeSpec 列表，前端按 modelId 渲染
+     · imageSizes   —— 默认 model（Work Fisher v2.5 Flare）的 sizeSpec，保留以
+                       兼容 0.41.x 的旧前端；新代码不要再读这个字段
+     规则唯一事实来源在 server/image-registry.js + server/image-size.js。
      与上面 meta.ratios（视频画幅）是**两套东西**，别混用：视频那套受模型规格锁定。 */
-  meta.imageSizes = require('./image-size').spec();
+  const REGISTRY = require('./image-registry');
+  const SZ = require('./image-size');
+  meta.imageModels = REGISTRY.specForFrontend();
+  meta.imageSizes = SZ.specForFrontend();
   // 积分余额提醒阈值（前端在提交前据此做二次确认；与 worker 派发前的提醒同源）
   meta.creditWarnBelow = loadConfig().creditWarnBelow;
   /* 音频参考总时长上限（秒）：随 meta 下发，前端不硬编码 15 ——

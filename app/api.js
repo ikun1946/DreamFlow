@@ -290,7 +290,9 @@
        · 提交必须带**幂等键** —— 双击/网络重发落到同一个键，防重复扣费
          （后端还有一道"活动任务检查"，两道闸都在）；
        · 候选图预览走本地接口，页面拿不到服务商直链。 */
-    // 生图服务配置状态：{ configured, available, provider, model }
+    /* 0.42.0 多 provider：列出所有 provider 与每个的 model + 配置状态。
+       旧 imageProviderStatus 端点仍可访问（兼容老客户端），返回默认 provider 的状态。 */
+    listImageProviders: () => request('GET', '/system/image-providers', { query: scopeQuery() }),
     imageProviderStatus: () => request('GET', '/system/image-provider', { query: scopeQuery() }),
     // 取资产最新信息（分镜预览要用它拿**最新**提示词，分镜快照里的不能当来源）
     getAsset:     (id)        => request('GET', '/assets/' + id, { query: scopeQuery() }),
@@ -298,9 +300,11 @@
     /* 尺寸参数（2026-09-25）：sz 是面板整理好的
        { sizeMode:'ratio'|'pixels', ratio, width, height, resolution }。
        只带用户实际选了的字段 —— 前端不替服务端做归一（那边 image-size.js 是唯一事实来源）。 */
-    submitImageJob: (id, prompt, sz) => {
+    submitImageJob: (id, prompt, sz, providerId, modelId) => {
       const s = sz || {};
       const body = { prompt: prompt };
+      if (providerId) body.providerId = providerId;
+      if (modelId) body.modelId = modelId;
       if (s.sizeMode === 'pixels') { body.sizeMode = 'pixels'; body.width = s.width; body.height = s.height; }
       else { body.sizeMode = 'ratio'; body.ratio = s.ratio; body.resolution = s.resolution; }
       return request('POST', '/assets/' + id + '/image-jobs',

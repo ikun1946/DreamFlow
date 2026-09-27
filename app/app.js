@@ -3441,58 +3441,76 @@
 
   /* 尺寸控件 HTML。idp 前缀避免生图面板与设置页两份实例的 id 打架。
      val: { sizeMode, ratio, width, height, resolution }（来自设置里的生效默认值） */
-  function imageSizeControlHTML(idp, val) {
-    const spec = imgSizeSpec();
+  function imageSizeControlHTML(idp, val, modelSpec) {
+    const spec = modelSpec || imgSizeSpec();
     const v = val || {};
+    const providersList = (S && S.imageProvidersList) || [];
+    const configuredProviders = providersList.filter((p) => S && S.imageKeyMap ? !!S.imageKeyMap[p.providerId] : !!p.configured);
+    const showProviderSelect = configuredProviders.length >= 2;
+    const ratiosList = (spec && spec.ratios) || ((S.options && S.options.imageSizes && S.options.imageSizes.ratios) || []);
+    const resList = (spec && spec.resolutions) || ((S.options && S.options.imageSizes && S.options.imageSizes.resolutions) || []);
+    const presetsList = (spec && spec.presets) || ((S.options && S.options.imageSizes && S.options.imageSizes.presets) || []);
+    const limits = (spec && spec.limits) || ((S.options && S.options.imageSizes && S.options.imageSizes.limits) || { step: 16, min: 256, max: 3840 });
     if (!spec) {
-      /* /meta/options 尚未包含 imageSizes（服务端比前端新）：诚实地降级 */
-      return '<div class="isz" id="' + idp + 'Size"><p class="hint-sm">尺寸选项需要刷新页面后可用（当前页面缓存早于服务端）。</p></div>';
+      return '<div class="isz" id="' + idp + 'Size"><p class="hint-sm">尺寸选项需要刷新页面后可用。</p></div>';
     }
+    const providerPicker = showProviderSelect ? (
+      '<div class="isz-inline"><span class="hint-sm">服务商 / 模型</span>' +
+      '<select class="input-sm" data-iszprovidersel>' +
+        configuredProviders.map((p) =>
+          '<optgroup label="' + esc(p.label) + '">' +
+          (p.models || []).map((m) => {
+            const sel = m.id === (spec.modelId || 'workfisher-image-g-v2.5-flare');
+            return '<option value="' + esc(p.providerId + '|' + m.id) + '"' + (sel ? ' selected' : '') + '>' + esc(m.label) + '</option>';
+          }).join('') +
+          '</optgroup>'
+        ).join('') +
+      '</select></div>'
+    ) : '';
     const mode = v.sizeMode === 'pixels' ? 'pixels' : 'ratio';
-    const quick = ['1:1', '4:3', '16:9', '9:16'];
-    const ratioSel = spec.ratios.map((r) =>
+    const quick = (ratiosList || []).slice(0, 4);
+    const ratioSel = (ratiosList || []).map((r) =>
       '<option value="' + esc(r.id) + '"' + (r.id === v.ratio ? ' selected' : '') + '>' + esc(r.id) + '</option>').join('');
-    const resSel = spec.resolutions.map((r) =>
+    const resSel = (resList || []).map((r) =>
       '<option value="' + esc(r) + '"' + (r === (v.resolution || '1k') ? ' selected' : '') + '>' + esc(r) + '</option>').join('');
-    const presets = spec.presets.map((p) =>
+    const presets = (presetsList || []).map((p) =>
       '<button type="button" class="chip" data-iszpreset="' + p.width + 'x' + p.height + '" title="' + esc(p.hint || '') + '">' + esc(p.label) + '</button>').join('');
+    const showRatioPane = (ratiosList || []).length > 0;
+    const showPixelsPane = !!(spec.pixelMode !== false && (spec.fixedSizes || (limits && limits.max)));
+    const showResolutions = (resList || []).length > 0;
     return '' +
       '<div class="isz" id="' + idp + 'Size" data-iszroot="' + idp + '">' +
         '<div class="isz-row">' +
           '<div class="chips" role="tablist">' +
-            '<button type="button" class="chip' + (mode === 'ratio' ? ' on' : '') + '" data-iszmode="ratio">宽高比</button>' +
-            '<button type="button" class="chip' + (mode === 'pixels' ? ' on' : '') + '" data-iszmode="pixels">像素</button>' +
+            (showRatioPane ? '<button type="button" class="chip' + (mode === 'ratio' ? ' on' : '') + '" data-iszmode="ratio">宽高比</button>' : '') +
+            (showPixelsPane ? '<button type="button" class="chip' + (mode === 'pixels' ? ' on' : '') + '" data-iszmode="pixels">像素</button>' : '') +
           '</div>' +
           '<span class="grow"></span>' +
           '<span class="hint-sm" id="' + idp + 'Prev"></span>' +
         '</div>' +
-        /* 比例面板：快捷比例 + 全量枚举 + 分辨率档位 */
+        providerPicker +
         '<div class="isz-pane" data-iszpane="ratio"' + (mode === 'ratio' ? '' : ' hidden') + '>' +
           '<div class="chips">' +
-            quick.map((r) => '<button type="button" class="chip' + (v.ratio === r ? ' on' : '') + '" data-iszratio="' + r + '">' + r + '</button>').join('') +
-            '<select class="input-sm" data-iszratiosel aria-label="全部宽高比">' + ratioSel + '</select>' +
+            quick.map((r) => '<button type="button" class="chip' + (v.ratio === r.id ? ' on' : '') + '" data-iszratio="' + r.id + '">' + r.id + '</button>').join('') +
+            (ratioSel ? '<select class="input-sm" data-iszratiosel aria-label="全部宽高比">' + ratioSel + '</select>' : '') +
           '</div>' +
-          '<div class="isz-inline"><span class="hint-sm">分辨率</span>' +
+          (showResolutions ? '<div class="isz-inline"><span class="hint-sm">分辨率</span>' +
             '<select class="input-sm" data-iszres>' + resSel + '</select>' +
-            '<span class="hint-sm">由服务商按档位出图；「自动」交给它决定</span></div>' +
+            '<span class="hint-sm">由服务商按档位出图</span></div>' : '') +
         '</div>' +
-        /* 像素面板：宽 × 高 + 预设。选择像素后服务商按精确尺寸出图（忽略分辨率档） */
         '<div class="isz-pane" data-iszpane="pixels"' + (mode === 'pixels' ? '' : ' hidden') + '>' +
           '<div class="isz-inline">' +
-            '<input class="input-sm" type="number" id="' + idp + 'W" min="' + spec.limits.min + '" max="' + spec.limits.max + '" step="' + spec.limits.step + '" value="' + (v.width || '') + '" aria-label="宽度（像素）" style="width:96px" />' +
+            '<input class="input-sm" type="number" id="' + idp + 'W" min="' + limits.min + '" max="' + limits.max + '" step="' + limits.step + '" value="' + (v.width || '') + '" aria-label="宽度（像素）" style="width:96px" />' +
             '<span class="hint-sm">×</span>' +
-            '<input class="input-sm" type="number" id="' + idp + 'H" min="' + spec.limits.min + '" max="' + spec.limits.max + '" step="' + spec.limits.step + '" value="' + (v.height || '') + '" aria-label="高度（像素）" style="width:96px" />' +
-            '<span class="hint-sm">px · 须为 16 的倍数</span>' +
+            '<input class="input-sm" type="number" id="' + idp + 'H" min="' + limits.min + '" max="' + limits.max + '" step="' + limits.step + '" value="' + (v.height || '') + '" aria-label="高度（像素）" style="width:96px" />' +
+            '<span class="hint-sm">px</span>' +
           '</div>' +
-          '<div class="chips">' + presets + '</div>' +
+          (presets ? '<div class="chips">' + presets + '</div>' : '') +
         '</div>' +
         '<p class="hint-sm" id="' + idp + 'Warn" style="color:var(--warn,#B45309)" hidden></p>' +
       '</div>';
   }
 
-  /* 尺寸控件接线。返回 { get, set }：
-     get()   → 提交体用的 { sizeMode, ratio, width, height, resolution }
-     set(v)  → 外部整体替换状态（回落采纳等） */
   function wireImageSizeControl(root, idp, initial, onChange) {
     const spec = imgSizeSpec();
     const q = (s) => root.querySelector(s);
@@ -3503,7 +3521,37 @@
       width: (initial && initial.width) || null,
       height: (initial && initial.height) || null
     };
-    if (!spec) return { get: () => null, set: () => {} };   // 降级：无规格不可调
+    if (!spec) return { get: () => null, set: () => {}, getSelectedProviderId: () => 'work-fisher', getSelectedModelId: () => 'workfisher-image-g-v2.5-flare', getSelectedModel: () => null };   // 降级
+    /* 0.42.0：从控件态读出 provider / model（provider/model 选择器在 imageSizeControlHTML 里渲染） */
+    function getSelectedProviderId() {
+      const sel = q('[data-iszprovidersel]');
+      if (!sel || !sel.value) return (spec.providerId || 'work-fisher');
+      const v = String(sel.value); return v.split('|')[0] || (spec.providerId || 'work-fisher');
+    }
+    function getSelectedModelId() {
+      const sel = q('[data-iszprovidersel]');
+      if (!sel || !sel.value) return (spec.modelId || 'workfisher-image-g-v2.5-flare');
+      const v = String(sel.value); return v.split('|')[1] || (spec.modelId || 'workfisher-image-g-v2.5-flare');
+    }
+    function getSelectedModel() {
+      const id = getSelectedModelId();
+      const pid = getSelectedProviderId();
+      const list = (S && S.imageProvidersList) || [];
+      for (const p of list) {
+        if (p.providerId !== pid) continue;
+        for (const m of (p.models || [])) {
+          if (m.id === id) return { providerId: pid, modelId: id, label: m.label || id };
+        }
+      }
+      return null;
+    }
+    /* provider/model 改变时通知外面重新渲染（外面通常会重 wire 控件） */
+    const provSel = q('[data-iszprovidersel]');
+    if (provSel) {
+      provSel.addEventListener('change', () => {
+        if (typeof onChange === 'function') onChange(st);
+      });
+    }
 
     const pane = (m) => q('[data-iszpane="' + m + '"]');
     const prevEl = q('#' + idp + 'Prev');
@@ -3894,14 +3942,15 @@
             : (sz.ratio === 'auto' ? '自动' : sz.ratio + '（' + sz.resolution + '）'));
       const confirmed = await uiConfirm('确认发起付费生图',
         '资产：' + (o.assetName || '(未命名)') + '\n' +
-        '模型：' + (p.model || 'workfisher-image-g-v2.5-flare') + '\n' +
+        '服务商：' + (p.provider || 'work-fisher') + '\n' +
+        '模型：' + (typeof getSelectedModelLabel === 'function' ? getSelectedModelLabel() : (p.model || 'workfisher-image-g-v2.5-flare')) + '\n' +
         '张数：1 张 · 尺寸：' + szText + ' · 格式：png\n' +
         '提示词：' + (prompt.length > 120 ? prompt.slice(0, 120) + '…' : prompt) + '\n' +
         '服务商按实际消耗收费，这次提交会产生真实调用。');
       if (!confirmed) return { ok: false, canceled: true };
 
       try {
-        const r = await Api.submitImageJob(assetId, prompt, sz);
+        const r = await Api.submitImageJob(assetId, prompt, sz, (typeof szCtl.getSelectedProviderId === 'function' ? szCtl.getSelectedProviderId() : 'work-fisher'), (typeof szCtl.getSelectedModelId === 'function' ? szCtl.getSelectedModelId() : (p.model || 'workfisher-image-g-v2.5-flare')));
         /* created=false 表示已有活动任务（后端拦住第二次提交，防重复扣费） */
         if (r && r.created === false) {
           toast('该资产已有进行中的生图任务，已为你显示它的进度', 'warn');
@@ -6355,57 +6404,53 @@
        · 网页版 —— 由启动者在环境变量 WORK_FISHER_API_KEY 里提供，
          页面**不提供编辑框**，因为没有安全的落点（前端持久化 = 泄露）。
      status() 的形状由后端 /system/image-provider 定义，这里只渲染。 */
-  function imageProviderCardHTML() {
-    const p = S.imgProvider;
+  function imageProvidersCardHTML() {
+    /* 0.42.0：列出所有 provider，每个一行（已配/未配、桌面版给录入/删除）。 */
+    const list = S.imageProvidersList;
     const head = '<div class="scard-hd"><div class="scard-hd-t">' +
-      '<h3>图片生成服务</h3><p>素材库图片资产的生图服务（Work Fisher · Image G v2.5 Flare）</p></div></div>';
-    if (!p) {
+      '<h3>图片生成服务</h3><p>素材库图片资产的生图服务（多 provider 可选）</p></div></div>';
+    if (!list) {
       return '<section class="scard">' + head + '<div class="scard-bd"><p class="hint-sm">读取中…</p></div></section>';
     }
-    const isDesktop = !!(window.JCDesktop && window.JCDesktop.imageKeyStatus);
+    const isDesktop = !!(window.JCDesktop && window.JCDesktop.imageListProviders);
+    const encMap = S.imageKeyEncryptionMap || {};
     const rows = [];
-
-    if (p.error) {
-      rows.push('<div class="banner warn"><span>' + esc(p.error) + '</span></div>');
+    if (S.imgProvider && S.imgProvider.error) {
+      rows.push('<div class="banner warn"><span>' + esc(S.imgProvider.error) + '</span></div>');
     }
-
-    if (isDesktop) {
-      /* 桌面版：显示"已配置 / 未配置"，并给写入 / 删除入口。
-         ⚠ 永不回显密钥本身（连掩码都不给）—— "已配置"就是全部信息。 */
-      const encOk = S.imgKeyEncryption !== 'unavailable';
-      rows.push('<div class="cli-state">' + (p.configured ? I.check : I.alert) +
-        '<span>' + (p.configured ? '已配置（密钥已加密保存）' : '未配置') + '</span></div>');
-      if (!encOk) {
-        rows.push('<div class="banner warn"><span>系统加密能力不可用，无法安全保存密钥。' +
-          '本应用不会把密钥以明文写入磁盘，请先在系统层面修复凭据保护后再试。</span></div>');
+    list.forEach((p) => {
+      const hasKey = !!(S.imageKeyMap && S.imageKeyMap[p.providerId]);
+      const encOk = (encMap[p.providerId] || 'available') !== 'unavailable';
+      const modelsList = (p.models || []).map((m) => esc(m.label || m.id)).join(' / ');
+      rows.push('<div class="ipk-row" data-providerid="' + esc(p.providerId) + '">');
+      rows.push('<div class="cli-state">' + (hasKey ? I.check : I.alert) +
+        '<span>' + esc(p.label || p.providerId) + (hasKey ? ' · 已配置' : ' · 未配置') + '</span></div>');
+      rows.push('<p class="hint-sm">' + esc(p.description || '') + (modelsList ? (' · 模型：' + modelsList) : '') + '</p>');
+      if (isDesktop) {
+        if (!encOk) {
+          rows.push('<div class="banner warn"><span>系统加密能力不可用，无法安全保存密钥。</span></div>');
+        } else {
+          rows.push('<div class="row-inline"><label class="label-sm">API Key</label>' +
+            '<input class="input-sm" data-ipk-input type="password" autocomplete="off" ' +
+              'placeholder="粘贴 ' + esc(p.label) + ' 控制台创建的密钥" style="flex:1;min-width:0" /></div>');
+          rows.push('<div class="cli-actions">' +
+            '<button class="btn-primary" data-ipkact="save">保存密钥</button>' +
+            (hasKey ? '<button class="btn-outline" data-ipkact="clear">删除密钥</button>' : '') +
+            '</div>');
+        }
       } else {
-        rows.push('<div class="row-inline"><label class="label-sm" for="ipkInput">API Key</label>' +
-          '<input class="input-sm" id="ipkInput" type="password" autocomplete="off" ' +
-            'placeholder="粘贴 Work Fisher 控制台创建的密钥" style="flex:1;min-width:0" /></div>');
-        rows.push('<div class="cli-actions">' +
-          '<button class="btn-primary" data-ipkact="save">保存密钥</button>' +
-          (p.configured ? '<button class="btn-outline" data-ipkact="clear">删除密钥</button>' : '') +
-          '</div>');
+        rows.push('<div class="hint-sm">' + (hasKey ? '已由运行环境配置（' + esc(p.providerKeyEnv || '?') + '）。' : '未配置：启动前需设 ' + esc(p.providerKeyEnv || '?') + '。') + '</div>');
       }
-      rows.push('<p class="hint-sm">密钥经系统加密后保存在本机，页面与日志都无法读回。' +
-        '「已保存」只表示密钥已妥善保管，不代表服务商鉴权或余额已验证 —— ' +
-        '首次提交若返回鉴权/余额错误，会在生图区给出可操作的提示。</p>');
+      rows.push('</div>');
+    });
+    if (!isDesktop) {
+      rows.push('<p class="hint-sm">网页版不提供密钥编辑入口 —— 前端没有安全的密钥存放位置。</p>');
     } else {
-      /* 网页版：只读说明。没有编辑框是**刻意**的（见上方注释）。 */
-      rows.push('<div class="cli-state">' + (p.configured ? I.check : I.alert) +
-        '<span>' + (p.configured ? '已由运行环境配置' : '未配置') + '</span></div>');
-      rows.push('<p class="hint-sm">' + (p.configured
-        ? '密钥由服务启动环境提供（环境变量 WORK_FISHER_API_KEY），本页不显示也不修改它。'
-        : '请由启动者在启动服务前设置环境变量 WORK_FISHER_API_KEY，然后重启服务。网页版不提供密钥编辑入口 —— 前端没有安全的密钥存放位置。') +
-        '</p>');
-    }
-
-    if (p.model) {
-      rows.push('<div class="row-inline"><span class="label-sm">模型</span>' +
-        '<span class="hint-sm">' + esc(p.model) + '</span></div>');
+      rows.push('<p class="hint-sm">每个 provider 的密钥单独加密存于本机；删除只影响本 provider。</p>');
     }
     return '<section class="scard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
   }
+  function imageProviderCardHTML() { return imageProvidersCardHTML(); }
 
   function dataDirCardHTML() {
     const p = S.paths;
@@ -7033,165 +7078,29 @@
        用捕获阶段挂一次，避免逐个处理器去加。 */
     ['click', 'change', 'input'].forEach((ev) =>
       $('#settingsBody').addEventListener(ev, () => { S.settingsDirty = true; }, true));
-    $('#settingsBody').addEventListener('click', (e) => {
-      const cliact = e.target.closest('[data-cliact]');
-      if (cliact) { runCliAction(cliact.dataset.cliact); return; }
-      /* 应用更新（仅桌面版会渲染出这些按钮） */
-      const updact = e.target.closest('[data-updact]');
-      if (updact) { runUpdateAction(updact.dataset.updact); return; }
-      const dl = e.target.closest('[data-sdl]');
-      if (dl) {
-        const v = dl.dataset.sdl;
-        const presets = opts().settings.delimiterPresets;
-        if (v === 'newline') S.settings.delimiter = { type: 'newline', value: '' };
-        else if (v === '__custom') S.settings.delimiter = { type: 'custom', value: persetsFix($('#setDelim') && $('#setDelim').value) };
-        else S.settings.delimiter = { type: 'custom', value: v };
-        renderSettings(); return;
-      }
-      const conc = e.target.closest('[data-conc]');
-      if (conc) {
-        const lim = opts().settings.concurrency;
-        const max = lim.max > 0 ? lim.max : Infinity;   // max=0 表示不限制
-        S.settings.queue.concurrency = Math.max(lim.min, Math.min(max, S.settings.queue.concurrency + Number(conc.dataset.conc)));
-        renderSettings(); return;
-      }
-      /* 开关：按 data-toggle 的值分派。
-         · autoRetry 改的是生成行为（写 S.settings.queue）
-         · compact   改的是显示偏好（写 #app 的类，与旧顶栏按钮同源）
-         · theme     改的是外观偏好（写 <html> 的 data-theme，持久化到 localStorage；**不碰 S.settings**）
-         · slotmode  改的是素材槽位排布（deck 堆叠 / scroll 横向滚动，写 <html> 的 data-slotmode）
-         三者互不影响，各自只动自己的那一份状态。 */
-      const tg = e.target.closest('[data-toggle]');
-      if (tg) {
-        const k = tg.dataset.toggle;
-        if (k === 'autoRetry') S.settings.queue.autoRetry = !S.settings.queue.autoRetry;
-        else if (k === 'compact') applyDensity(!isCompact());
-        else if (k === 'theme') setTheme(tg.dataset.themeVal);   // .seg 三态：读 data-theme-val
-        else if (k === 'slotmode') {
-          setSlotMode(tg.dataset.slotmodeVal);
-          /* 切换后立即按新模式重排素材槽位（0.39.x）：不等下一次轮询 ——
-             否则 deck → scroll 时牌堆的负 margin 还挂在行内样式上，看起来"还是堆叠"。 */
-          S.deckOpen = {};
-          document.querySelectorAll('.slots.deck-open').forEach((el) => el.classList.remove('deck-open'));
-          layoutDecks();
-        }
-        renderSettings(); return;
-      }
-    });
-    // 默认参数下拉：change 即改本地状态，「保存设置」时统一 PUT
-    $('#settingsBody').addEventListener('change', (e) => {
-      const sel = e.target.closest('select[data-set]');
-      if (!sel || !S.settings || !S.settings.defaults) return;
-      const k = sel.dataset.set;
-      if (k === 'model') {
-        const spec = modelSpecOf(opts(), sel.value);
-        const d = S.settings.defaults;
-        d.model = sel.value;
-        if (spec) {
-          if (spec.resolutions && spec.resolutions.length) {
-            // 大小写不敏感匹配优先（720P ↔ 720p），否则取该模型首选档位
-            const hit = spec.resolutions.find((v) => String(v).toLowerCase() === String(d.resolution).toLowerCase());
-            d.resolution = hit || spec.resolutions[0];
-          }
-          if (spec.ratios && spec.ratios.length && !spec.ratios.includes(d.ratio)) d.ratio = spec.ratios[0];
-          if (spec.duration) d.durationSec = Math.max(spec.duration.min, Math.min(spec.duration.max, d.durationSec));
-        }
-        renderSettings();
-        return;
-      }
-      if (k === 'durationSec') S.settings.defaults.durationSec = Number(sel.value);
-      else S.settings.defaults[k] = sel.value;
-    });
-    $('#settingsBody').addEventListener('input', (e) => {
-      if (e.target.id === 'setDelim') {
-        S.settings.delimiter = { type: 'custom', value: e.target.value };
-        const ex = $('.example .in', $('#settingsBody'));
-        if (ex) ex.textContent = '镜头推进' + (e.target.value || '↵') + '雨滴落在玻璃窗';
-      }
-    });
-    /* 数据目录卡片的交互（2026-09-23 新增）。刻意**独立成一个监听**，
-       不去动上面那个既有分派 —— 它的分支已经很多，混进去容易碰坏既有行为。 */
-    $('#settingsBody').addEventListener('click', async (e) => {
-      const b = e.target.closest('[data-ddact]');
-      if (!b || b.disabled) return;
-      const act = b.dataset.ddact;
-
-      if (act === 'open') {
-        if (window.JCDesktop && window.JCDesktop.openDataDir) window.JCDesktop.openDataDir();
-        return;
-      }
-      if (act === 'restart') {
-        if (window.JCDesktop && window.JCDesktop.relaunch) window.JCDesktop.relaunch();
-        return;
-      }
-      if (act === 'pick') {
-        if (!(window.JCDesktop && window.JCDesktop.chooseDirectory)) return;
-        try {
-          const r = await window.JCDesktop.chooseDirectory((S.paths && S.paths.dataDir) || '');
-          const inp = $('#ddInput');
-          if (r && r.path && inp) inp.value = r.path;
-        } catch (err) { toast((err && err.message) || '打开目录选择器失败', 'warn'); }
-        return;
-      }
-      if (act !== 'move' && act !== 'switch') return;
-
-      const inp = $('#ddInput');
-      const dir = inp ? String(inp.value || '').trim() : '';
-      if (!dir) { toast('请先选择或填写新的数据目录', 'warn'); return; }
-
-      /* 二次确认。文案必须把「会发生什么」和「不会发生什么」都讲明 ——
-         用户在这里最担心的就是"我的项目会不会没了"。 */
-      const lines = act === 'move'
-        ? ['把数据复制到：' + dir,
-           '原目录会保留（可作为回退），确认无误后可自行删除。',
-           '目标目录必须为空，否则会被拒绝。',
-           '完成后需要重启应用才生效。']
-        : ['把数据目录指向：' + dir,
-           '不会搬动任何文件。',
-           '如果新目录里没有数据，重启后你会看到空库 —— 旧数据仍在原目录。',
-           '完成后需要重启应用才生效。'];
-      const head = act === 'move' ? '迁移并切换数据目录？' : '仅切换数据目录？';
-      if (!window.confirm(head + '\n\n' + lines.map((x) => '· ' + x).join('\n'))) return;
-
-      S.pathsBusy = true; renderSettings();
-      try {
-        const rep = await Api.setDataDir(dir, act);
-        S.paths = await Api.getRuntimePaths();
-        S.pathsBusy = false; renderSettings();
-        if (act === 'move') {
-          toast('已迁移 ' + ((rep && rep.moved) || []).join('、') + '（' + fmtBytes((rep && rep.bytes) || 0) + '）并切换；重启后生效', 'ok');
-        } else {
-          toast('已切换数据目录（未搬动数据）；重启后生效', 'ok');
-        }
-      } catch (err) {
-        S.pathsBusy = false; renderSettings();
-        toast((err && err.message) || '切换失败', 'warn');
-      }
-    });
-
-    /* 图片生成服务卡片的交互（2026-09-25 阶段 4）。同样独立成一个监听。
-       ⚠ 这里**只经具名 IPC**（JCDesktop.imageSetKey / imageClearKey）——
-         密钥走"页面 → 主进程 → safeStorage"，不进后端 HTTP，也就不会进任何响应。
-       ⚠ 保存成功**立刻清空输入框**：避免密钥停留在 DOM 里被后续快照/截图带走。 */
+        /* 0.42.0 多 provider 密钥：data-providerid 来自外层 .ipk-row，data-ipk-input 是该 provider 的输入框。
+       保存 / 删除时把 providerId 传给 IPC（不传则兼容 0.41.x 默认 provider 的旧 IPC）。 */
     $('#settingsBody').addEventListener('click', async (e) => {
       const b = e.target.closest('[data-ipkact]');
       if (!b || b.disabled) return;
       const act = b.dataset.ipkact;
       const J = window.JCDesktop;
       if (!(J && J.imageSetKey)) return;
+      const row = b.closest('[data-providerid]');
+      const providerId = row ? row.dataset.providerid : null;
 
       if (act === 'save') {
-        const inp = $('#ipkInput');
+        const inp = row ? row.querySelector('[data-ipk-input]') : null;
         const val = inp ? String(inp.value || '').trim() : '';
         if (!val) { toast('请先粘贴 API Key', 'warn'); return; }
         b.disabled = true;
         try {
-          const r = await J.imageSetKey(val);
-          if (inp) inp.value = '';                     // 无论成败都不把密钥留在 DOM 里
+          const r = await J.imageSetKey(providerId, val);
+          if (inp) inp.value = '';
           if (r && r.ok) {
             toast('密钥已加密保存', 'ok');
-            /* 重新取一次状态，让"未配置"变成"已配置"、并放出生图区 */
             S.imgProvider = null;
+            S.imageProvidersList = null;
             await ensureImageProvider();
             renderSettings();
           } else if (r && r.reason === 'unavailable') {
@@ -7205,13 +7114,14 @@
       }
 
       if (act === 'clear') {
-        if (!window.confirm('删除已保存的 API Key？\n\n删除后素材生图会立刻不可用，重新启用需再次粘贴密钥。')) return;
+        if (!window.confirm('删除已保存的 API Key？\n\n删除后该 provider 的生图会立刻不可用，重新启用需再次粘贴密钥。')) return;
         b.disabled = true;
         try {
-          const r = await J.imageClearKey();
+          const r = await J.imageClearKey(providerId);
           if (r && r.ok) {
             toast('密钥已删除', 'ok');
             S.imgProvider = null;
+            S.imageProvidersList = null;
             await ensureImageProvider();
             renderSettings();
           } else {
@@ -7222,7 +7132,7 @@
       }
     });
 
-    /* 图片生成默认尺寸卡片的交互（2026-09-25）。又是一个独立监听 —— 同一条纪律：
+    /* 图片生成默认尺寸卡片的交互图片生成默认尺寸卡片的交互（2026-09-25）。又是一个独立监听 —— 同一条纪律：
        既有分派分支已经很多，新功能各管各的，互不碰。 */
     $('#settingsBody').addEventListener('click', async (e) => {
       const b = e.target.closest('[data-iszact]');

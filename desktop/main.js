@@ -593,10 +593,18 @@ async function boot() {
      ⚠ 绝不经 IPC / HTTP 出口返回（IPC 只回布尔状态）。 */
   imageKeyStore = imageKeyStoreMod.makeImageKeyStore({
     safeStorage: require('electron').safeStorage,
-    filePath: imageKeyStoreMod.keyFilePath(paths.userData)
+    userDataDir: paths.userData
   });
   if (!imageKeyStore.encryptionAvailable()) {
     console.warn('[desktop] 系统加密能力不可用：图片生图密钥将无法保存（不会降级为明文）');
+  } else {
+    /* 0.41.x → 0.42.0 一次性迁移：旧 image-provider-key.json → image-provider-key-work-fisher.json。
+       仅当 userData 下有 0.41.x 旧文件时跑一次；失败保留旧文件，绝不删除未读懂的文件。 */
+    try {
+      const m = imageKeyStore.migrateLegacy();
+      if (m && m.migrated) console.log('[desktop] 生图密钥已从 0.41.x 单文件迁移到多 provider 布局');
+      else if (m && m.reason && m.reason !== 'no_legacy') console.log('[desktop] 生图密钥迁移：' + m.reason);
+    } catch (e) { /* 迁移失败不该阻断启动 */ }
   }
 
   cfg = loadConfig({
@@ -617,8 +625,15 @@ async function boot() {
          "刚填的不生效、删掉的还能用"（与 dreamina 适配器同一条教训）。
        ⚠ 桌面版**忽略** workFisherApiKey 环境变量 —— 密钥只走 safeStorage，
          避免"环境变量"与"加密存储"两个来源打架、且环境变量更容易被看见。 */
-    imageKeyProvider: () => {
-      try { return imageKeyStore ? imageKeyStore.getKey() : ''; } catch (e) { return ''; }
+    /* 0.42.0 多 provider：按 providerId 取；缺省回退到默认 provider 的 key。
+       这是 createServer 注入的读取函数，桌面版的密钥**只**从这条路径走。 */
+    imageKeyProvider: (providerId) => {
+      try {
+        if (!imageKeyStore) return '';
+        if (providerId) return imageKeyStore.getKey(providerId);
+        /* 旧调用（不传 providerId） → 用默认 provider 的 key，与 0.41.x 兼容 */
+        return imageKeyStore.getKey();
+      } catch (e) { return ''; }
     }
   });
   console.log('[desktop] 服务端口 ' + (cfg.port === 0 ? '(随机)' : cfg.port) + '，Token 已生成（长度 ' + cfg.token.length + '）');
@@ -1048,21 +1063,33 @@ ipcMain.handle('shell:openExternal', (e, u) => { openExternalSafely(u); return t
    ★ 刻意**不提供** image:getKey —— 页面永远拿不回密钥。
      真正的取用只发生在 createServer 注入的 imageKeyProvider 内部（服务端进程内）。
    与 update:status 的 hasToken 是同一条原则：密钥只进不出。 */
-ipcMain.handle('image:keyStatus', () => {
-  if (!imageKeyStore) return { hasKey: false, encryption: 'unavailable' };
-  return imageKeyStore.status();
+/* ---------------- 图片生图密钥（多 provider · 0.42.0） ----------------
+   具名 IPC，providerId 作为参数：
+     image:listProviders → [{ providerId, hasKey, encryption }, ...]（页面用来画设置面板）
+     image:keyStatus(providerId) → { hasKey, encryption }
+     image:setKey(providerId, plain) → { ok, reason? }
+     image:clearKey(providerId) → { ok, reason? }
+   ★ 仍**没有** image:getKey —— 页面永远拿不回密钥。真正的取用只在
+     createServer 注入的 imageKeyProvider(providerId) 内部（服务端进程内）。 */
+ipcMain.handle('image:listProviders', () => {
+  if (!imageKeyStore) return [];
+  return imageKeyStore.statusList();
 });
-ipcMain.handle('image:setKey', (_e, plain) => {
+ipcMain.handle('image:keyStatus', (_e, providerId) => {
+  if (!imageKeyStore) return { hasKey: false, encryption: 'unavailable' };
+  return imageKeyStore.status(providerId);
+});
+ipcMain.handle('image:setKey', (_e, providerId, plain) => {
   if (!imageKeyStore) return { ok: false, reason: 'unavailable' };
-  const r = imageKeyStore.setKey(plain);
-  /* 日志只记结果，**不记密钥本身**（哪怕截断也不行） */
-  console.log('[desktop] 生图密钥保存：' + (r.ok ? '成功' : ('失败(' + r.reason + ')')));
+  const r = imageKeyStore.setKey(providerId, plain);
+  /* 日志只记结果 + providerId，**不记密钥本身** */
+  console.log('[desktop] 生图密钥保存（' + providerId + '）：' + (r.ok ? '成功' : ('失败(' + r.reason + ')')));
   return r;
 });
-ipcMain.handle('image:clearKey', () => {
+ipcMain.handle('image:clearKey', (_e, providerId) => {
   if (!imageKeyStore) return { ok: true };
-  const r = imageKeyStore.clearKey();
-  console.log('[desktop] 生图密钥删除：' + (r.ok ? '成功' : ('失败(' + r.reason + ')')));
+  const r = imageKeyStore.clearKey(providerId);
+  console.log('[desktop] 生图密钥删除（' + providerId + '）：' + (r.ok ? '成功' : ('失败(' + r.reason + ')')));
   return r;
 });
 
