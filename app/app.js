@@ -7134,7 +7134,121 @@
        用捕获阶段挂一次，避免逐个处理器去加。 */
     ['click', 'change', 'input'].forEach((ev) =>
       $('#settingsBody').addEventListener(ev, () => { S.settingsDirty = true; }, true));
-        /* 0.42.0 多 provider 密钥：data-providerid 来自外层 .ipk-row，data-ipk-input 是该 provider 的输入框。
+    /* 0.42.0 多服务商改造时误删了这组既有事件委托：按钮仍被渲染，却无人接收点击。
+       集中保留设置项的派发，重绘 settingsBody 后仍能操作新节点。 */
+    $('#settingsBody').addEventListener('click', (e) => {
+      const cliact = e.target.closest('[data-cliact]');
+      if (cliact) { runCliAction(cliact.dataset.cliact); return; }
+      const updact = e.target.closest('[data-updact]');
+      if (updact) { runUpdateAction(updact.dataset.updact); return; }
+      const dl = e.target.closest('[data-sdl]');
+      if (dl) {
+        const v = dl.dataset.sdl;
+        if (v === 'newline') S.settings.delimiter = { type: 'newline', value: '' };
+        else if (v === '__custom') S.settings.delimiter = { type: 'custom', value: persetsFix($('#setDelim') && $('#setDelim').value) };
+        else S.settings.delimiter = { type: 'custom', value: v };
+        renderSettings(); return;
+      }
+      const conc = e.target.closest('[data-conc]');
+      if (conc) {
+        const lim = opts().settings.concurrency;
+        const max = lim.max > 0 ? lim.max : Infinity;
+        S.settings.queue.concurrency = Math.max(lim.min, Math.min(max, S.settings.queue.concurrency + Number(conc.dataset.conc)));
+        renderSettings(); return;
+      }
+      const tg = e.target.closest('[data-toggle]');
+      if (tg) {
+        const k = tg.dataset.toggle;
+        if (k === 'autoRetry') S.settings.queue.autoRetry = !S.settings.queue.autoRetry;
+        else if (k === 'compact') applyDensity(!isCompact());
+        else if (k === 'theme') setTheme(tg.dataset.themeVal);
+        else if (k === 'slotmode') {
+          setSlotMode(tg.dataset.slotmodeVal);
+          /* 切换后立即清掉牌堆布局，避免素材槽位仍显示旧模式。 */
+          S.deckOpen = {};
+          document.querySelectorAll('.slots.deck-open').forEach((el) => el.classList.remove('deck-open'));
+          layoutDecks();
+        }
+        renderSettings();
+      }
+    });
+    // 默认参数下拉在本地修改，保存设置时统一提交。
+    $('#settingsBody').addEventListener('change', (e) => {
+      const sel = e.target.closest('select[data-set]');
+      if (!sel || !S.settings || !S.settings.defaults) return;
+      const k = sel.dataset.set;
+      if (k === 'model') {
+        const spec = modelSpecOf(opts(), sel.value);
+        const d = S.settings.defaults;
+        d.model = sel.value;
+        if (spec) {
+          if (spec.resolutions && spec.resolutions.length) {
+            const hit = spec.resolutions.find((v) => String(v).toLowerCase() === String(d.resolution).toLowerCase());
+            d.resolution = hit || spec.resolutions[0];
+          }
+          if (spec.ratios && spec.ratios.length && !spec.ratios.includes(d.ratio)) d.ratio = spec.ratios[0];
+          if (spec.duration) d.durationSec = Math.max(spec.duration.min, Math.min(spec.duration.max, d.durationSec));
+        }
+        renderSettings();
+        return;
+      }
+      if (k === 'durationSec') S.settings.defaults.durationSec = Number(sel.value);
+      else S.settings.defaults[k] = sel.value;
+    });
+    $('#settingsBody').addEventListener('input', (e) => {
+      if (e.target.id === 'setDelim') {
+        S.settings.delimiter = { type: 'custom', value: e.target.value };
+        const ex = $('.example .in', $('#settingsBody'));
+        if (ex) ex.textContent = '镜头推进' + (e.target.value || '↵') + '雨滴落在玻璃窗';
+      }
+    });
+    /* 数据目录单独处理：迁移与切换都要二次确认，且只在桌面端可选目录。 */
+    $('#settingsBody').addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-ddact]');
+      if (!b || b.disabled) return;
+      const act = b.dataset.ddact;
+      if (act === 'open') {
+        if (window.JCDesktop && window.JCDesktop.openDataDir) window.JCDesktop.openDataDir();
+        return;
+      }
+      if (act === 'restart') {
+        if (window.JCDesktop && window.JCDesktop.relaunch) window.JCDesktop.relaunch();
+        return;
+      }
+      if (act === 'pick') {
+        if (!(window.JCDesktop && window.JCDesktop.chooseDirectory)) return;
+        try {
+          const r = await window.JCDesktop.chooseDirectory((S.paths && S.paths.dataDir) || '');
+          const inp = $('#ddInput');
+          if (r && r.path && inp) inp.value = r.path;
+        } catch (err) { toast((err && err.message) || '打开目录选择器失败', 'warn'); }
+        return;
+      }
+      if (act !== 'move' && act !== 'switch') return;
+      const inp = $('#ddInput');
+      const dir = inp ? String(inp.value || '').trim() : '';
+      if (!dir) { toast('请先选择或填写新的数据目录', 'warn'); return; }
+      const lines = act === 'move'
+        ? ['把数据复制到：' + dir, '原目录会保留（可作为回退），确认无误后可自行删除。',
+           '目标目录必须为空，否则会被拒绝。', '完成后需要重启应用才生效。']
+        : ['把数据目录指向：' + dir, '不会搬动任何文件。',
+           '如果新目录里没有数据，重启后你会看到空库 —— 旧数据仍在原目录。',
+           '完成后需要重启应用才生效。'];
+      const head = act === 'move' ? '迁移并切换数据目录？' : '仅切换数据目录？';
+      if (!window.confirm(head + '\n\n' + lines.map((x) => '· ' + x).join('\n'))) return;
+      S.pathsBusy = true; renderSettings();
+      try {
+        const rep = await Api.setDataDir(dir, act);
+        S.paths = await Api.getRuntimePaths();
+        S.pathsBusy = false; renderSettings();
+        if (act === 'move') toast('已迁移 ' + ((rep && rep.moved) || []).join('、') + '（' + fmtBytes((rep && rep.bytes) || 0) + '）并切换；重启后生效', 'ok');
+        else toast('已切换数据目录（未搬动数据）；重启后生效', 'ok');
+      } catch (err) {
+        S.pathsBusy = false; renderSettings();
+        toast((err && err.message) || '切换失败', 'warn');
+      }
+    });
+    /* 0.42.0 多 provider 密钥：data-providerid 来自外层 .ipk-row，data-ipk-input 是该 provider 的输入框。
        保存 / 删除时把 providerId 传给 IPC（不传则兼容 0.41.x 默认 provider 的旧 IPC）。 */
     $('#settingsBody').addEventListener('click', async (e) => {
       const b = e.target.closest('[data-ipkact]');
