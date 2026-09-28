@@ -1,7 +1,7 @@
 # AGENTS.md —— 给 AI agent 的项目约定
 
 > 本文件是**任何 agent 接手本仓库时的第一份必读**。人也可以看，但它主要写给 agent。
-> 最后核对：2026-09-25（版本 `v0.41.1`）
+> 最后核对：2026-09-28（版本 `v0.42.2`）
 > 看完整变更记录：[docs/CHANGELOG.md](docs/CHANGELOG.md)（0.29.0 → 最新）。
 >
 > 📖 **想「通读一遍就完整理解项目」** → 读 `docs/项目文档.md`（定位 / 结构 / 目录职责 / 模块依赖 / 主要流程 /
@@ -21,7 +21,7 @@ GitHub 仓库名与 clone 下来的文件夹名都是 `DreamFlow`；界面上显
 **生成引擎口径（别按"唯一引擎"一刀切删代码）**：
 
 - **视频生成**的唯一引擎 = 即梦官方创作 CLI（`dreamina`）。这条没变。
-- **图片资产生图** = **可选**接入第三方服务商 **Work Fisher**（`server/image-provider.js` + `server/image-jobs.js`）。**未配置密钥时该功能完全不可见**（`/system/image-provider` 报未配置，界面不出现入口）。
+- **图片资产生图** = **可选**接入 Work Fisher / OpenAI / Stability AI（`server/image-registry.js` + `server/image-jobs.js`）。设置页通过 `/system/image-providers` 列出服务商；未配置密钥时无法提交生图任务。
 - ⚠️ 因此"唯一生成引擎"不再等于"代码里只允许出现 dreamina"。历史上 0.35.1 曾按旧口径误删 revChatGPT 相关代码 —— 见到 Work Fisher 相关模块**不要**当成冗余删除。
 
 ## 完成一项工作后的固定动作（Definition of Done）
@@ -127,7 +127,8 @@ $env:JC_DESKTOP_SMOKE=1; $env:JC_SMOKE_DELAY=3000
 | `server/cli-installer.js` | 创作 CLI 的下载 / 安装 / 更新（走官方 CDN，**不内置二进制**） |
 | `server/store.js` | JSON 持久化（原子写、滚动备份、迁移前备份） |
 | `server/schema.js` | schemaVersion 与迁移框架（旧库升级唯一入口） |
-| `server/image-provider.js` | 图片生图服务商适配（Work Fisher）。网络走**可注入传输层**（`transport()` / `setTransport()`），才能用假传输单测 |
+| `server/image-registry.js` / `server/providers/` | 多生图服务商及模型注册表、各家适配器；尺寸规则按模型声明 |
+| `server/image-provider.js` | 默认服务商兼容入口；网络走**可注入传输层**，才能用假传输单测 |
 | `server/image-jobs.js` | 图片生图任务状态机：提交 / 轮询 / 下载落盘 / 采用。落库走 `PERSIST_FIELDS` 白名单（**禁止**把远端直链写进 `db.json`） |
 | `server/image-size.js` | 生图尺寸规则**唯一事实来源**：比例枚举 / 像素校验（16 倍数、≤3840、总像素区间、长短边比 ≤3:1）/ 最近合法值回落 / 预设。服务端校验与 `/meta/options` 的 `imageSizes` 下发都出自这一处，**禁止在前端复制一份规则** |
 | `desktop/main.js` | Electron 主进程（单实例、窗口、托盘、优雅退出） |

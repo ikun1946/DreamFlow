@@ -102,6 +102,10 @@
     imgProvider: null,
     /* 桌面版系统加密可用性（决定设置页给不给密钥录入框）。null=未知。 */
     imgKeyEncryption: null,
+    /* 0.42.0 多服务商卡片与生图尺寸选择共用这一组状态。旧版 imgProvider
+       只描述默认服务商，不能拿它判断列表是否已经读完。 */
+    imageProvidersList: null, imageProvidersError: null,
+    imageKeyMap: null, imageKeyEncryptionMap: null,
     sel: new Set(), filter: 'all', keyword: '',
     panelTab: 'character', panelKeyword: '', assets: [], assetCounts: { currentShot: 0, library: 0 },
     /* 全库「素材名(小写) → 类型」索引：给提示词里的素材名着色用。
@@ -3359,6 +3363,61 @@
     return S.imgProvider;
   }
 
+  /* 多服务商列表是设置卡片与生图弹窗共同的数据源。0.42.0 把卡片改成读
+     imageProvidersList，却仍只请求旧端点，导致列表始终为 null、卡片一直「读取中」。
+     请求失败要留下可重试错误；同一次打开设置会多次渲染，进行中的请求必须复用。 */
+  let imageProvidersInflight = null;
+  function ensureImageProviders() {
+    if (S.imageProvidersList || S.imageProvidersError) return Promise.resolve(S.imageProvidersList);
+    if (imageProvidersInflight) return imageProvidersInflight;
+    const p = (async () => {
+      let timer;
+      try {
+        const J = window.JCDesktop;
+        const read = Promise.all([
+          Api.listImageProviders(),
+          J && J.imageListProviders ? J.imageListProviders() : Promise.resolve(null)
+        ]);
+        /* 本地服务或 IPC 若不返回，也不能让占位文案无限期停留。 */
+        const [list, keyStatuses] = await Promise.race([
+          read,
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('读取生图服务状态超时')), 10000);
+          })
+        ]);
+        const desktop = !!(J && J.imageListProviders);
+        if (!Array.isArray(list) || (desktop && !Array.isArray(keyStatuses))) {
+          throw new Error('生图服务状态格式不正确');
+        }
+        const statuses = new Map((keyStatuses || []).map((k) => [k.providerId, k]));
+        const keyMap = Object.create(null);
+        const encryptionMap = Object.create(null);
+        list.forEach((provider) => {
+          const status = statuses.get(provider.providerId);
+          if (desktop && !status) throw new Error('生图服务密钥状态不完整');
+          keyMap[provider.providerId] = desktop
+            ? !!(status && status.hasKey) : !!provider.configured;
+          encryptionMap[provider.providerId] = status && status.encryption || 'available';
+        });
+        S.imageProvidersList = list;
+        S.imageKeyMap = keyMap;
+        S.imageKeyEncryptionMap = encryptionMap;
+        S.imageProvidersError = null;
+      } catch (e) {
+        S.imageProvidersError = errText(e);
+      } finally {
+        clearTimeout(timer);
+      }
+      refreshImageProvidersCard();
+      return S.imageProvidersList;
+    })();
+    imageProvidersInflight = p.then(
+      (v) => { imageProvidersInflight = null; return v; },
+      (e) => { imageProvidersInflight = null; throw e; }
+    );
+    return imageProvidersInflight;
+  }
+
   /* ============================================================
      生图尺寸控件（2026-09-25）：宽高比 ⇄ 像素 双向联动
      ------------------------------------------------------------
@@ -3988,7 +4047,7 @@
     /* 先拿到生图服务状态再画弹窗（见 ensureImageProvider 的说明）。
        包一层 async，内部仍返回原来的 Promise —— 调用方（editAsset / 卡片点击）
        本来就 await 它，签名不变。 */
-    return ensureImageProvider().then(() => new Promise((resolve) => {
+    return Promise.all([ensureImageProvider(), ensureImageProviders()]).then(() => new Promise((resolve) => {
       const accept = asset.type === 'audio' ? 'audio/*' : 'image/*';
       // 图片用真实 <img> + object-fit:contain 完整展示（原用 background-size:cover 会裁掉四周）
       const hasPic = !!asset.url && asset.type !== 'audio';
@@ -4238,7 +4297,7 @@
           ? '音频' + a.audioIndex + '（走 --audio，不占图片号）'
           : '未占用图号');
     /* 与素材详情同样先取生图服务状态（见 ensureImageProvider 的说明） */
-    return ensureImageProvider().then(() => new Promise((resolve) => {
+    return Promise.all([ensureImageProvider(), ensureImageProviders()]).then(() => new Promise((resolve) => {
       const mask = document.createElement('div');
       mask.className = 'mask'; mask.style.zIndex = 210;
       mask.innerHTML =
@@ -5864,31 +5923,15 @@
          于是 await 之后的第二次 renderSettings 永远不执行 —— 抽屉就停在
          第一次渲染的占位内容上，连 CLI 区块也跟着显示成"状态未知"。
          而"刚装完、还没建项目、正准备装创作 CLI"恰恰是最需要这个抽屉正常的场景。 */
-      /* 2026-09-25 fix：openSettings 之前漏拉生图服务状态。ensureImageProvider
-         只在打开素材详情 / 分镜预览时被调（懒加载原则），但「图片生成服务」
-         卡片本身也在设置面板渲染，于是"纯打开设置 → 不开弹窗"的场景下
-         S.imgProvider 永远是 null，卡片永远停在"读取中…"。补到并发请求里，
-         沿用同样的"任一失败不让抽屉半渲染"兜底（2026-09-20 的教训）。
-         合并逻辑与 ensureImageProvider 对齐：桌面版顺带把加密可用性与
-         hasKey 合进 configured，HTTP 入口失败也照常完成这次重绘。 */
-      const [st, ad, ci, ip] = await Promise.all([
+      /* 生图服务卡片已由 renderSettings() 独立读取多服务商列表；这里不再请求
+         只能代表默认服务商的旧端点，免得返回值与新卡片的数据源分叉。 */
+      const [st, ad, ci] = await Promise.all([
         Api.getSettings().catch(() => null),
         Api.getAdapter().catch(() => null),
-        Api.getCliStatus().catch(() => null),
-        Api.imageProviderStatus().catch(() => null)
+        Api.getCliStatus().catch(() => null)
       ]);
       if (ad) S.adapter = ad;
       if (ci) S.cliInfo = ci;
-      if (ip) {
-        S.imgProvider = ip;
-        if (window.JCDesktop && window.JCDesktop.imageKeyStatus) {
-          try {
-            const k = await window.JCDesktop.imageKeyStatus();
-            S.imgKeyEncryption = (k && k.encryption) || 'available';
-            ip.configured = !!(ip.configured || (k && k.hasKey));
-          } catch (e) { /* 取不到就保持原状，保存时后端会再判 */ }
-        }
-      }
       /* 应用更新状态（只有桌面版有）。和上面几项一样单独失败即可 ——
          任何一项取不到都不该让整个设置抽屉打不开。
          合并时保留本地 UI 状态（busy / error），只覆盖主进程给的字段。 */
@@ -6411,15 +6454,19 @@
     const list = S.imageProvidersList;
     const head = '<div class="scard-hd"><div class="scard-hd-t">' +
       '<h3>图片生成服务</h3><p>素材库图片资产的生图服务（多 provider 可选）</p></div></div>';
+    if (S.imageProvidersError) {
+      return '<section class="scard" id="ipCard">' + head + '<div class="scard-bd">' +
+        '<div class="banner warn"><span>' + esc(S.imageProvidersError) + '</span></div>' +
+        '<div class="cli-actions"><button class="btn-outline" data-ipkact="retry">重新读取</button></div>' +
+        '</div></section>';
+    }
     if (!list) {
-      return '<section class="scard">' + head + '<div class="scard-bd"><p class="hint-sm">读取中…</p></div></section>';
+      return '<section class="scard" id="ipCard">' + head +
+        '<div class="scard-bd"><p class="hint-sm">读取中…</p></div></section>';
     }
     const isDesktop = !!(window.JCDesktop && window.JCDesktop.imageListProviders);
     const encMap = S.imageKeyEncryptionMap || {};
     const rows = [];
-    if (S.imgProvider && S.imgProvider.error) {
-      rows.push('<div class="banner warn"><span>' + esc(S.imgProvider.error) + '</span></div>');
-    }
     list.forEach((p) => {
       const hasKey = !!(S.imageKeyMap && S.imageKeyMap[p.providerId]);
       const encOk = (encMap[p.providerId] || 'available') !== 'unavailable';
@@ -6450,9 +6497,15 @@
     } else {
       rows.push('<p class="hint-sm">每个 provider 的密钥单独加密存于本机；删除只影响本 provider。</p>');
     }
-    return '<section class="scard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
+    return '<section class="scard" id="ipCard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
   }
   function imageProviderCardHTML() { return imageProvidersCardHTML(); }
+
+  /* 异步状态到位后只刷新本卡，避免重建整个设置面板而丢失输入和滚动位置。 */
+  function refreshImageProvidersCard() {
+    const el = document.getElementById('ipCard');
+    if (el) el.outerHTML = imageProvidersCardHTML();
+  }
 
   function dataDirCardHTML() {
     const p = S.paths;
@@ -6520,6 +6573,7 @@
 
  function renderSettings() {
     ensurePaths();          // 数据目录状态懒加载（只请求一次，见 ensurePaths）
+    ensureImageProviders(); // 多服务商卡片的状态独立于旧版默认服务商状态
     const s = S.settings || Api.META && { delimiter: { type: 'custom', value: ';;' }, defaults: {}, queue: {}, adapter: {} };
     const o = opts();
     const dur = o.duration;
@@ -7087,6 +7141,16 @@
       if (!b || b.disabled) return;
       const act = b.dataset.ipkact;
       const J = window.JCDesktop;
+      /* 读取失败时网页与桌面版都能重试；不可放在桌面 IPC 守卫之后。 */
+      if (act === 'retry') {
+        b.disabled = true;
+        S.imageProvidersError = null;
+        S.imageProvidersList = null;
+        refreshImageProvidersCard();
+        try { await ensureImageProviders(); }
+        finally { b.disabled = false; }
+        return;
+      }
       if (!(J && J.imageSetKey)) return;
       const row = b.closest('[data-providerid]');
       const providerId = row ? row.dataset.providerid : null;
@@ -7103,7 +7167,8 @@
             toast('密钥已加密保存', 'ok');
             S.imgProvider = null;
             S.imageProvidersList = null;
-            await ensureImageProvider();
+            S.imageProvidersError = null;
+            await Promise.all([ensureImageProvider(), ensureImageProviders()]);
             renderSettings();
           } else if (r && r.reason === 'unavailable') {
             toast('系统加密不可用，密钥未保存（不会降级为明文）', 'err');
@@ -7124,7 +7189,8 @@
             toast('密钥已删除', 'ok');
             S.imgProvider = null;
             S.imageProvidersList = null;
-            await ensureImageProvider();
+            S.imageProvidersError = null;
+            await Promise.all([ensureImageProvider(), ensureImageProviders()]);
             renderSettings();
           } else {
             toast('删除失败：' + ((r && r.reason) || '未知原因'), 'err');

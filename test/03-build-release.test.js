@@ -1008,24 +1008,11 @@ describe('仓库形状（刻意保留的文本断言）', () => {
       '★ files 白名单不得包含 dreamina');
   });
 
-  test('签名配置：凭据只走环境变量，证书不入库（P0-5）', () => {
+  test('0.42.1 起无代码签名配置，证书仍不得入库', () => {
     const yml = fs.readFileSync(path.join(REPO, 'electron-builder.yml'), 'utf8');
-    assert.match(yml, /CSC_LINK/, '应说明 CSC_LINK 用法');
-    assert.match(yml, /CSC_KEY_PASSWORD/, '应说明 CSC_KEY_PASSWORD 用法');
-    assert.match(yml, /timeStampServer|rfc3161TimeStampServer/, '应配置时间戳服务（证书过期后签名仍有效）');
-
-    /* ⚠ 2026-09-22 回归：签名配置必须**缩进在 win: 之下**。
-       electron-builder 26 的 schema 只认 win.signAndEditExecutable / win.signtoolOptions，
-       写在顶层会直接中止构建（报 "configuration has an unknown property ..."）——
-       CI 首次跑红就是这个。这是"文件形状"断言：改打包配置时必须同步这里。 */
-    assert.match(yml, /^ {2}signAndEditExecutable:\s*true\s*$/m,
-      '★ signAndEditExecutable 必须缩进在 win: 之下');
-    assert.match(yml, /^ {2}signtoolOptions:\s*$/m,
-      '★ signtoolOptions 必须缩进在 win: 之下');
-    assert.doesNotMatch(yml, /^signAndEditExecutable:/m,
-      '★ 不得写在顶层 —— electron-builder 26 会拒绝构建');
-    assert.doesNotMatch(yml, /^signtoolOptions:/m,
-      '★ 不得写在顶层 —— electron-builder 26 会拒绝构建');
+    /* 0.42.1 主动移除签名配置；测试若还要求它存在，会把正常构建误报为失败。 */
+    assert.doesNotMatch(yml, /signAndEditExecutable:|signtoolOptions:|CSC_LINK|CSC_KEY_PASSWORD/,
+      '未配置签名的发布策略不能残留签名开关或凭据字段');
 
     const gi = fs.readFileSync(path.join(REPO, '.gitignore'), 'utf8');
     for (const pat of ['*.pem', '*.key', '*.p12']) {
