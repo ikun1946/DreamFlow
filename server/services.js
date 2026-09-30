@@ -1,6 +1,6 @@
 'use strict';
 /* ============================================================
-   services.js —— 业务逻辑层（23 个接口的实现 + 演示引擎）
+   services.js —— 业务逻辑层（接口实现）
    行为与 docs/前端页面与接口对接说明.md 逐条对齐（前端契约）：
    - 列表内联 stats；轮询只回 dirty 行；已完成分镜锁时长(40900)
    - 批量时长 updated/skipped；批量提交 accepted/rejected
@@ -1197,14 +1197,6 @@ function parsePromptDuration(prompt) {
   };
 }
 
-/** 按标注把 durationSec 换算成合法值（上限取该分镜模型的时长能力） */
-function durationFromPrompt(s, fallbackSec) {
-  const p = parsePromptDuration(s.prompt);
-  if (p.seconds == null) return { seconds: null, parsed: p };
-  const capped = models.clampDuration(s.model, p.seconds);
-  return { seconds: capped, parsed: p, clamped: p.seconds !== capped };
-}
-
 /**
  * 批量按提示词重算时长。
  * body: { ids?: string[], apply?: boolean, onlyDraft?: boolean }
@@ -1749,12 +1741,6 @@ function imageProviderStatus(adapter) {
   return Object.assign({ available: true }, p.status());
 }
 
-/* 取资产（作用域校验）；模型名从 provider 状态取，避免在两处写死字符串 */
-function imageJobModel(adapter) {
-  const p = (adapter && adapter.imageProvider) || imageJobsMod && imageJobsMod.provider;
-  return (p && p.status && p.status().model) || null;
-}
-
 /* 生图尺寸的校验与归一（2026-09-25）。规则全部在 server/image-size.js，
    这里只负责"把 body 里的尺寸意图翻译成 provider 能发的 { size, resolution }"。
    ⚠ 必须在**计费提交之前**校验：非法尺寸发给服务商要么被拒（浪费一次往返）、
@@ -2060,36 +2046,10 @@ function resetSettings(db, b, scope) {
   return getSettings(db, scope);
 }
 
-/* 从实时模型规格里提取某个 flag 的值域（如 --ratio / --resolution） */
 /* 分辨率档位权重（用于排序与「就近匹配」；不同模型大小写不同，故按小写归并） */
 function resTier(v) {
   const k = String(v || '').toLowerCase();
   return ({ '480p': 480, '720p': 720, '768p': 768, '1080p': 1080, '2k': 1440, '4k': 2160 })[k] || 9999;
-}
-
-/* 逐模型规格：分辨率 / 画幅 / 时长区间（来源：实时目录每个 mode 的 flags） */
-function modelSpecs(items) {
-  const out = {};
-  (items || []).forEach((m) => {
-    const res = [], ratios = [];
-    let dur = null;
-    (m.modes || []).forEach((mo) => (mo.flags || []).forEach((f) => {
-      if (f.flag === '--resolution' && Array.isArray(f.values)) {
-        f.values.forEach((v) => { if (!res.some((x) => String(x).toLowerCase() === String(v).toLowerCase())) res.push(v); });
-      }
-      if (f.flag === '--ratio' && Array.isArray(f.values)) {
-        f.values.forEach((v) => { if (!ratios.includes(v)) ratios.push(v); });
-      }
-      if (f.flag === '--duration' && f.min != null) {
-        // 同一模型多个 mode 的时长区间取并集（宽松），提交时仍会按 mode 校验
-        dur = dur
-          ? { min: Math.min(dur.min, f.min), max: Math.max(dur.max, f.max), step: dur.step || f.step || 1 }
-          : { min: f.min, max: f.max, step: f.step || 1 };
-      }
-    }));
-    out[m.model] = { resolutions: res.sort((a, b) => resTier(a) - resTier(b)), ratios, duration: dur };
-  });
-  return out;
 }
 
 /* 大小写不敏感去重（保留首次出现的大小写），并按档位权重排序 */

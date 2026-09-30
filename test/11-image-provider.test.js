@@ -122,25 +122,22 @@ describe('请求形状（提交接口）', () => {
    2. 错误分支：401 / 402 / 429 / 5xx
    ============================================================ */
 describe('错误分支', () => {
-  const cases = [
-    { name: '401 → auth（密钥无效）', status: 401, kind: 'auth' },
-    { name: '403 → auth（无权限）', status: 403, kind: 'auth' },
-    { name: '402 → no_credit（余额不足）', status: 402, kind: 'no_credit' },
-    { name: '429 → ratelimit（限流）', status: 429, kind: 'ratelimit' },
-    { name: '500 → upstream', status: 500, kind: 'upstream' },
-    { name: '503 → upstream', status: 503, kind: 'upstream' }
-  ];
-  cases.forEach((c) => {
-    test('提交：' + c.name, async () => {
-      IP.setTransport(fakeTransport(() => ({ status: c.status, body: { error: { message: 'boom ' + c.status } } })));
-      const r = await make().submit('p');
-      assert.equal(r.kind, c.kind);
-      assert.equal(r.status, c.status);
-      /* 服务商的错误说明要带出来（用户按原因处理），但不能带密钥 */
-      assert.match(r.message, /boom/);
-      assert.doesNotMatch(r.message, new RegExp(KEY));
-    });
-  });
+  /* 六个分支逐条声明：项目检查按字面量 test( 计数，循环生成会让文档口径少算。 */
+  async function expectSubmitError(status, kind) {
+    IP.setTransport(fakeTransport(() => ({ status, body: { error: { message: 'boom ' + status } } })));
+    const r = await make().submit('p');
+    assert.equal(r.kind, kind);
+    assert.equal(r.status, status);
+    /* 服务商的错误说明要带出来（用户按原因处理），但不能带密钥 */
+    assert.match(r.message, /boom/);
+    assert.doesNotMatch(r.message, new RegExp(KEY));
+  }
+  test('提交：401 → auth（密钥无效）', () => expectSubmitError(401, 'auth'));
+  test('提交：403 → auth（无权限）', () => expectSubmitError(403, 'auth'));
+  test('提交：402 → no_credit（余额不足）', () => expectSubmitError(402, 'no_credit'));
+  test('提交：429 → ratelimit（限流）', () => expectSubmitError(429, 'ratelimit'));
+  test('提交：500 → upstream', () => expectSubmitError(500, 'upstream'));
+  test('提交：503 → upstream', () => expectSubmitError(503, 'upstream'));
 
   test('查询：401 也要如实报 auth，不能当成"任务还在跑"', async () => {
     IP.setTransport(fakeTransport(() => ({ status: 401, body: { message: 'invalid token' } })));

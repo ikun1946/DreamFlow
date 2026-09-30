@@ -3,6 +3,10 @@ publish:
     owner: ikun1946
     repo: DreamFlow
 
+# 网页单文件产物占用 dist/；安装包必须落 release/，与发布脚本和忽略规则一致。
+directories:
+  output: release
+
 # 只打包运行时真正需要的东西。把仓库里的文档、脚本、旧数据排除掉，
 # 既减小体积，也避免把开发机上的东西（比如 server/data 里的库）误发给别人。
 files:

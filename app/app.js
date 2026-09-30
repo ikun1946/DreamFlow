@@ -2605,13 +2605,6 @@
     }
   }
 
-  async function loadMeta() {
-    try {
-      const [o, st, ad] = await Promise.all([Api.getOptions(), Api.getSettings(), Api.getAdapter()]);
-      S.options = o; S.settings = st; S.adapter = ad;
-    } catch (e) { fail(e); }
-  }
-
   /* ---------------------------------------------------------- 轮询 */
   function activeIds() {
     return S.list.filter((s) => s.status === 'generating' || s.status === 'queued').map((s) => s.id);
@@ -2993,16 +2986,6 @@
 
   function openFullscreenViewer(url, alt) {
     return openFullscreenShell('<img src="' + esc(url) + '" alt="' + esc(alt || '') + '" />');
-  }
-
-  /* 提示词全屏查看：内容已是转义过的 HTML（含素材名着色），面板内可滚动。
-     点面板内部不会关闭 —— 关闭只在点遮罩本身时触发（外壳里判的是 ev.target === v）。 */
-  function openFullscreenText(title, html) {
-    return openFullscreenShell(
-      '<div class="fs-panel">' +
-        '<div class="fs-panel-head"><b>' + esc(title) + '</b></div>' +
-        '<div class="fs-panel-body">' + html + '</div>' +
-      '</div>', 'fs-textview');
   }
 
   /* 提示词全屏**编辑**（0.39.1）：使用者要求"全屏观看也要能更改"。

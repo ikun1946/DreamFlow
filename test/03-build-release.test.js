@@ -1046,6 +1046,9 @@ describe('仓库形状（刻意保留的文本断言）', () => {
     for (const r of refs) {
       assert.ok(fs.existsSync(path.join(REPO, r)), 'yml 引用的图标必须存在：' + r);
     }
+    /* 网页单文件占用 dist/；发布脚本从 release/ 取包，默认输出目录会走错地方。 */
+    assert.match(yml, /^directories:\s*\r?\n\s+output:\s*release\s*$/m,
+      '桌面打包必须输出到 release/');
   });
 });
 
