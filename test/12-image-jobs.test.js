@@ -834,6 +834,120 @@ describe('current 接口', () => {
 /* ============================================================
    10. 持久化边界：密钥与远端直链不入库
    ============================================================ */
+/* 自动替换与历史都由服务端持有，测试不能靠前端额外发 apply 才通过。 */
+describe('自动替换与生成历史', () => {
+  test('异步任务没有前端轮询也会替换素材，并原子落库和刷新引用分镜', async () => {
+    let finished = false;
+    IP.setTransport(apiTransport((c) => c.isSubmit
+      ? { body: { task_id: 'auto_delayed' } }
+      : { body: finished ? { status: 'SUCCESS', result_url: 'https://cdn.example.com/auto.png' } : { status: 'PROCESSING' } }));
+    srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('后台自动替换');
+    const ws = dataOf(await api('GET', `/api/v1/projects/${proj.id}/workspaces`)).list[0];
+    const shot = dataOf(await api('POST', `/api/v1/workspaces/${ws.id}/storyboards?projectId=${proj.id}`, { prompt: '镜头', projectId: proj.id }));
+    await api('POST', `/api/v1/storyboards/${shot.id}/assets`, { assetId: asset.id, role: 'character', projectId: proj.id });
+    srv.store.load().storyboards.find((s) => s.id === shot.id).dirty = false;
+    const sub = dataOf(await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: '生成新图', autoApply: true, projectId: proj.id }));
+    assert.equal(sub.job.state, 'running');
+    finished = true;
+    await srv.imageJobs.step(srv.imageJobs.rawJob(sub.job.jobId));
+    const disk = JSON.parse(fs.readFileSync(path.join(SANDBOX, 'db.json'), 'utf8'));
+    const job = disk.imageJobs[sub.job.jobId];
+    const selected = disk.assets.find((a) => a.id === asset.id);
+    assert.equal(job.state, 'applied');
+    assert.equal(job.autoApply, true);
+    assert.equal(job._busy, undefined);
+    assert.ok(selected.url.endsWith('/' + job.appliedFile));
+    assert.equal(disk.storyboards.find((s) => s.id === shot.id).dirty, true);
+    assert.equal((await fetch(base + selected.url)).status, 200);
+  });
+
+  test('连续生成保留所有历史图，最新自动选定，旧图可重选且不再次扣费', async () => {
+    const t = happyScript(); IP.setTransport(t);
+    srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('连续生成');
+    const first = dataOf(await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: '第一张', autoApply: true, projectId: proj.id })).job;
+    const firstAsset = dataOf(await api('GET', `/api/v1/assets/${asset.id}?projectId=${proj.id}`)).url;
+    const second = dataOf(await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: '第二张', autoApply: true, projectId: proj.id })).job;
+    assert.equal(first.state, 'applied'); assert.equal(second.state, 'applied');
+    assert.notEqual(first.previewUrl, second.previewUrl);
+    assert.equal((await fetch(base + firstAsset)).status, 404, '旧素材副本清掉，历史仍用独立候选图');
+    const list = () => api('GET', `/api/v1/assets/${asset.id}/image-jobs?projectId=${proj.id}`).then(dataOf).then((d) => d.jobs);
+    const history = await list();
+    assert.equal(history.length, 2);
+    assert.equal(history.find((j) => j.selected).jobId, second.jobId);
+    for (const j of history) assert.equal((await fetch(base + j.previewUrl)).status, 200);
+    const calls = t.calls.length;
+    const picked = await api('POST', `/api/v1/assets/${asset.id}/image-jobs/${first.jobId}/apply`, { projectId: proj.id });
+    assert.equal(picked.env.code, 0);
+    assert.equal((await list()).find((j) => j.selected).jobId, first.jobId);
+    assert.equal(t.calls.length, calls, '选历史图绝不再请求服务商');
+    for (const j of await list()) assert.equal((await fetch(base + j.previewUrl)).status, 200);
+  });
+
+  test('已落盘的自动候选重启后继续采用，不重新查询或付费提交', async () => {
+    const t = happyScript(); IP.setTransport(t);
+    srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('恢复自动替换');
+    const sub = dataOf(await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: '恢复', projectId: proj.id }));
+    const raw = srv.imageJobs.rawJob(sub.job.jobId);
+    raw.autoApply = true; raw._busy = true;
+    srv.store.flush();
+    const calls = t.calls.length;
+    assert.ok(srv.imageJobs.reconcile(srv.store.load()).resumed >= 1);
+    assert.ok(srv.imageJobs._dueJobs(srv.store.load()).includes(raw));
+    await srv.imageJobs.step(raw);
+    assert.equal(raw.state, 'applied');
+    assert.equal(t.calls.length, calls);
+    assert.equal((await fetch(base + srv.store.load().assets.find((a) => a.id === asset.id).url)).status, 200);
+  });
+
+  test('自动替换刷盘失败保留原图和付费结果，重试采用不重新生成', async () => {
+    const t = happyScript(); IP.setTransport(t);
+    srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('替换回滚');
+    await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: '原图', autoApply: true, projectId: proj.id });
+    const original = Object.assign({}, srv.store.load().assets.find((a) => a.id === asset.id));
+    const sub = dataOf(await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: '新图', projectId: proj.id }));
+    const raw = srv.imageJobs.rawJob(sub.job.jobId); raw.autoApply = true;
+    const flush = srv.store.flush;
+    srv.store.flush = () => { throw new Error('模拟磁盘写入失败'); };
+    try { await srv.imageJobs.step(raw); } finally { srv.store.flush = flush; }
+    assert.equal(raw.state, 'ready'); assert.match(raw.error, /自动替换失败.*已回滚/);
+    assert.equal(srv.store.load().assets.find((a) => a.id === asset.id).url, original.url);
+    assert.equal((await fetch(base + original.url)).status, 200);
+    assert.ok(fs.existsSync(path.join(SANDBOX, 'projects', proj.id, 'image-candidates', raw.candidateFile)));
+    assert.ok(!srv.imageJobs._dueJobs(srv.store.load()).includes(raw), '失败停止自动重试');
+    const calls = t.calls.length;
+    const retry = await api('POST', `/api/v1/assets/${asset.id}/image-jobs/${raw.id}/apply`, { projectId: proj.id });
+    assert.equal(retry.env.code, 0); assert.equal(raw.state, 'applied');
+    assert.equal(t.calls.length, calls);
+  });
+
+  test('历史图重选仍禁止跨项目和跨素材采用', async () => {
+    IP.setTransport(happyScript()); srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('历史归属');
+    const sub = dataOf(await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: '图片', autoApply: true, projectId: proj.id }));
+    const other = await makeAsset('其他项目');
+    const cross = await api('POST', `/api/v1/assets/${other.asset.id}/image-jobs/${sub.job.jobId}/apply`, { projectId: other.proj.id });
+    assert.notEqual(cross.env.code, 0);
+    const wrongScope = await api('GET', `/api/v1/assets/${asset.id}/image-jobs?projectId=${other.proj.id}`);
+    assert.notEqual(wrongScope.env.code, 0);
+  });
+
+  test('删除素材时同时清理自动生成历史文件和记录', async () => {
+    IP.setTransport(happyScript()); srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('清理历史');
+    for (const prompt of ['一', '二']) await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt, autoApply: true, projectId: proj.id });
+    const dir = path.join(SANDBOX, 'projects', proj.id, 'image-candidates');
+    assert.equal(fs.readdirSync(dir).length, 2);
+    const removed = await api('DELETE', `/api/v1/assets/${asset.id}`, { projectId: proj.id });
+    assert.equal(removed.env.code, 0);
+    assert.equal(fs.readdirSync(dir).length, 0);
+    assert.ok(!Object.values(srv.store.load().imageJobs).some((j) => j.assetId === asset.id));
+  });
+});
+
 describe('持久化边界', () => {
   test('db.json 里不出现密钥、鉴权头或远端直链', async () => {
     IP.setTransport(happyScript());

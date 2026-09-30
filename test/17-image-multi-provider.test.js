@@ -135,6 +135,29 @@ describe('多 provider · 提交体校验', () => {
     assert.ok(!dbText.includes(PNG.toString('base64')), '生成图片的 base64 不能落库');
     SHARED.setTransport(null);
   });
+  test('OpenAI 同步内联结果自动成为素材图片并保留历史', async () => {
+    const proj = (await api('POST', '/api/v1/projects', { name: 'openai-auto' })).env.data.project;
+    await api('POST', '/api/v1/projects/' + proj.id + '/workspaces', { name: 'ws' });
+    const asset = (await api('POST', '/api/v1/assets?projectId=' + proj.id,
+      { type: 'character', name: '自动图片', projectId: proj.id })).env.data;
+    let submits = 0;
+    SHARED.setTransport({ request(url, opts, cb) {
+      submits++;
+      cb({ statusCode: 200, headers: {}, body: JSON.stringify({ data: [{ b64_json: PNG.toString('base64') }] }) });
+    } });
+    try {
+      const r = await api('POST', '/api/v1/assets/' + asset.id + '/image-jobs?projectId=' + proj.id,
+        { prompt: 'a cat', autoApply: true, providerId: 'openai', modelId: 'gpt-image-2.5-flare', ratio: '1:1' });
+      assert.equal(r.env.code, 0); assert.equal(r.env.data.job.state, 'applied');
+      const selected = srv.store.load().assets.find((a) => a.id === asset.id);
+      assert.equal((await fetch(base + selected.url)).status, 200);
+      assert.equal((await fetch(base + r.env.data.job.previewUrl)).status, 200);
+      assert.equal(submits, 1);
+      const disk = JSON.parse(fs.readFileSync(path.join(SANDBOX, 'db.json'), 'utf8'));
+      assert.equal(disk.imageJobs[r.env.data.job.jobId].autoApply, true);
+      assert.equal(disk.imageJobs[r.env.data.job.jobId]._syncInlineBase64, undefined);
+    } finally { SHARED.setTransport(null); }
+  });
   test('未配置的 Work Fisher 应在付费提交前被拒', async () => {
     const proj = (await api('POST', '/api/v1/projects', { name: 'no-wf-key' })).env.data.project;
     await api('POST', '/api/v1/projects/' + proj.id + '/workspaces', { name: 'ws' });

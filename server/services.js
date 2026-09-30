@@ -1811,7 +1811,8 @@ async function submitImageJob(db, assetId, body, adapter, scope) {
     providerId: providerId,
     modelId: modelId,
     size: sz.size,
-    resolution: sz.resolution
+    resolution: sz.resolution,
+    autoApply: !!(body && body.autoApply === true)
   });
   /* 提交前把用户这次的提示词也存进资产 —— 计划 §3.2 第 3 条：只保存提示词，
      不顺带保存弹窗里尚未确认的名称 / 类型 / 待上传文件。 */

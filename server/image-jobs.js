@@ -21,6 +21,7 @@
       还要限时间、限字节、校验图片特征 —— 拒绝 HTML 错误页与不完整图片。
    4. **采用时顺序不能变**：写新文件 → 校验 → 更新引用 → **强制刷盘** → 最后才删旧文件。
       中途任何一步失败都必须回滚数据库引用，**保留原图可用**（原图还在才谈得上回滚）。
+      新界面任务携带 autoApply，服务端自动采用并保留候选图作历史，关闭弹窗也能完成。
    5. **同一资产只允许一个活动任务。** `submitting` / `queued` / `running` /
       `saving_result` / `ready` 任一存在时拒绝再次提交 —— 这是防"双击两次扣两次"的
       最后一道闸（前端禁用按钮只是体验，不是保证）。
@@ -254,7 +255,7 @@ const activeOfAsset = (db, assetId) => byAsset(db, assetId).find((j) => ACTIVE_S
    明确允许持久化的字段，一律不写。 */
 const PERSIST_FIELDS = [
   'id', 'projectId', 'assetId', 'prompt', 'model', 'state',
-  'size', 'resolution',
+  'size', 'resolution', 'autoApply',
   'providerId', 'modelId',
   'providerTaskId', 'syncResultUrl', 'candidateFile', 'appliedFile', 'usage', 'error', 'errorKind',
   'imageWidth', 'imageHeight', 'imageFormat', 'queryFailures',
@@ -291,12 +292,15 @@ function viewJob(j, assetId) {
     modelId: j.modelId || null,
     size: j.size || null,
     resolution: j.resolution || null,
+    autoApply: !!j.autoApply,
     providerTaskId: j.providerTaskId || null,
     syncResultUrl: j.syncResultUrl || null,
     usage: j.usage || null,
     error: j.error || null,
     /* 候选图**相对名** → 本地预览地址。只在这一处拼，页面拿不到直链。 */
-    previewUrl: j.candidateFile ? PATHS.candidateUrl(j.projectId, j.candidateFile) : null,
+    previewUrl: j.candidateFile ? PATHS.candidateUrl(j.projectId, j.candidateFile)
+      : (j.appliedFile && PATHS.safeFile(j.appliedFile) && fs.existsSync(path.join(PATHS.assetDir(j.projectId), j.appliedFile))
+        ? PATHS.assetUrl(j.projectId, j.appliedFile) : null),
     imageWidth: j.imageWidth || null,
     imageHeight: j.imageHeight || null,
     createdAt: j.createdAt,
@@ -328,7 +332,7 @@ function makeImageJobs(env) {
   /* 统一的落库出口（约束 6）：任何一次写盘前先做白名单清洗，再临时摘掉运行态字段。
      为什么要收成一个出口：这个模块里有二十多处落库点，散着写就一定会漏一处 ——
      而漏一处的结果是"密钥/直链/运行态进 db.json"，不可撤销。 */
-  function saveAll() {
+  function saveAll(flush) {
     const db = e.db();
     sanitizeAll(db);
     const map = ensureMap(db);
@@ -340,7 +344,7 @@ function makeImageJobs(env) {
         if (f.charAt(0) === '_') { held.push([j, f, j[f]]); delete j[f]; }
       });
     });
-    try { e.save(); } finally { held.forEach((h) => { h[0][h[1]] = h[2]; }); }
+    try { if (flush) e.flush(); else e.save(); } finally { held.forEach((h) => { h[0][h[1]] = h[2]; }); }
   }
   /* 轮询定时器：**服务端持有**（约束 2）。同一进程内只有一个 tick 循环，
      它扫描 db.imageJobs 里的活动任务，而不是给每个任务各起一个 timer ——
@@ -401,6 +405,7 @@ function makeImageJobs(env) {
          比例模式下有效（像素模式服务商会忽略它，provider 那边也不会发）。 */
       size: o.size || null,
       resolution: o.resolution || null,
+      autoApply: o.autoApply === true,
       state: STATE.SUBMITTING,
       providerTaskId: null,
       candidateFile: null,
@@ -545,6 +550,7 @@ function makeImageJobs(env) {
     job.updatedAt = now();
     saveAll();
     log('info', '图片生图同步结果已落盘（本地 ' + job.id + '，资产 ' + job.assetId + '，' + info.width + '×' + info.height + ' ' + info.ext + '）');
+    await autoApplyReady(job);
   }
 
   /* 同步 provider URL 下载（旧模型兼容路径） —— 与异步 query 返回 succeeded 后走的下载流程
@@ -587,6 +593,22 @@ function makeImageJobs(env) {
     job.updatedAt = now();
     saveAll();
     log('info', '图片生图同步结果已下载落盘（本地 ' + job.id + '，资产 ' + job.assetId + '，' + dl.info.width + '×' + dl.info.height + ' ' + dl.info.ext + '）');
+    await autoApplyReady(job);
+  }
+
+  /* 自动采用由服务端推进：前端关闭/刷新、进程重启不会丢失本次生成的替换意图。
+     替换失败保留已付费结果与原图，停止自动重试，允许重试采用而不重新扣费。 */
+  async function autoApplyReady(job) {
+    if (!job.autoApply || job.state !== STATE.READY) return;
+    const asset = e.findAssetForJob && e.findAssetForJob(job);
+    if (!asset) return;
+    let result;
+    try { result = await apply(asset, job); }
+    catch (err) { result = { ok: false, message: String((err && err.message) || err) }; }
+    if (!result.ok) {
+      job.error = '图片已生成，自动替换失败：' + result.message;
+      job.updatedAt = now(); saveAll();
+    }
   }
 
   /* ---------------- 推进一个任务（查询 → 下载 → ready/failed） ----------------
@@ -596,8 +618,14 @@ function makeImageJobs(env) {
   async function step(job) {
     if (!job || job._busy) return;
     if (!ACTIVE_STATES.includes(job.state)) return;
-    /* ready 是"等用户决定"，不需要也不应该继续查询服务商 */
-    if (job.state === STATE.READY) return;
+    /* ready 已有本地结果，自动替换或等用户决定都不能再查询/提交服务商。 */
+    if (job.state === STATE.READY) {
+      if (job.autoApply && !job.error) {
+        job._busy = true;
+        try { await autoApplyReady(job); } finally { job._busy = false; }
+      }
+      return;
+    }
     if (job.state === STATE.SUBMITTING) return;       // 提交还没回来，没有 taskId 可查
     if (!job.providerTaskId) return;
     /* 同步服务商刚提交完也处于 saving_result。原来的无条件 return 让
@@ -702,6 +730,7 @@ function makeImageJobs(env) {
       saveAll();
       log('info', '图片生图结果已保存（本地 ' + job.id + '，' + fname + '，'
         + (dl.info.width || '?') + '×' + (dl.info.height || '?') + '）');
+      await autoApplyReady(job);
     } finally {
       job._busy = false;
     }
@@ -710,7 +739,7 @@ function makeImageJobs(env) {
   /* ---------------- 采用（写新文件 → 刷盘 → 清旧，失败回滚） ---------------- */
   async function apply(asset, job) {
     if (!job) return { ok: false, message: '任务不存在' };
-    if (job.state !== STATE.READY) return { ok: false, message: '任务不在可采用的待确认状态（当前：' + job.state + '）' };
+    if (job.state !== STATE.READY && !(job.state === STATE.APPLIED && job.candidateFile)) return { ok: false, message: '任务不在可采用的待确认状态（当前：' + job.state + '）' };
     if (job.assetId !== asset.id) return { ok: false, message: '任务与资产不匹配' };
     if (!job.candidateFile) return { ok: false, message: '候选图不存在' };
 
@@ -722,14 +751,18 @@ function makeImageJobs(env) {
        浏览器/WebView 会缓存 <img src>，沿用旧 URL 就是"采用成功了但界面还显示旧图"
        （services.replaceAsset 踩过同一个坑，注释写在那里）。 */
     const ext = path.extname(job.candidateFile) || '.png';
-    const newName = asset.id + '-' + stamp() + ext;
+    const newName = asset.id + '-' + stamp() + '-' + crypto.randomBytes(3).toString('hex') + ext;
     const assetDirPath = PATHS.assetDir(job.projectId);
-    fs.mkdirSync(assetDirPath, { recursive: true });
+    try { fs.mkdirSync(assetDirPath, { recursive: true }); }
+    catch (err) { return { ok: false, message: '创建素材目录失败：' + String((err && err.message) || err) }; }
     const dest = path.join(assetDirPath, newName);
     const oldFile = e.assetFileOf(asset);
     const oldUrl = asset.url;
     const oldThumb = asset.thumbUrl;
     const oldSize = asset.size;
+    const oldUpdated = asset.updatedAt;
+    const oldJob = { state: job.state, candidateFile: job.candidateFile, appliedFile: job.appliedFile,
+      updatedAt: job.updatedAt, error: job.error };
 
     /* ② 先复制到目标位置（不删源：源是我们唯一的"新图"副本，
        万一后面刷盘失败还要靠它把界面恢复成"待采用"）。 */
@@ -753,33 +786,36 @@ function makeImageJobs(env) {
     asset.size = buf.length;
     asset.updatedAt = now();
     /* url 变了就要把引用它的分镜标脏，让缩略图刷新 */
-    const touched = e.markDependentsDirty ? e.markDependentsDirty(asset.id) : 0;
+    let touched = 0;
 
     /* ⑤ **强制刷盘**。顺序不能反：先落库成功，旧文件才允许删。
        若这里失败，回滚内存引用并删掉刚写的新文件 —— 原图一个字节没动，
        所以"采用失败仍能打开原图"这条承诺是成立的。 */
+    // 引用和任务状态同一次刷盘，防止断电后已换图却仍被恢复成待采用。
+    job.state = STATE.APPLIED;
+    job.appliedFile = newName;
+    if (!job.autoApply) job.candidateFile = null;
+    job.error = null;
+    job.updatedAt = now();
     try {
-      e.flush();
+      touched = e.markDependentsDirty ? e.markDependentsDirty(asset.id) : 0;
+      saveAll(true);
     } catch (err) {
       asset.url = oldUrl;
       asset.thumbUrl = oldThumb;
       asset.size = oldSize;
+      asset.updatedAt = oldUpdated;
+      Object.assign(job, oldJob);
       try { fs.unlinkSync(dest); } catch (e2) { /* 忽略 */ }
       return { ok: false, message: '数据库落盘失败，已回滚（原图保持不变）：' + String((err && err.message) || err) };
     }
 
-    /* ⑥ 到这里才清理：旧素材文件 + 候选文件。两者都失败了也不影响正确性
-       （旧文件成为孤儿，由启动期 GC 兜底；候选文件同理）。 */
+    /* ⑥ 刷盘成功才清旧素材文件。自动替换保留候选文件作历史，重选不依赖
+       已删掉的旧素材文件；旧客户端的手动采用仍清候选。删除失败只留冗余文件。 */
     if (oldFile && path.resolve(oldFile) !== path.resolve(dest)) {
       try { fs.unlinkSync(oldFile); } catch (err) { /* 可能已被并发替换 */ }
     }
-    try { fs.unlinkSync(src); } catch (err) { /* 忽略 */ }
-
-    job.state = STATE.APPLIED;
-    job.candidateFile = null;
-    job.appliedFile = newName;
-    job.updatedAt = now();
-    saveAll();
+    if (!job.autoApply) { try { fs.unlinkSync(src); } catch (err) { /* 忽略 */ } }
     log('info', '图片生图结果已采用（资产 ' + asset.id + ' → ' + newName + '，影响 ' + touched + ' 条分镜）');
     return { ok: true, asset: asset, job: viewJob(job, asset.id), affected: touched };
   }
@@ -828,7 +864,7 @@ function makeImageJobs(env) {
     return listOf(db).filter((j) => {
       if (!j) return false;
       if (j.state === STATE.SUBMITTING) return false;    // 提交请求自己会推进
-      if (j.state === STATE.READY) return false;         // 等用户决定
+      if (j.state === STATE.READY) return !!j.autoApply && !j.error && !j._busy;
       if (!ACTIVE_STATES.includes(j.state)) return false;
       if (!j.providerTaskId) return false;
       const backoff = Math.min(POLL_INTERVAL_MS * Math.pow(2, Math.max(0, (j.queryFailures || 0) - 1)), POLL_BACKOFF_MAX_MS);
@@ -871,9 +907,9 @@ function makeImageJobs(env) {
   }
 
   /* ---------------- 启动期恢复 ----------------
-     只恢复**需要继续查服务商的**任务（约束 2 的"重启后恢复"）。
-     ⚠ `ready` 不算"待恢复"：它在等**用户**决定（采用/放弃），没有东西可查 ——
-       把它计进 resumed 会误导（日志说"恢复了 N 条"，其中一条其实什么都没做）。
+     恢复需要继续查服务商或完成自动替换的任务（约束 2 的"重启后恢复"）。
+     ⚠ 旧客户端的 `ready` 在等用户决定，不计入恢复；autoApply 的 ready
+       只采用已落盘的候选图，不重新请求付费生成。替换失败则保留结果供手工重试。
      submitting 且没有 taskId 的条目无法续查（提交响应在内存里丢了），
      但它也**不能**自动重发 —— 转成 submission_unknown 交人工核对。 */
   function reconcile(db) {
@@ -884,7 +920,7 @@ function makeImageJobs(env) {
       if (!j) return;
       delete j._busy;                     // 运行态标记不跨进程
       if (!ACTIVE_STATES.includes(j.state)) return;
-      if (j.state === STATE.READY) return;   // 等用户决定，不是等服务商
+      if (j.state === STATE.READY) { if (j.autoApply && !j.error) resumed++; return; }
       if (j.state === STATE.SAVING_RESULT &&
           (j.providerId === 'openai' || j.providerId === 'stability') && !j.syncResultUrl) {
         /* 同步 base64 只在内存里。若刚拿到付费结果就断电，重启已无法再取
@@ -989,7 +1025,12 @@ function makeImageJobs(env) {
     /* 下载传输注入（单测用；生产不调用） */
     setDownloadTransport,
     activeOfAsset: (assetId) => activeOfAsset(e.db(), assetId),
-    listOfAsset: (assetId) => byAsset(e.db(), assetId).map((j) => viewJob(j, assetId)),
+    listOfAsset: (assetId) => {
+      const asset = (e.db().assets || []).find((a) => a.id === assetId);
+      return byAsset(e.db(), assetId).map((j) => Object.assign(viewJob(j, assetId), {
+        selected: !!(asset && j.appliedFile && asset.url === e.assetUrl(j.projectId, j.appliedFile))
+      }));
+    },
     findJob: (jobId) => {
       const map = ensureMap(e.db());
       const j = map[jobId];

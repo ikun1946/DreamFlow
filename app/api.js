@@ -302,7 +302,7 @@
        只带用户实际选了的字段 —— 前端不替服务端做归一（那边 image-size.js 是唯一事实来源）。 */
     submitImageJob: (id, prompt, sz, providerId, modelId) => {
       const s = sz || {};
-      const body = { prompt: prompt };
+      const body = { prompt: prompt, autoApply: true };
       if (providerId) body.providerId = providerId;
       if (modelId) body.modelId = modelId;
       if (s.sizeMode === 'pixels') { body.sizeMode = 'pixels'; body.width = s.width; body.height = s.height; }

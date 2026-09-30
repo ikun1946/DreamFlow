@@ -3824,7 +3824,7 @@
         '<div class="banner warn" id="ipNotice"><span>' +
           '生图服务未配置。' +
           (S.imageProvidersError ? esc(S.imageProvidersError) : '请到「项目设置 → 图片生成服务」填入 API Key 后再回来。') +
-        '</span></div>';
+        '</span></div><section class="img-history" id="ipHistory"><h4>生成过的图片</h4><div class="img-history-grid" id="ipHistoryList"></div></section>';
     }
     return '<div class="sec-title" style="margin-top:12px">图片生成</div>' +
       /* 提示词回声区：只有"分镜预览"这种**没有输入框**的入口才需要它 ——
@@ -3850,7 +3850,10 @@
         '<div class="imgjob-foot" id="ipFoot"></div>' +
       '</div>' +
       /* 对比区：有候选图时才出现（原图 | 新图） */
-      '<div class="imgcmp" id="ipCmp" hidden></div>';
+      '<div class="imgcmp" id="ipCmp" hidden></div>' +
+      '<section class="img-history" id="ipHistory"><h4>生成过的图片</h4>' +
+        '<p class="hint-sm">生成成功后自动设为当前素材图片，也可以重新选用下面的历史图片。</p>' +
+        '<div class="img-history-grid" id="ipHistoryList"></div></section>';
   }
 
   /* 把生图区接到弹窗上。返回一个控制器，供外部（如"保存并生图"按钮）驱动。
@@ -3865,6 +3868,35 @@
     const q = (s) => mask.querySelector(s);
     const box = q('#ipBox'), body = q('#ipBody'), foot = q('#ipFoot');
     const stateEl = q('#ipState'), usageEl = q('#ipUsage'), cmpEl = q('#ipCmp');
+    const historyEl = q('#ipHistoryList');
+    let historyJobs = [], lastApplied = null;
+
+    async function notifyApplied(result) {
+      if (!result || result.state !== 'applied' || disposed) return;
+      const key = result.jobId + '|' + result.updatedAt;
+      if (lastApplied === key) return;
+      lastApplied = key;
+      if (typeof o.onApplied === 'function') {
+        try { const fresh = await o.onApplied(); if (fresh && fresh.url) o.origUrl = fresh.url; }
+        catch (e) { /* 已换图不因列表刷新失败而被误报为生成失败 */ }
+      }
+    }
+
+    async function refreshHistory() {
+      if (!historyEl || disposed) return;
+      try {
+        const r = await Api.listImageJobs(assetId);
+        if (disposed) return;
+        historyJobs = (r.jobs || []).filter((item) => item.previewUrl && ['ready', 'applied'].includes(item.state));
+        historyEl.innerHTML = historyJobs.length ? historyJobs.slice().reverse().map((item) =>
+          '<figure class="img-history-item' + (item.selected ? ' selected' : '') + '">' +
+            '<img src="' + esc(mediaUrl(item.previewUrl)) + '" alt="生成图片" loading="lazy" data-ipzoom="' + esc(mediaUrl(item.previewUrl)) + '" />' +
+            '<figcaption><span>' + esc(item.createdAt ? fmtWhen(item.createdAt) : '') + '</span>' +
+              '<button type="button" class="btn-outline" data-iphistory="' + esc(item.jobId) + '"' +
+                (item.selected ? ' disabled' : '') + '>' + (item.selected ? '当前选定' : '设为当前图片') + '</button></figcaption></figure>'
+        ).join('') : '<p class="hint-sm">还没有生成过的图片。</p>';
+      } catch (e) { if (!disposed) historyEl.innerHTML = '<p class="hint-sm">历史图片读取失败，重新打开详情可重试。</p>'; }
+    }
     /* 尺寸控件（2026-09-25）：与面板同生命周期。降级（无规格）时 get() 回 null，
        提交体保持与旧版一致（不带尺寸字段）。 */
     const sizeHost = q('#ipSizeHost');
@@ -3916,7 +3948,7 @@
 
       const st = job.state;
       const busy = IMG_BUSY_STATES.indexOf(st) >= 0;
-      setState(IMG_STATE_TEXT[st] || st, st === 'failed' ? 'err' : (busy ? 'busy' : (st === 'ready' ? 'ok' : '')));
+      setState(st === 'applied' && job.autoApply ? '已生成并设为当前素材图片' : (IMG_STATE_TEXT[st] || st), st === 'failed' ? 'err' : (busy ? 'busy' : (st === 'ready' || st === 'applied' ? 'ok' : '')));
 
       /* 实际扣费只在服务商已结算时显示；**不写死价格**（计划 §3.4） */
       if (usageEl) {
@@ -3937,7 +3969,7 @@
         html += '<div class="imgjob-bar"><span></span></div>' +
           '<p class="hint-sm">' + esc(IMG_STATE_TEXT[st] || st) + '。关闭弹窗不会取消任务，重新打开可继续查看。</p>';
       }
-      if (st === 'failed' || st === 'submission_unknown') {
+      if (st === 'failed' || st === 'submission_unknown' || (st === 'ready' && job.error)) {
         html += '<div class="banner warn"><span>' + esc(job.error || '服务商未返回具体原因') + '</span></div>';
         if (st === 'submission_unknown') {
           html += '<p class="hint-sm">提交结果不确定（没有任务 ID）。请先到服务商控制台核对，应用**不会**自动重发。</p>';
@@ -3953,7 +3985,7 @@
       let fh = '';
       if (st === 'ready') {
         fh = '<button class="btn-outline" data-ipact="discard">放弃结果</button>' +
-             '<button class="btn-primary" data-ipact="apply">使用这张图</button>';
+             '<button class="btn-primary" data-ipact="apply">' + (job.autoApply ? '重试替换' : '使用这张图') + '</button>';
       } else if (st === 'failed') {
         fh = '<button class="btn-outline" data-ipact="discard">知道了</button>';
       } else if (st === 'submission_unknown') {
@@ -3987,12 +4019,15 @@
       try {
         const r = await Api.currentImageJob(assetId);
         if (disposed) return;
-        const changed = !job || !r.job || r.job.jobId !== job.jobId || r.job.state !== job.state;
+        const changed = !job || !r.job || r.job.jobId !== job.jobId || r.job.state !== job.state || r.job.updatedAt !== job.updatedAt;
         job = r.job;
         if (r.job) job.previewUrl = r.job.previewUrl;
         /* 有活动任务就保持轮询；拿到终态就停表（不再空转） */
         if (r.active) startPoll(); else clearPoll();
-        if (changed) render();
+        if (changed) {
+          await notifyApplied(job);
+          render(); await refreshHistory();
+        }
       } catch (e) {
         if (disposed) return;
         /* 读取失败不弹 toast（轮询里会反复弹）—— 只记在状态条上 */
@@ -4007,11 +4042,18 @@
     refresh();
 
     /* 动作分发 */
-    if (box) {
+    if (box || historyEl) {
       /* 对比图在 ipBox 外，监听共用弹窗才能接到原图/新图的放大点击。 */
       mask.addEventListener('click', async (ev) => {
         const zoom = ev.target.closest('[data-ipzoom]');
         if (zoom) { openFullscreenViewer(zoom.getAttribute('data-ipzoom'), '生成结果'); return; }
+        const historyBtn = ev.target.closest('[data-iphistory]');
+        if (historyBtn) {
+          if (submitting || (job && IMG_BUSY_STATES.includes(job.state))) { toast('请等待本次生成完成后再选择历史图片', 'warn'); return; }
+          const entry = historyJobs.find((item) => item.jobId === historyBtn.getAttribute('data-iphistory'));
+          if (entry && !entry.selected) await doApply(historyBtn, entry, false);
+          return;
+        }
         const btn = ev.target.closest('[data-ipact]');
         if (!btn || !job) return;
         const act = btn.getAttribute('data-ipact');
@@ -4036,7 +4078,7 @@
 
     /* 采用：先取影响范围 → 二次确认 → 调接口 → 回调刷新。
        ⚠ 影响范围以后端**现算**的为准（assetUsage），不是本地猜的。 */
-    async function doApply(btn) {
+    async function doApply(btn, target, confirmSelection) {
       try {
         btn.disabled = true;
         const usage = await Api.assetUsage(assetId).catch(() => ({ count: 0 }));
@@ -4047,17 +4089,13 @@
             : '当前没有分镜引用这张资产。',
           '原图会被替换（保留原文件直到新文件写入成功）。'
         ].join('\n');
-        const okApply = await uiConfirm('使用这张生成的图片', msg);
+        const okApply = confirmSelection === false ? true : await uiConfirm('使用这张生成的图片', msg);
         if (!okApply) { btn.disabled = false; return; }
-        const r = await Api.applyImageJob(assetId, job.jobId);
+        const r = await Api.applyImageJob(assetId, (target || job).jobId);
         toast('已采用生成的图片' + (r && r.impact && r.impact.count ? '（影响 ' + r.impact.count + ' 条分镜）' : ''), 'ok');
-        if (typeof o.onApplied === 'function') {
-          try {
-            const fresh = await o.onApplied();
-            if (fresh && fresh.url) o.origUrl = fresh.url;
-          } catch (e) { /* 刷新失败不影响采用结果 */ }
-        }
+        await notifyApplied(r.job);
         await refresh();
+        await refreshHistory();
       } catch (e) { btn.disabled = false; fail(e); }
     }
 
@@ -4097,6 +4135,7 @@
         '模型：' + (selected ? selected.label : modelId) + '\n' +
         '张数：1 张 · 尺寸：' + szText + '\n' +
         '费用：' + imagePriceText(selected && selected.pricing, sz && sz.resolution, sz && sz.sizeMode === 'pixels') + '（估算，最终以实际结算为准）\n' +
+        '生成成功后会自动替换当前素材图片，所有引用该素材的分镜也会更新；结果保留在历史图片中。\n' +
         '提示词：' + prompt + '\n' +
         '服务商按实际消耗收费，这次提交会产生真实调用。');
       if (!confirmed) return { ok: false, canceled: true };
@@ -4113,7 +4152,9 @@
           toast('已提交生图任务', 'ok');
         }
         job = r.job || null;
+        await notifyApplied(job);
         render();
+        await refreshHistory();
         if (job && IMG_BUSY_STATES.includes(job.state)) startPoll(); else clearPoll();
         return { ok: !failed, error: failed };
       } catch (e) {
@@ -4135,7 +4176,7 @@
 
   /* 素材详情弹窗（素材库入口）。
      ⚠ 2026-09-25 阶段 4：这里的"文生图提示词"文本框就是生图区的提示词来源 ——
-       点「保存提示词并生图」会先把该文本提交给生图服务，同时后端把它存回资产的
+       点「生成图片」会先把该文本提交给生图服务，同时后端把它存回资产的
        prompt 字段（见 services.submitImageJob）。 */
   function openAssetSettings(asset) {
     /* 先拿到生图服务状态再画弹窗（见 ensureImageProvider 的说明）。
@@ -4200,7 +4241,7 @@
           '<div class="modal-foot">' +
             '<span class="hint-sm" id="asFileHint"></span><span class="grow"></span>' +
             '<button class="btn-outline" data-cancel>取消</button>' +
-            (isAudio || !configuredImageModels().length ? '' : '<button class="btn-outline" id="asGen" title="先保存这段提示词，再向生图服务提交一次任务（会产生真实调用）">' + I.spark + ' 保存提示词并生图</button>') +
+            (isAudio || !configuredImageModels().length ? '' : '<button class="btn-outline" id="asGen" title="使用当前提示词生成图片，成功后自动设为当前素材图片（会产生真实调用）">' + I.spark + ' 生成图片</button>') +
             '<button class="btn-primary" data-ok>保存</button>' +
           '</div>' +
         '</div>';
