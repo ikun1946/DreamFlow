@@ -1799,13 +1799,8 @@ async function submitImageJob(db, assetId, body, adapter, scope) {
   const sz = resolveImageSize(body, modelId);
 
   const IJ = requireImageJobs();
-  const p = adapter && adapter.imageProvider;
-  if (!p || !p.configured()) throw new ApiError(ERR.PARAM, '未配置生图服务的 API Key，请先在项目设置中填写');
-  /* 校验该 provider 是否真的配了 key：configured() 只看当前默认 provider；
-     如果用户选了非默认 provider，需要单独检查 key。简化：当前 worker 的 imageProvider
-     是默认 provider 实例；非默认 provider 的"已配置"由 image-jobs 内部按
-     providerId 区分（通过 adapter 列表查找）；这里先放过，submit 阶段若没 key
-     provider 会自行返回 mkErr('config', ...)。 */
+  const p = adapter && adapter.imageProviders && adapter.imageProviders[providerId];
+  if (!p || !p.configured()) throw new ApiError(ERR.PARAM, '未配置 ' + providerId + ' 的 API Key，请先在项目设置中填写');
 
   const r = await IJ.submit(a, prompt, {
     model: modelId,

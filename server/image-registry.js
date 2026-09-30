@@ -5,16 +5,14 @@
    为什么独立一份声明式注册表（而不是把 provider 信息散落在适配器里）：
    · "这台 DreamFlow 装了哪些 provider"是一个**事实**，应当集中描述、便于审阅
      和按需增减；适配器只负责"接到 providerId / modelId 后怎么发请求"。
-   · **尺寸规则是 per-model 的事实** —— Work Fisher v2.5-Flare 的 16 倍数 ≤3840
-     约束来自该模型，OpenAI DALL·E 3 的 1024×1024 固定尺寸约束也来自该模型。
+   · **尺寸规则是 per-model 的事实** —— Work Fisher / GPT Image 的 16 倍数 ≤3840
+     约束来自各自模型。
      把 sizeSpec 挂在 model 上，/meta/options / 前端控件 / 服务端校验三方从
      同一份声明读，**永远不会漂移**。
    · **添加新 provider / model 只需在本文件追加一条 + 在 server/providers/ 新增
      一个适配器**，不用动 image-size.js / services.js / app/app.js 任何位置。
 
-   ⚠ 沙箱里无网核对官方文档，OpenAI / Stability 的请求体与端点形参
-   按公开文档常识写入；编码完成后会再人工核对官方文档与真实响应
-   （同 0.41.0 实施计划 §6「0.42.0 落地时复核」约定）。
+   0.42.5 已按 OpenAI / Stability 官方接口文档复核请求体与响应形状。
    ============================================================ */
 
 /* 比例枚举 —— Work Fisher / OpenAI / Stability 都按比例发请求，
@@ -53,11 +51,10 @@ const WF_PRESETS = [
 ];
 const WF_LIMITS = { step: 16, min: 256, max: 3840, minPixels: 655360, maxPixels: 8294400, maxRatio: 3 };
 
-/* OpenAI DALL·E 3 —— 同步返回；只接受三种固定尺寸；
-   文档允许 size 字段直接写 "1024x1024" 等；不允许自定义像素 / 分辨率。 */
-const OAI_RATIOS = ['1:1', '16:9', '9:16'];                  /* 1:1=1024×1024；16:9=1792×1024；9:16=1024×1792 */
-const OAI_FIXED = ['1024×1024', '1792×1024', '1024×1792'];  /* UI 上展示用"宽×高"形式 */
-const OAI_LIMITS = { step: 1, min: 1024, max: 1792, minPixels: 1024 * 1024, maxPixels: 1792 * 1024, maxRatio: 16 / 9 };
+/* GPT Image 2.5 Flare：旧 DALL·E 3 已从 API 移除。新模型支持 16 倍数
+   的自定义尺寸并同步返回 base64；规则仍通过 sizeSpec 下发。 */
+const OAI_RATIOS = RATIO_ALL;
+const OAI_LIMITS = { step: 16, min: 256, max: 3840, minPixels: 655360, maxPixels: 8294400, maxRatio: 3 };
 
 /* Stability AI —— aspect_ratio 字符串枚举；不同 endpoint 支持的子集略有不同，
    这里给 v2beta/stable-image/generate/{core|sd3|ultra} 的常用子集。
@@ -114,18 +111,18 @@ const REGISTRY = [
     providerLabel: 'OpenAI',
     providerKeyEnv: 'OPENAI_API_KEY',
     defaultBaseUrl: 'https://api.openai.com',
-    description: 'OpenAI 图像生成（DALL·E 3 · 同步返回）',
+    description: 'OpenAI 图像生成（GPT Image 2.5 Flare · 同步返回）',
     models: [
       {
-        modelId: 'dall-e-3',
-        modelLabel: 'DALL·E 3（OpenAI · 同步）',
+        modelId: 'gpt-image-2.5-flare',
+        modelLabel: 'GPT Image 2.5 Flare（OpenAI · 同步）',
         endpoint: 'image-generations',
         supportsReferenceImage: false,
         sizeSpec: {
           ratios: OAI_RATIOS,
           resolutions: null,             /* 不接受 resolution 字段 */
-          fixedSizes: OAI_FIXED,
-          pixelMode: false,              /* 不允许自定义像素 */
+          fixedSizes: null,
+          pixelMode: true,
           presets: null,
           limits: OAI_LIMITS
         }
@@ -142,7 +139,7 @@ const REGISTRY = [
       {
         modelId: 'stable-image-core',
         modelLabel: 'Stable Image Core（Stability AI · 同步）',
-        endpoint: 'stable-image-core',
+        endpoint: 'core',
         supportsReferenceImage: false,
         sizeSpec: {
           ratios: STA_RATIOS,
@@ -156,7 +153,7 @@ const REGISTRY = [
       {
         modelId: 'stable-image-ultra',
         modelLabel: 'Stable Image Ultra（Stability AI · 高质量）',
-        endpoint: 'stable-image-ultra',
+        endpoint: 'ultra',
         supportsReferenceImage: false,
         sizeSpec: {
           ratios: STA_RATIOS,

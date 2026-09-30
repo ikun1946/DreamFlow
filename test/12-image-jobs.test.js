@@ -420,20 +420,25 @@ describe('查询重试与重启恢复', () => {
     assert.ok(t.calls.some((c) => /tk_retry/.test(c.url)));
   });
 
-  test('重启只恢复有 task_id 的未结束任务；submitting 无 ID 的转 submission_unknown', async () => {
+  test('重启只恢复可续查任务；丢失同步 base64 的结果转人工核对', async () => {
     const db = srv.store.load();
     db.imageJobs = {
       ij_a: { id: 'ij_a', projectId: 'pj_x', assetId: 'as_x', state: 'running', providerTaskId: 'tk_a', createdAt: 'x', updatedAt: 'x' },
       ij_b: { id: 'ij_b', projectId: 'pj_x', assetId: 'as_y', state: 'submitting', providerTaskId: null, createdAt: 'x', updatedAt: 'x' },
-      ij_c: { id: 'ij_c', projectId: 'pj_x', assetId: 'as_z', state: 'ready', providerTaskId: 'tk_c', createdAt: 'x', updatedAt: 'x' }
+      ij_c: { id: 'ij_c', projectId: 'pj_x', assetId: 'as_z', state: 'ready', providerTaskId: 'tk_c', createdAt: 'x', updatedAt: 'x' },
+      ij_d: { id: 'ij_d', projectId: 'pj_x', assetId: 'as_d', state: 'saving_result', providerId: 'openai', providerTaskId: 'tk_d', createdAt: 'x', updatedAt: 'x' },
+      ij_e: { id: 'ij_e', projectId: 'pj_x', assetId: 'as_e', state: 'saving_result', providerId: 'openai', providerTaskId: 'tk_e', syncResultUrl: 'https://example.com/legacy.png', createdAt: 'x', updatedAt: 'x' }
     };
     const rec = srv.imageJobs.reconcile(db);
-    assert.equal(rec.resumed, 1, '只有 running + 有 taskId 的继续查');
-    assert.equal(rec.unknown, 1, 'submitting 且无 ID 的转人工核对');
+    assert.equal(rec.resumed, 2, 'running 与旧 URL 任务仍能恢复');
+    assert.equal(rec.unknown, 2, '无 ID 和丢失内联图片的任务都须人工核对');
     assert.equal(db.imageJobs.ij_a.state, 'running');
     assert.equal(db.imageJobs.ij_b.state, 'submission_unknown');
     assert.equal(db.imageJobs.ij_c.state, 'ready', 'ready 不该被重启改动');
     assert.equal(db.imageJobs.ij_c.providerTaskId, 'tk_c');
+    assert.equal(db.imageJobs.ij_d.state, 'submission_unknown');
+    assert.match(db.imageJobs.ij_d.error, /不要直接重新提交/);
+    assert.equal(db.imageJobs.ij_e.state, 'saving_result');
     assert.equal(db.imageJobs.ij_b._busy, undefined);
     /* 清理，避免污染后续用例 */
     db.imageJobs = {};

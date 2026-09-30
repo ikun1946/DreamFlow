@@ -413,7 +413,7 @@ function makeImageJobs(env) {
     saveAll();
 
     /* 0.42.0：按 job.providerId 路由到对应 adapter；缺省回退到默认 provider */
-    const adapter = (e.providerFor && e.providerFor(job.providerId)) || e.provider;
+    const adapter = (e.providerFor && e.providerFor(job.providerId, job.modelId)) || e.provider;
     const r = await adapter.submit(prompt, { size: job.size, resolution: job.resolution });
 
     if (r && r.kind) {
@@ -436,11 +436,11 @@ function makeImageJobs(env) {
     job.providerTaskId = r.taskId;
     /* 同步 provider（OpenAI / Stability）：submit 阶段就拿到了结果，state 直接
        跳到 SAVING_RESULT，不轮询；syncResultUrl 入库是为了「结果下载失败 → 手动
-       重新保存」（resave）能拿到原链接。syncInlineBase64 是 Stability 的 base64
-       内联结果，**不入库**（约束 6 + 用户已付费生成的图不进备份）；重新提交一次即可。 */
+       重新保存」（resave）能拿到旧模型的原链接。现行 OpenAI / Stability 的
+       syncInlineBase64 **不入库**；若落盘前重启，标为结果未知以防重复扣费。 */
     if (r.syncResult) {
       if (r.syncInlineBase64) {
-        /* Stability 同步 base64：暂存到 job 上（运行态 _syncInlineBase64，不入 PERSIST），
+        /* OpenAI / Stability 同步 base64：暂存到 job 上（运行态 _syncInlineBase64，不入 PERSIST），
            立刻让 step() 处理 —— 见 step() 里的同步分支。 */
         job._syncInlineBase64 = r.syncInlineBase64;
         job.state = STATE.SAVING_RESULT;
@@ -487,7 +487,7 @@ function makeImageJobs(env) {
     return (map[r.kind] || '生图服务调用失败') + (r.message ? '：' + r.message : '');
   }
 
-  /* 同步 provider inline base64 落盘（Stability 路径）—— 不经过 https 下载，
+  /* 同步 provider inline base64 落盘（OpenAI / Stability）—— 不经过 https 下载，
      直接 decode 写候选文件。复用同样的"图片特征校验 + 路径安全"出口。 */
   async function handleSyncInline(job, b64) {
     /* base64 解码 + 图片特征校验。失败的失败语义与 https 路径一致（不丢失、保留可重存）。 */
@@ -547,7 +547,7 @@ function makeImageJobs(env) {
     log('info', '图片生图同步结果已落盘（本地 ' + job.id + '，资产 ' + job.assetId + '，' + info.width + '×' + info.height + ' ' + info.ext + '）');
   }
 
-  /* 同步 provider URL 下载（OpenAI 路径） —— 与异步 query 返回 succeeded 后走的下载流程
+  /* 同步 provider URL 下载（旧模型兼容路径） —— 与异步 query 返回 succeeded 后走的下载流程
      一致；只是 resultUrl 来源是 submit 阶段直接给的，不经过 query()。 */
   async function handleSyncUrl(job, resultUrl) {
     const dl = await downloadImage(resultUrl, { transport: downloadTransport });
@@ -600,7 +600,10 @@ function makeImageJobs(env) {
     if (job.state === STATE.READY) return;
     if (job.state === STATE.SUBMITTING) return;       // 提交还没回来，没有 taskId 可查
     if (!job.providerTaskId) return;
-    if (job.state === STATE.SAVING_RESULT) return;    // 上一次下载还在进行
+    /* 同步服务商刚提交完也处于 saving_result。原来的无条件 return 让
+       OpenAI/Stability 的已付费结果永远停在「保存图片」，连首次落盘都没执行。
+       并发由 _busy 阻止；重启后有可恢复 URL 的任务允许继续保存。 */
+    if (job.state === STATE.SAVING_RESULT && !job._syncInlineBase64 && !job.syncResultUrl) return;
 
     job._busy = true;
     try {
@@ -614,7 +617,7 @@ function makeImageJobs(env) {
         await handleSyncUrl(job, job.syncResultUrl);
         return;
       }
-      const adapter = (e.providerFor && e.providerFor(job.providerId)) || e.provider;
+      const adapter = (e.providerFor && e.providerFor(job.providerId, job.modelId)) || e.provider;
       const r = await adapter.query(job.providerTaskId);
       if (r && r.kind) {
         /* 查询失败：保留 task_id，稍后再查（约束 1 只说提交不重试；查询可以）。
@@ -882,6 +885,16 @@ function makeImageJobs(env) {
       delete j._busy;                     // 运行态标记不跨进程
       if (!ACTIVE_STATES.includes(j.state)) return;
       if (j.state === STATE.READY) return;   // 等用户决定，不是等服务商
+      if (j.state === STATE.SAVING_RESULT &&
+          (j.providerId === 'openai' || j.providerId === 'stability') && !j.syncResultUrl) {
+        /* 同步 base64 只在内存里。若刚拿到付费结果就断电，重启已无法再取
+           原图；不能假装可以轮询，也不能自动重发而造成第二次扣费。 */
+        j.state = STATE.SUBMISSION_UNKNOWN;
+        j.error = '服务商可能已生成图片，但应用重启前未完成保存。请先到服务商控制台核对，不要直接重新提交。';
+        j.updatedAt = now();
+        unknown++;
+        return;
+      }
       if (j.providerTaskId) { resumed++; return; }
       j.state = STATE.SUBMISSION_UNKNOWN;
       j.error = '上次提交未取得任务 ID（应用重启）。请到服务商控制台核对后再决定是否重新提交。';

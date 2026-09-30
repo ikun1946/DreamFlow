@@ -2,7 +2,7 @@
    17-image-multi-provider.test.js —— 多 provider 端到端（0.42.0）
 
    起真服务，校验：
-     · /system/image-providers 返回三家 + configured=false（未配任何 key）；
+     · /system/image-providers 返回三家，只有 OpenAI configured=true；
      · /meta/options.imageModels 包含三家；
      · 提交时携带 providerId/modelId 的端到端路径走得通（用假传输 + OpenAI adapter）
    ============================================================ */
@@ -11,12 +11,23 @@ const assert = require('node:assert/strict');
 const H = require('./helpers');
 const { createServer } = require('../server/server');
 const SHARED = require('../server/providers/_shared');
+const { makeImageProvider } = require('../server/image-provider');
+const fs = require('fs');
+const path = require('path');
+
+const PNG = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+  Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'),
+  (function () { const b = Buffer.alloc(8); b.writeUInt32BE(64, 0); b.writeUInt32BE(48, 4); return b; })(),
+  Buffer.from([8, 6, 0, 0, 0]), Buffer.alloc(64, 0xAA)
+]);
 
 const SANDBOX = H.freshDir('image-multi-provider');
 process.env.JC_DATA_DIR = SANDBOX;
 
 let srv = null;
 let base = '';
+let wfKeyEnabled = false;
 
 async function api(method, p, body) {
   const opt = { method, headers: {} };
@@ -37,7 +48,9 @@ before(async () => {
      覆盖一次；这与 cfg.dataDir 覆盖同步生效在 store 上。 */
   const runtimeMod = require('../server/runtime');
   runtimeMod.configure({ dataDir: SANDBOX });
-  srv = createServer({ configOverrides: { port: 0, token: '', workFisherApiKey: 'wf_test_key', dataDir: SANDBOX } });
+  srv = createServer({ configOverrides: { port: 0, token: '', dataDir: SANDBOX,
+    imageKeyProvider: (id) => id === 'openai' ? 'openai_test_key' :
+      (id === 'work-fisher' && wfKeyEnabled ? 'wf_test_key' : '') } });
   const addr = await srv.start();
   base = 'http://127.0.0.1:' + addr.port;
 });
@@ -59,6 +72,8 @@ describe('多 provider · HTTP 端点', () => {
       assert.equal(typeof p.configured, 'boolean', p.providerId + ' configured 必填');
       assert.ok(Array.isArray(p.models) && p.models.length > 0, p.providerId + ' models 非空');
     });
+    assert.equal(r.env.data.find((p) => p.providerId === 'openai').configured, true);
+    assert.equal(r.env.data.find((p) => p.providerId === 'work-fisher').configured, false);
   });
   test('GET /system/image-provider（旧端点）仍可访问（兼容默认 provider 状态）', async () => {
     const r = await api('GET', '/api/v1/system/image-provider');
@@ -75,7 +90,7 @@ describe('多 provider · HTTP 端点', () => {
     assert.ok(r.env.data.imageModels.length >= 3, '至少三家');
     const ids = r.env.data.imageModels.map((m) => m.modelId).sort();
     assert.ok(ids.includes('workfisher-image-g-v2.5-flare'));
-    assert.ok(ids.includes('dall-e-3'));
+    assert.ok(ids.includes('gpt-image-2.5-flare'));
     assert.ok(ids.includes('stable-image-core'));
   });
   test('imageSizes（旧字段）也保留：默认 model 的 sizeSpec', async () => {
@@ -98,18 +113,82 @@ describe('多 provider · 提交体校验', () => {
     assert.notEqual(r.env.code, 0, '未知 provider 应被拒');
     assert.ok(String(r.env.data && r.env.data.message || JSON.stringify(r.env)).includes('nope'));
   });
-  test('提交时携带合法 providerId/modelId（未配 key 时被拒，错误码清楚）', async () => {
-    /* OpenAI 没配 key → 应该报 config/40001 之类的明确错误，而不是 500。 */
-    const proj = (await api('POST', '/api/v1/projects', { name: 'no-key' })).env.data.project;
+  test('只配 OpenAI Key 时可提交并保存候选图', async () => {
+    const proj = (await api('POST', '/api/v1/projects', { name: 'openai-only' })).env.data.project;
+    await api('POST', '/api/v1/projects/' + proj.id + '/workspaces', { name: 'ws' });
+    const asset = (await api('POST', '/api/v1/assets?projectId=' + proj.id,
+      { type: 'character', name: 'x', projectId: proj.id })).env.data;
+    SHARED.setTransport({ request(url, opts, cb) {
+      assert.match(url, /api\.openai\.com\/v1\/images\/generations/);
+      const body = JSON.parse(opts.body);
+      assert.equal(body.model, 'gpt-image-2.5-flare');
+      assert.equal(body.response_format, undefined);
+      assert.equal(body.size, '1024x1024');
+      cb({ statusCode: 200, headers: {}, body: JSON.stringify({ data: [{ b64_json: PNG.toString('base64') }] }) });
+    } });
+    const r = await api('POST', '/api/v1/assets/' + asset.id + '/image-jobs?projectId=' + proj.id,
+      { prompt: 'a cat', providerId: 'openai', modelId: 'gpt-image-2.5-flare', sizeMode: 'ratio', ratio: '1:1' });
+    assert.equal(r.env.code, 0);
+    assert.equal(r.env.data.job.state, 'ready', JSON.stringify(r.env.data));
+    assert.ok(r.env.data.job.previewUrl);
+    const dbText = fs.readFileSync(path.join(SANDBOX, 'db.json'), 'utf8');
+    assert.ok(!dbText.includes(PNG.toString('base64')), '生成图片的 base64 不能落库');
+    SHARED.setTransport(null);
+  });
+  test('未配置的 Work Fisher 应在付费提交前被拒', async () => {
+    const proj = (await api('POST', '/api/v1/projects', { name: 'no-wf-key' })).env.data.project;
     await api('POST', '/api/v1/projects/' + proj.id + '/workspaces', { name: 'ws' });
     const asset = (await api('POST', '/api/v1/assets?projectId=' + proj.id,
       { type: 'character', name: 'x', projectId: proj.id })).env.data;
     const r = await api('POST', '/api/v1/assets/' + asset.id + '/image-jobs?projectId=' + proj.id,
-      { prompt: 'a cat', providerId: 'openai', modelId: 'dall-e-3', sizeMode: 'ratio', ratio: '1:1' });
-    /* API 协议层成功（code=0），但任务被标 failed+config —— OpenAI adapter 的 configured() 返回空。
-       这正是 image-jobs 设计的目的：submit 不重试 + 任务明确标 failed 把 reason 带给前端。 */
-    assert.equal(r.env.code, 0);
-    assert.equal(r.env.data.failed, 'config', '应该报 config 失败：' + JSON.stringify(r.env.data));
-    assert.ok(String(r.env.data.job && r.env.data.job.error || '').includes('未配置'), 'job.error 应说明是配置问题');
+      { prompt: 'a cat', providerId: 'work-fisher', modelId: 'workfisher-image-g-v2.5-flare', ratio: '1:1' });
+    assert.notEqual(r.env.code, 0);
+    assert.match(JSON.stringify(r.env), /未配置 work-fisher/);
+  });
+  test('选 Sunburst 时实际请求也必须是 Sunburst', async () => {
+    wfKeyEnabled = true;
+    const proj = (await api('POST', '/api/v1/projects', { name: 'sunburst-route' })).env.data.project;
+    await api('POST', '/api/v1/projects/' + proj.id + '/workspaces', { name: 'ws' });
+    const asset = (await api('POST', '/api/v1/assets?projectId=' + proj.id,
+      { type: 'character', name: 'x', projectId: proj.id })).env.data;
+    let sentModel = null;
+    SHARED.setTransport({ request(url, opts, cb) {
+      if (opts.method === 'POST') {
+        sentModel = JSON.parse(opts.body).model;
+        return cb({ statusCode: 200, headers: {}, body: JSON.stringify({ task_id: 'mock_task_1' }) });
+      }
+      cb({ statusCode: 200, headers: {}, body: JSON.stringify({ status: 'queued' }) });
+    } });
+    try {
+      const r = await api('POST', '/api/v1/assets/' + asset.id + '/image-jobs?projectId=' + proj.id,
+        { prompt: 'a cat', providerId: 'work-fisher', modelId: 'workfisher-image-g-v2.5-sunburst', ratio: '1:1' });
+      assert.equal(r.env.code, 0);
+      assert.equal(sentModel, 'workfisher-image-g-v2.5-sunburst');
+    } finally {
+      srv.imageJobs.stopTimer();
+      SHARED.setTransport(null);
+      wfKeyEnabled = false;
+    }
+  });
+});
+
+describe('Stability 适配器 · 官方表单契约', () => {
+  test('Ultra 使用 multipart 表单，并读取内联图片', async () => {
+    const adapter = makeImageProvider({ apiKey: 'stability_test_key' },
+      { providerId: 'stability', modelId: 'stable-image-ultra' });
+    SHARED.setTransport({ request(url, opts, cb) {
+      assert.match(url, /\/stable-image\/generate\/ultra$/);
+      assert.match(opts.headers['Content-Type'], /^multipart\/form-data; boundary=/);
+      assert.equal(opts.headers.Accept, 'application/json');
+      assert.ok(Buffer.isBuffer(opts.body));
+      assert.match(opts.body.toString('utf8'), /name="aspect_ratio"\r\n\r\n9:16/);
+      assert.match(opts.body.toString('utf8'), /name="prompt"\r\n\r\na cat/);
+      cb({ statusCode: 200, headers: {}, body: JSON.stringify({ image: PNG.toString('base64') }) });
+    } });
+    try {
+      const result = await adapter.submit('a cat', { size: '9:16' });
+      assert.equal(result.syncInlineBase64, PNG.toString('base64'));
+      assert.equal(result.syncResult, true);
+    } finally { SHARED.setTransport(null); }
   });
 });

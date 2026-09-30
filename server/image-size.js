@@ -3,9 +3,8 @@
    image-size.js —— 生图尺寸（宽高比 / 像素）的数学原语 + per-model 适配（0.42.0）
 
    0.41.0 设计：所有尺寸规则**集中**在这一处（避免两处写必然漂移）。
-   0.42.0 变更：尺寸规则**变成 per-model** —— Work Fisher v2.5 的 16 倍数 ≤3840
-     与 OpenAI DALL·E 3 的 1024×1024 固定尺寸是两套不同的硬约束，硬塞进
-     "一份规则"会导致其中一个永远不对。
+   0.42.0 变更：尺寸规则**变成 per-model** —— Work Fisher、OpenAI GPT Image
+     与 Stability 的比例/像素支持不同，硬塞进"一份规则"会导致其中一方出错。
    解法：把数学原语（snap / fitsLimits / validate / nearest / ratioToSize /
      sizeToRatio / pixelsOfResolution）保留为公共；具体 LIMITS / RATIOS /
      RESOLUTIONS / PRESETS 由 registry 的 sizeSpec 注入。
@@ -261,7 +260,7 @@ function resolveSize(input, modelId) {
         resolution: normResolution(spec, i.resolution), errors: [] };
     }
     if (spec.fixedSizes && id.indexOf(':') < 0 && /^\d+\s*[\u00d7x]\s*\d+$/i.test(id)) {
-      /* OpenAI 路径：'1024x1024' 这种像素写法直接当 fixed size 透传 */
+      /* 保留旧模型 fixedSizes 协议的兼容分支；现行 GPT Image 用像素模式。 */
       return { ok: true, mode: 'ratio', size: id.toLowerCase().replace(/\s*[\u00d7]\s*/, 'x'),
         ratio: null, resolution: null, errors: [] };
     }

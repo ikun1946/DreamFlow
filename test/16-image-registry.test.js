@@ -76,11 +76,11 @@ describe('注册表 · 下发前端', () => {
 });
 
 describe('注册表 · sizeSpec 模型差异', () => {
-  test('OpenAI 不允许像素模式（pixelMode=false）；分辨率档位 null', () => {
-    const m = REGISTRY.findModel('openai', 'dall-e-3');
-    assert.equal(m.sizeSpec.pixelMode, false);
+  test('OpenAI GPT Image 允许像素模式；分辨率档位 null', () => {
+    const m = REGISTRY.findModel('openai', 'gpt-image-2.5-flare');
+    assert.equal(m.sizeSpec.pixelMode, true);
     assert.equal(m.sizeSpec.resolutions, null);
-    assert.ok(Array.isArray(m.sizeSpec.fixedSizes) && m.sizeSpec.fixedSizes.length > 0, 'fixedSizes 必填');
+    assert.equal(m.sizeSpec.limits.step, 16);
   });
   test('Stability 同样不允许像素模式；分辨率档位 null', () => {
     const m = REGISTRY.findModel('stability', 'stable-image-core');

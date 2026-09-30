@@ -27,6 +27,7 @@
    ============================================================ */
 const SHARED = require('./_shared');
 const { callJson, mkErr, kindOfStatus, messageOfBody, SUBMIT_TIMEOUT_MS } = SHARED;
+const { randomBytes } = require('crypto');
 
 const STABILITY_ASPECT_RATIOS = [
   '1:1', '16:9', '21:9', '2:3', '3:2', '4:5', '5:4', '9:16', '9:21'
@@ -37,7 +38,7 @@ function makeStabilityAdapter(cfg, model, opts) {
   const c = cfg || {};
   const base = String(o.baseUrl || model.provider.defaultBaseUrl).replace(/\/+$/, '');
   const modelId = String(model.model.modelId);
-  const endpoint = String(model.model.endpoint || 'stable-image-core');
+  const endpoint = String(model.model.endpoint || 'core');
 
   function apiKey() {
     const v = typeof c.apiKey === 'function' ? c.apiKey() : c.apiKey;
@@ -65,19 +66,26 @@ function makeStabilityAdapter(cfg, model, opts) {
     const aspect = normalizeAspectRatio(so.size);
     if (aspect && aspect.kind) return aspect;
 
-    const body = {
+    const fields = {
       prompt: text,
       aspect_ratio: aspect,
       output_format: 'png'
     };
-    if (so.seed != null) body.seed = Number(so.seed);
+    if (so.seed != null) fields.seed = Number(so.seed);
+    /* Stability v2beta 文档要求 multipart/form-data；JSON 请求会被 415/400 拒绝。
+       无文件上传时仍须按表单编码，边界每次随机以免提示词碰撞。 */
+    const boundary = 'dreamflow-' + randomBytes(12).toString('hex');
+    const rawBody = Buffer.from(Object.entries(fields).map(([name, value]) =>
+      '--' + boundary + '\r\nContent-Disposition: form-data; name="' + name + '"\r\n\r\n' +
+      String(value) + '\r\n').join('') + '--' + boundary + '--\r\n', 'utf8');
 
     const r = await callJson({
       url: base + '/v2beta/stable-image/generate/' + endpoint,
       method: 'POST',
-      headers: authHeaders(),
-      timeoutMs: SUBMIT_TIMEOUT_MS,
-      body: body
+      headers: Object.assign(authHeaders(), { 'Content-Type': 'multipart/form-data; boundary=' + boundary }),
+      timeoutMs: Math.max(SUBMIT_TIMEOUT_MS, 120000),
+      rawBody: rawBody,
+      maxBodyBytes: SHARED.MAX_IMAGE_BODY_BYTES
     });
     if (!r) return mkErr('network', '请求 Stability 失败');
     if (r.kind) return r;

@@ -3413,8 +3413,34 @@
        （那时 spec 为空，控件整体降级为「自动」）。
      为什么不全放服务端：像素输入框每敲一个键都发请求是不成立的。 */
 
-  function imgSizeSpec() {
-    return (S.options && S.options.imageSizes) || null;
+  function configuredImageModels() {
+    const list = [];
+    (S.imageProvidersList || []).forEach((p) => {
+      if (!(S.imageKeyMap ? S.imageKeyMap[p.providerId] : p.configured)) return;
+      (p.models || []).forEach((m) => list.push({
+        providerId: p.providerId, providerLabel: p.label, modelId: m.id, modelLabel: m.label
+      }));
+    });
+    return list;
+  }
+
+  function imgSizeSpec(modelId) {
+    const models = S.options && S.options.imageModels || [];
+    const row = modelId && models.find((m) => m.modelId === modelId);
+    if (modelId && !row) return null;
+    const raw = row ? row.sizeSpec : (S.options && S.options.imageSizes);
+    if (!raw) return null;
+    /* /meta/options 的比例是字符串枚举。控件预览需要宽高数值，因此只在
+       展示层派生 id/w/h；合法性仍以服务端 image-size.js 为准。 */
+    return Object.assign({}, raw, {
+      providerId: row ? row.providerId : 'work-fisher',
+      modelId: row ? row.modelId : 'workfisher-image-g-v2.5-flare',
+      ratios: (raw.ratios || []).map((r) => {
+        if (r && typeof r === 'object') return r;
+        const wh = String(r).split(':').map(Number);
+        return { id: String(r), w: wh[0], h: wh[1] };
+      })
+    });
   }
 
   /* 客户端镜像 · 比例 → 预览像素（只用于显示；提交时比例模式发的是枚举本身） */
@@ -3485,33 +3511,26 @@
 
   /* 尺寸控件 HTML。idp 前缀避免生图面板与设置页两份实例的 id 打架。
      val: { sizeMode, ratio, width, height, resolution }（来自设置里的生效默认值） */
-  function imageSizeControlHTML(idp, val, modelSpec) {
-    const spec = modelSpec || imgSizeSpec();
+  function imageSizeControlHTML(idp, val, modelKey) {
+    const choices = idp === 'ip' ? configuredImageModels() : [];
+    const selected = choices.find((m) => m.providerId + '|' + m.modelId === modelKey) || choices[0] || null;
+    const spec = imgSizeSpec(selected && selected.modelId);
     const v = val || {};
-    const providersList = (S && S.imageProvidersList) || [];
-    const configuredProviders = providersList.filter((p) => S && S.imageKeyMap ? !!S.imageKeyMap[p.providerId] : !!p.configured);
-    const showProviderSelect = configuredProviders.length >= 2;
-    const ratiosList = (spec && spec.ratios) || ((S.options && S.options.imageSizes && S.options.imageSizes.ratios) || []);
-    const resList = (spec && spec.resolutions) || ((S.options && S.options.imageSizes && S.options.imageSizes.resolutions) || []);
-    const presetsList = (spec && spec.presets) || ((S.options && S.options.imageSizes && S.options.imageSizes.presets) || []);
-    const limits = (spec && spec.limits) || ((S.options && S.options.imageSizes && S.options.imageSizes.limits) || { step: 16, min: 256, max: 3840 });
+    const ratiosList = (spec && spec.ratios) || [];
+    const resList = (spec && spec.resolutions) || [];
+    const presetsList = (spec && spec.presets) || [];
+    const limits = (spec && spec.limits) || { step: 16, min: 256, max: 3840 };
     if (!spec) {
       return '<div class="isz" id="' + idp + 'Size"><p class="hint-sm">尺寸选项需要刷新页面后可用。</p></div>';
     }
-    const providerPicker = showProviderSelect ? (
+    const providerPicker = choices.length > 1 ? (
       '<div class="isz-inline"><span class="hint-sm">服务商 / 模型</span>' +
       '<select class="input-sm" data-iszprovidersel>' +
-        configuredProviders.map((p) =>
-          '<optgroup label="' + esc(p.label) + '">' +
-          (p.models || []).map((m) => {
-            const sel = m.id === (spec.modelId || 'workfisher-image-g-v2.5-flare');
-            return '<option value="' + esc(p.providerId + '|' + m.id) + '"' + (sel ? ' selected' : '') + '>' + esc(m.label) + '</option>';
-          }).join('') +
-          '</optgroup>'
-        ).join('') +
+        choices.map((m) => '<option value="' + esc(m.providerId + '|' + m.modelId) + '"' +
+          (m === selected ? ' selected' : '') + '>' + esc(m.providerLabel + ' · ' + m.modelLabel) + '</option>').join('') +
       '</select></div>'
     ) : '';
-    const mode = v.sizeMode === 'pixels' ? 'pixels' : 'ratio';
+    const mode = v.sizeMode === 'pixels' && spec.pixelMode !== false ? 'pixels' : 'ratio';
     const quick = (ratiosList || []).slice(0, 4);
     const ratioSel = (ratiosList || []).map((r) =>
       '<option value="' + esc(r.id) + '"' + (r.id === v.ratio ? ' selected' : '') + '>' + esc(r.id) + '</option>').join('');
@@ -3523,7 +3542,7 @@
     const showPixelsPane = !!(spec.pixelMode !== false && (spec.fixedSizes || (limits && limits.max)));
     const showResolutions = (resList || []).length > 0;
     return '' +
-      '<div class="isz" id="' + idp + 'Size" data-iszroot="' + idp + '">' +
+      '<div class="isz" id="' + idp + 'Size" data-iszroot="' + idp + '" data-provider="' + esc(spec.providerId) + '" data-model="' + esc(spec.modelId) + '">' +
         '<div class="isz-row">' +
           '<div class="chips" role="tablist">' +
             (showRatioPane ? '<button type="button" class="chip' + (mode === 'ratio' ? ' on' : '') + '" data-iszmode="ratio">宽高比</button>' : '') +
@@ -3556,26 +3575,25 @@
   }
 
   function wireImageSizeControl(root, idp, initial, onChange) {
-    const spec = imgSizeSpec();
-    const q = (s) => root.querySelector(s);
+    const el = root.matches && root.matches('[data-iszroot="' + idp + '"]')
+      ? root : root.querySelector('[data-iszroot="' + idp + '"]');
+    const spec = imgSizeSpec(el && el.dataset.model);
+    const q = (s) => el && el.querySelector(s);
     const st = {
-      sizeMode: (initial && initial.sizeMode === 'pixels') ? 'pixels' : 'ratio',
-      ratio: (initial && initial.ratio) || (spec ? spec.ratios[0].id : '16:9'),
-      resolution: (initial && initial.resolution) || '1k',
+      sizeMode: (initial && initial.sizeMode === 'pixels' && spec && spec.pixelMode !== false) ? 'pixels' : 'ratio',
+      ratio: (initial && spec && spec.ratios.some((r) => r.id === initial.ratio))
+        ? initial.ratio : (spec && spec.ratios[0] ? spec.ratios[0].id : '16:9'),
+      resolution: spec && spec.resolutions ? ((initial && initial.resolution) || spec.resolutions[0]) : null,
       width: (initial && initial.width) || null,
       height: (initial && initial.height) || null
     };
-    if (!spec) return { get: () => null, set: () => {}, getSelectedProviderId: () => 'work-fisher', getSelectedModelId: () => 'workfisher-image-g-v2.5-flare', getSelectedModel: () => null };   // 降级
+    if (!el || !spec) return { get: () => null, set: () => {}, getSelectedProviderId: () => 'work-fisher', getSelectedModelId: () => 'workfisher-image-g-v2.5-flare', getSelectedModel: () => null };   // 降级
     /* 0.42.0：从控件态读出 provider / model（provider/model 选择器在 imageSizeControlHTML 里渲染） */
     function getSelectedProviderId() {
-      const sel = q('[data-iszprovidersel]');
-      if (!sel || !sel.value) return (spec.providerId || 'work-fisher');
-      const v = String(sel.value); return v.split('|')[0] || (spec.providerId || 'work-fisher');
+      return (el && el.dataset.provider) || spec.providerId || 'work-fisher';
     }
     function getSelectedModelId() {
-      const sel = q('[data-iszprovidersel]');
-      if (!sel || !sel.value) return (spec.modelId || 'workfisher-image-g-v2.5-flare');
-      const v = String(sel.value); return v.split('|')[1] || (spec.modelId || 'workfisher-image-g-v2.5-flare');
+      return (el && el.dataset.model) || spec.modelId || 'workfisher-image-g-v2.5-flare';
     }
     function getSelectedModel() {
       const id = getSelectedModelId();
@@ -3589,14 +3607,6 @@
       }
       return null;
     }
-    /* provider/model 改变时通知外面重新渲染（外面通常会重 wire 控件） */
-    const provSel = q('[data-iszprovidersel]');
-    if (provSel) {
-      provSel.addEventListener('change', () => {
-        if (typeof onChange === 'function') onChange(st);
-      });
-    }
-
     const pane = (m) => q('[data-iszpane="' + m + '"]');
     const prevEl = q('#' + idp + 'Prev');
     const warnEl = q('#' + idp + 'Warn');
@@ -3606,8 +3616,10 @@
       if (!prevEl) return;
       if (st.sizeMode === 'ratio') {
         if (st.ratio === spec.auto) { prevEl.textContent = '尺寸：自动'; return; }
+        if (!spec.resolutions) { prevEl.textContent = '比例：' + st.ratio + '（服务商决定像素）'; return; }
         const px = imgSizeRatioPreview(spec, st.ratio, st.resolution);
-        prevEl.textContent = px ? ('约 ' + px.width + ' × ' + px.height + ' px（' + st.ratio + ' · ' + st.resolution + '）') : (st.ratio + ' · ' + st.resolution);
+        const detail = st.ratio + (st.resolution ? ' · ' + st.resolution : '');
+        prevEl.textContent = px ? ('约 ' + px.width + ' × ' + px.height + ' px（' + detail + '）') : detail;
       } else {
         const w = Number(st.width), h = Number(st.height);
         if (!(w > 0) || !(h > 0)) { prevEl.textContent = '输入宽高后显示比例'; return; }
@@ -3619,8 +3631,8 @@
 
     function setMode(m) {
       st.sizeMode = m;
-      q('[data-iszmode="ratio"]').classList.toggle('on', m === 'ratio');
-      q('[data-iszmode="pixels"]').classList.toggle('on', m === 'pixels');
+      if (q('[data-iszmode="ratio"]')) q('[data-iszmode="ratio"]').classList.toggle('on', m === 'ratio');
+      if (q('[data-iszmode="pixels"]')) q('[data-iszmode="pixels"]').classList.toggle('on', m === 'pixels');
       pane('ratio').hidden = m !== 'ratio';
       pane('pixels').hidden = m !== 'pixels';
       /* 联动：比例 → 像素时把预览像素填进输入框；像素 → 比例时反猜枚举 */
@@ -3640,7 +3652,7 @@
           const sel = q('[data-iszratiosel]');
           if (sel) sel.value = guess;
           q('[data-iszratio="' + guess + '"]');
-          root.querySelectorAll('[data-iszratio]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-iszratio') === guess));
+          el.querySelectorAll('[data-iszratio]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-iszratio') === guess));
         }
         /* 猜不到（自定义比例）：保持原枚举不动 —— 精确自定义请留在像素模式（面板上说明） */
       }
@@ -3649,7 +3661,7 @@
 
     function markRatio(id) {
       st.ratio = id;
-      root.querySelectorAll('[data-iszratio]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-iszratio') === id));
+      el.querySelectorAll('[data-iszratio]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-iszratio') === id));
       const sel = q('[data-iszratiosel]');
       if (sel) sel.value = id;
       refreshPreview(); fire();
@@ -3694,7 +3706,7 @@
       refreshPreview(); fire();
     }
 
-    root.addEventListener('click', (e) => {
+    el.addEventListener('click', (e) => {
       const modeBtn = e.target.closest('[data-iszmode]');
       if (modeBtn) { setMode(modeBtn.getAttribute('data-iszmode')); return; }
       const ratioBtn = e.target.closest('[data-iszratio]');
@@ -3728,6 +3740,7 @@
     }
     refreshPreview();
     return {
+      getSelectedProviderId, getSelectedModelId, getSelectedModel,
       get: () => ({
         sizeMode: st.sizeMode, ratio: st.ratio, resolution: st.resolution,
         width: st.sizeMode === 'pixels' ? Number(st.width) : null,
@@ -3755,20 +3768,17 @@
      返回 HTML 字符串；事件绑定由 wireImagePanel 负责。 */
   function imagePanelHTML(asset, opts) {
     const o = opts || {};
-    const p = S.imgProvider || {};
-    const configured = !!p.configured;
+    const configured = configuredImageModels().length > 0;
     /* 未配置密钥：给出**可操作**的指路（计划 §3.1 / §3.4），而不是把入口藏起来 ——
        素材详情本来就是设置页，藏掉反而让人找不到去哪儿配。 */
     if (!configured) {
       return '<div class="sec-title" style="margin-top:12px">GPT 生图</div>' +
         '<div class="banner warn" id="ipNotice"><span>' +
           '生图服务未配置。' +
-          (p.error ? esc(p.error) : '请到「项目设置 → 图片生成服务」填入 API Key 后再回来。') +
+          (S.imageProvidersError ? esc(S.imageProvidersError) : '请到「项目设置 → 图片生成服务」填入 API Key 后再回来。') +
         '</span></div>';
     }
-    return '<div class="sec-title" style="margin-top:12px">GPT 生图'
-        + (p.model ? '<span class="hint-sm" style="font-weight:400;margin-left:6px">' + esc(p.model) + '</span>' : '')
-        + '</div>' +
+    return '<div class="sec-title" style="margin-top:12px">图片生成</div>' +
       /* 提示词回声区：只有"分镜预览"这种**没有输入框**的入口才需要它 ——
          素材详情那边提示词就在上面的文本框里，再显示一遍是重复。
          由调用方决定是否使用（见 openBoundAsset 的 Api.getAsset 回填）。 */
@@ -3780,7 +3790,7 @@
          （S.settings.imageDefaults，GET /settings 已带回）；弹窗内的调整只影响
          这一次提交，不改默认值 —— 「保存后可复用」在设置页的那张卡片上。 */
       '<div class="sec-title" style="margin-top:10px">尺寸</div>' +
-      imageSizeControlHTML('ip', S.settings && S.settings.imageDefaults) +
+      '<div id="ipSizeHost">' + imageSizeControlHTML('ip', S.settings && S.settings.imageDefaults) + '</div>' +
       /* 状态条：进度 / 结果提示都在这里更新（不重建 DOM，避免输入框失焦） */
       '<div class="imgjob" id="ipBox" hidden>' +
         '<div class="imgjob-head">' +
@@ -3809,7 +3819,17 @@
     const stateEl = q('#ipState'), usageEl = q('#ipUsage'), cmpEl = q('#ipCmp');
     /* 尺寸控件（2026-09-25）：与面板同生命周期。降级（无规格）时 get() 回 null，
        提交体保持与旧版一致（不带尺寸字段）。 */
-    const szCtl = wireImageSizeControl(mask, 'ip', (S.settings && S.settings.imageDefaults) || null);
+    const sizeHost = q('#ipSizeHost');
+    let szCtl = sizeHost ? wireImageSizeControl(sizeHost, 'ip', (S.settings && S.settings.imageDefaults) || null) : null;
+    /* 选模型后必须同时换该模型的尺寸规格；旧控件节点随 innerHTML 移除，
+       事件监听也一起消失，避免重复提交或把前一模型的比例发给新模型。 */
+    if (sizeHost) sizeHost.addEventListener('change', (e) => {
+      if (!e.target.matches('[data-iszprovidersel]')) return;
+      const key = e.target.value;
+      const previous = szCtl && szCtl.get();
+      sizeHost.innerHTML = imageSizeControlHTML('ip', previous, key);
+      szCtl = wireImageSizeControl(sizeHost, 'ip', previous);
+    });
     let job = null;
     let pollTimer = null;
     let disposed = false;
@@ -3977,26 +3997,31 @@
       if (!prompt) { toast('提示词不能为空', 'err'); return { ok: false }; }
       if (prompt.length > 10000) { toast('提示词不能超过 10000 字符（当前 ' + prompt.length + '）', 'err'); return { ok: false }; }
 
-      const p = S.imgProvider || {};
+      if (!szCtl || !szCtl.get()) { toast('尺寸选项尚未加载，请刷新项目后重试', 'err'); return { ok: false }; }
+      const selected = szCtl && szCtl.getSelectedModel && szCtl.getSelectedModel();
+      const providerId = szCtl && szCtl.getSelectedProviderId ? szCtl.getSelectedProviderId() : 'work-fisher';
+      const modelId = szCtl && szCtl.getSelectedModelId ? szCtl.getSelectedModelId() : 'workfisher-image-g-v2.5-flare';
       /* 尺寸描述进付费确认 —— 用户应当知道这次按什么尺寸扣费 */
       const sz = szCtl ? szCtl.get() : null;
       const szText = !sz ? '自动（1k）'
         : (sz.sizeMode === 'pixels'
             ? (sz.width + ' × ' + sz.height + ' px（精确像素）')
-            : (sz.ratio === 'auto' ? '自动' : sz.ratio + '（' + sz.resolution + '）'));
+            : (sz.ratio === 'auto' ? '自动' : sz.ratio + (sz.resolution ? '（' + sz.resolution + '）' : '')));
       const confirmed = await uiConfirm('确认发起付费生图',
         '资产：' + (o.assetName || '(未命名)') + '\n' +
-        '服务商：' + (p.provider || 'work-fisher') + '\n' +
-        '模型：' + (typeof getSelectedModelLabel === 'function' ? getSelectedModelLabel() : (p.model || 'workfisher-image-g-v2.5-flare')) + '\n' +
+        '服务商：' + providerId + '\n' +
+        '模型：' + (selected ? selected.label : modelId) + '\n' +
         '张数：1 张 · 尺寸：' + szText + ' · 格式：png\n' +
         '提示词：' + (prompt.length > 120 ? prompt.slice(0, 120) + '…' : prompt) + '\n' +
         '服务商按实际消耗收费，这次提交会产生真实调用。');
       if (!confirmed) return { ok: false, canceled: true };
 
       try {
-        const r = await Api.submitImageJob(assetId, prompt, sz, (typeof szCtl.getSelectedProviderId === 'function' ? szCtl.getSelectedProviderId() : 'work-fisher'), (typeof szCtl.getSelectedModelId === 'function' ? szCtl.getSelectedModelId() : (p.model || 'workfisher-image-g-v2.5-flare')));
+        const r = await Api.submitImageJob(assetId, prompt, sz, providerId, modelId);
         /* created=false 表示已有活动任务（后端拦住第二次提交，防重复扣费） */
-        if (r && r.created === false) {
+        if (r && r.failed) {
+          toast((r.job && r.job.error) || '生图提交失败', 'err');
+        } else if (r && r.created === false) {
           toast('该资产已有进行中的生图任务，已为你显示它的进度', 'warn');
         } else {
           toast('已提交生图任务', 'ok');
@@ -4004,7 +4029,7 @@
         job = r.job || null;
         render();
         startPoll();
-        return { ok: true };
+        return { ok: !(r && r.failed), error: r && r.failed };
       } catch (e) {
         /* 服务端驳回尺寸（40000 + data.nearest）：自动采纳回落值并说明 ——
            服务端是权威校验，前端镜像可能有它没有的边界情况。 */
@@ -4089,7 +4114,7 @@
           '<div class="modal-foot">' +
             '<span class="hint-sm" id="asFileHint"></span><span class="grow"></span>' +
             '<button class="btn-outline" data-cancel>取消</button>' +
-            (isAudio ? '' : '<button class="btn-outline" id="asGen" title="先保存这段提示词，再向生图服务提交一次任务（会产生真实调用）">' + I.spark + ' 保存提示词并生图</button>') +
+            (isAudio || !configuredImageModels().length ? '' : '<button class="btn-outline" id="asGen" title="先保存这段提示词，再向生图服务提交一次任务（会产生真实调用）">' + I.spark + ' 保存提示词并生图</button>') +
             '<button class="btn-primary" data-ok>保存</button>' +
           '</div>' +
         '</div>';

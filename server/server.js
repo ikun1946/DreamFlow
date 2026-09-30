@@ -231,14 +231,18 @@ function createServer(opts) {
     return '';
   }
   const imageProviders = {};
+  const imageProviderModels = {};
   REGISTRY.listProviders().forEach((p) => {
-    /* 每个 provider 的默认 model 是该 provider 的第一个 model（不再用 registry 默认，
-       否则 OpenAI/Stability 的实例会被配上 workfisher-... 而找不到 model）。 */
-    const def = p.models[0];
-    imageProviders[p.providerId] = makeImageProvider(
-      { apiKey: () => imageKeyFor(p.providerId) },
-      { providerId: p.providerId, modelId: def.modelId, baseUrl: cfg['imageProviderBase-' + p.providerId] || undefined }
-    );
+    /* 任务必须取到所选 model 的实例。只按 provider 建一份会把 Sunburst/Ultra
+       悄悄发往 Flare/Core，用户确认的计费模型与实际请求不一致。 */
+    imageProviderModels[p.providerId] = {};
+    p.models.forEach((m) => {
+      imageProviderModels[p.providerId][m.modelId] = makeImageProvider(
+        { apiKey: () => imageKeyFor(p.providerId) },
+        { providerId: p.providerId, modelId: m.modelId, baseUrl: cfg['imageProviderBase-' + p.providerId] || undefined }
+      );
+    });
+    imageProviders[p.providerId] = imageProviderModels[p.providerId][p.models[0].modelId];
   });
   const imageProvider = imageProviders[REGISTRY.defaultProviderId()];
   const imageJobs = makeImageJobs({
@@ -251,7 +255,8 @@ function createServer(opts) {
     flush: () => store.flush(),
     provider: imageProvider,
     /* 0.42.0 多 provider：按 providerId 取 adapter；缺省回退到默认 provider */
-    providerFor: (providerId) => imageProviders[providerId] || imageProvider,
+    providerFor: (providerId, modelId) =>
+      (imageProviderModels[providerId] && imageProviderModels[providerId][modelId]) || imageProviders[providerId] || imageProvider,
     /* 任务推进与资产删除都会用到；每次现取，避免持有过期引用 */
     findAssetForJob: (job) => store.load().assets.find((a) => a && a.id === job.assetId) || null,
     assetFileOf: (asset) => P.assetFileOf(asset),

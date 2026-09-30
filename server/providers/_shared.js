@@ -20,6 +20,7 @@ const https = require('https');
 const SUBMIT_TIMEOUT_MS = 30 * 1000;
 const QUERY_TIMEOUT_MS = 20 * 1000;
 const MAX_BODY_BYTES = 512 * 1024;
+const MAX_IMAGE_BODY_BYTES = 32 * 1024 * 1024;
 
 let transportOverride = null;
 function defaultTransport() {
@@ -40,7 +41,10 @@ function defaultTransport() {
           const chunks = [];
           let total = 0;
           res.on('data', (d) => {
-            if (total > MAX_BODY_BYTES) return fail(new Error('响应体过大'));
+            if (total + d.length > (o.maxBodyBytes || MAX_BODY_BYTES)) {
+              res.destroy(new Error('响应体过大'));
+              return fail(new Error('响应体过大'));
+            }
             total += d.length;
             chunks.push(d);
           });
@@ -106,7 +110,7 @@ function callJson(opts) {
   const o = opts || {};
   const url = o.url;
   const headers = Object.assign({ 'Accept': 'application/json', 'Content-Type': 'application/json' }, o.headers || {});
-  const body = o.body ? JSON.stringify(o.body) : null;
+  const body = o.rawBody != null ? o.rawBody : (o.body ? JSON.stringify(o.body) : null);
   return new Promise((resolve) => {
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
@@ -119,7 +123,8 @@ function callJson(opts) {
         method: o.method || 'GET',
         headers: headers,
         timeoutMs: o.timeoutMs,
-        body: body
+        body: body,
+        maxBodyBytes: o.maxBodyBytes
       }, (res) => {
         if (!res || res.error) {
           const msg = String((res && res.error && res.error.message) || (res && res.error) || '未收到响应');
@@ -141,7 +146,7 @@ function callJson(opts) {
 }
 
 module.exports = {
-  SUBMIT_TIMEOUT_MS, QUERY_TIMEOUT_MS, MAX_BODY_BYTES,
+  SUBMIT_TIMEOUT_MS, QUERY_TIMEOUT_MS, MAX_BODY_BYTES, MAX_IMAGE_BODY_BYTES,
   transport, setTransport, defaultTransport,
   redact, mkErr, kindOfStatus, messageOfBody,
   callJson

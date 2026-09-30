@@ -2,28 +2,23 @@
 /* ============================================================
    providers/openai.js —— OpenAI 图像生成适配器（0.42.0）
 
-   当前支持的 model：DALL·E 3。
-   同步返回：POST /v1/images/generations → { created, data: [{ url | b64_json }] }
+   当前支持的 model：GPT Image 2.5 Flare。
+   同步返回：POST /v1/images/generations → { created, data: [{ b64_json }] }
 
    把同步返回包成"立即成功的异步任务" —— submit 拿到 taskId 后
-   query 立即返回 state=succeeded + resultUrl。这样 image-jobs.js 的
-   状态机不用区分 sync / async，poll 循环第一次就拿到 succeeded，
-   走原有的 download 路径。
+   base64 只留在内存，image-jobs.js 验证图片并写入候选文件；不可落库。
 
    ⚠ 约束：
-   1. b64_json 暂不实现 —— 文档允许但需要自己 base64 解码成图字节；
-      URL 路径更短、下载阶段 image-jobs.js 已经处理。
+   1. GPT Image 只返回 b64_json，不能传旧模型的 response_format=url。
    2. 提交请求**不做自动重试**（沿用 _shared.js 顶层约定）。
    3. 密钥只进不出。
-   4. size 字段：OpenAI 只接受三种固定值（1024x1024 / 1024x1792 /
-      1792x1024）；registry 已声明 pixelMode=false，前端不会发像素模式。
-      但服务端仍做最后一道校验，遇到不在 [1024x1024, 1024x1792, 1792x1024]
-      的 size 直接 40001-style 报错，绝不发给服务商。
+   4. 尺寸以 image-registry 的 model sizeSpec 为准，比例换成合法 WxH，
+      像素模式在提交前再次校验，不把非法值发送到计费接口。
    ============================================================ */
 const SHARED = require('./_shared');
 const { callJson, mkErr, kindOfStatus, messageOfBody, SUBMIT_TIMEOUT_MS } = SHARED;
-
-const OPENAI_FIXED_SIZES = ['1024x1024', '1024x1792', '1792x1024'];
+const SZ = require('../image-size');
+const { randomBytes } = require('crypto');
 
 function makeOpenaiAdapter(cfg, model, opts) {
   const o = opts || {};
@@ -41,23 +36,18 @@ function makeOpenaiAdapter(cfg, model, opts) {
   }
   function authHeaders() { return { 'Authorization': 'Bearer ' + apiKey() }; }
 
-  /* 把 size 字段按 OpenAI 要求归一。
-     只接受 'WxH' 形态；UI 发的比例（'16:9' 等）或 'auto' 必须先转。
-     registry 的 sizeSpec.fixedSizes 给 UI 展示，但实际转换在这里做。 */
+  /* 比例转成模型接受的 WxH；auto 原样交给服务商。 */
   function normalizeSize(input) {
     const raw = String(input == null ? '' : input).trim();
-    if (!raw) return '1024x1024';   /* 不带 size → 用默认方形 */
-    /* 已是 WxH 形态 */
+    if (!raw || raw === 'auto') return 'auto';
     if (/^\d+x\d+$/i.test(raw)) {
-      const lower = raw.toLowerCase();
-      if (OPENAI_FIXED_SIZES.indexOf(lower) >= 0) return lower;
-      return mkErr('param', 'OpenAI ' + modelId + ' 不支持的尺寸：' + raw + '（仅支持 ' + OPENAI_FIXED_SIZES.join(' / ') + '）');
+      const wh = raw.toLowerCase().split('x').map(Number);
+      const valid = SZ.validate(model.model.sizeSpec, wh[0], wh[1]);
+      return valid.ok ? valid.size : mkErr('param', 'OpenAI ' + modelId + ' 不支持的尺寸：' + raw);
     }
-    /* 比例 → WxH */
-    const ratioMap = { '1:1': '1024x1024', '16:9': '1792x1024', '9:16': '1024x1792' };
-    const mapped = ratioMap[raw];
-    if (!mapped) return mkErr('param', 'OpenAI ' + modelId + ' 不支持的比例：' + raw + '（仅 1:1 / 16:9 / 9:16）');
-    return mapped;
+    const sized = SZ.ratioToSize(model.model.sizeSpec, raw, 1024 * 1024);
+    if (!sized) return mkErr('param', 'OpenAI ' + modelId + ' 不支持的比例：' + raw);
+    return sized.width + 'x' + sized.height;
   }
 
   async function submit(prompt, submitOpts) {
@@ -74,7 +64,7 @@ function makeOpenaiAdapter(cfg, model, opts) {
       prompt: text,
       n: 1,
       size: sizeResult,
-      response_format: 'url'
+      output_format: 'png'
     };
     if (so.quality) body.quality = so.quality;
 
@@ -82,8 +72,9 @@ function makeOpenaiAdapter(cfg, model, opts) {
       url: base + '/v1/images/generations',
       method: 'POST',
       headers: authHeaders(),
-      timeoutMs: SUBMIT_TIMEOUT_MS,
-      body: body
+      timeoutMs: Math.max(SUBMIT_TIMEOUT_MS, 120000),
+      body: body,
+      maxBodyBytes: SHARED.MAX_IMAGE_BODY_BYTES
     });
     if (!r) return mkErr('network', '请求 OpenAI 失败');
     if (r.kind) return r;
@@ -96,26 +87,18 @@ function makeOpenaiAdapter(cfg, model, opts) {
     const arr = Array.isArray(r.json.data) ? r.json.data : null;
     if (!arr || !arr.length) return mkErr('protocol', 'OpenAI 提交响应缺少 data 数组');
     const first = arr[0] || {};
-    const resultUrl = first.url || null;
-    if (!resultUrl) {
-      /* b64_json 路径：未实现。明确告知上层「同步拿到了图但当前只支持 URL 路径」 */
-      return mkErr('protocol', 'OpenAI 响应只回 b64_json 而非 URL，本版本暂不支持（请在请求中确保 response_format=url）');
+    if (typeof first.b64_json !== 'string' || !first.b64_json) {
+      return mkErr('protocol', 'OpenAI 响应缺少 b64_json 图片数据');
     }
-    /* 同步成功 —— 包成"立即成功的异步任务"，让 image-jobs.js 的状态机不用改 */
-    const taskId = 'oai_' + Buffer.from(resultUrl).toString('base64').replace(/=+$/, '').slice(0, 32);
-    return { taskId: taskId, resultUrl: String(resultUrl), usage: null, syncResult: true };
+    const taskId = 'oai_' + randomBytes(12).toString('hex');
+    return { taskId: taskId, syncInlineBase64: first.b64_json, usage: r.json.usage || null, syncResult: true };
   }
 
   async function query(taskId) {
-    /* 同步 provider：query 立即返 succeeded —— 不打外部网络。
-       上层 image-jobs.js 拿到 succeeded 走 download 路径。 */
+    /* 同步 provider 不应触发远端轮询。 */
     if (!configured()) return mkErr('config', '未配置 OpenAI API Key');
     const id = String(taskId || '');
     if (!id || id.indexOf('oai_') !== 0) return mkErr('protocol', 'OpenAI 任务 ID 格式不正确');
-    /* URL 从 taskId 还原：oai_<base64-url-fragment>，但提交时已 resultUrl 在调用栈里；
-       image-jobs.js 实际拿到的不是 taskId 而是 download 用的 resultUrl。
-       这里为了契约完整，仍尝试按本地上下文回 resultUrl，但更稳妥的是
-       让调用方把 resultUrl 直接交给 download —— 见 image-jobs.js step()。 */
     return mkErr('protocol', 'OpenAI 同步任务应由 submit 阶段直接完成下载；此处不应被调用');
   }
 
@@ -123,7 +106,7 @@ function makeOpenaiAdapter(cfg, model, opts) {
     providerId: 'openai',
     modelId: modelId,
     configured, status, submit, query,
-    _internals: { base, modelId, submitTimeoutMs: SUBMIT_TIMEOUT_MS, supportedSizes: OPENAI_FIXED_SIZES }
+    _internals: { base, modelId, submitTimeoutMs: 120000 }
   };
 }
 
