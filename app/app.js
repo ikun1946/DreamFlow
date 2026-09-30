@@ -3509,13 +3509,30 @@
     return { width: W, height: H, changed: changed, why: reasons.join('；') };
   }
 
+  /* 模型切换后先归一化值，再用同一份值画控件、建立控制器。
+     否则旧模型不支持的比例会在界面上仍亮着，而提交体已偷偷回落。 */
+  function imageSizeValue(spec, value) {
+    const v = value || {};
+    const ratios = (spec && spec.ratios) || [];
+    const resolutions = (spec && spec.resolutions) || [];
+    const pixels = v.sizeMode === 'pixels' && spec && spec.pixelMode !== false;
+    const size = pixels && v.width > 0 && v.height > 0
+      ? imgSizeFallback(spec, v.width, v.height) : null;
+    return {
+      sizeMode: pixels ? 'pixels' : 'ratio',
+      ratio: ratios.some((r) => r.id === v.ratio) ? v.ratio : (ratios[0] ? ratios[0].id : '16:9'),
+      resolution: resolutions.includes(v.resolution) ? v.resolution : (resolutions[0] || null),
+      width: size ? size.width : null, height: size ? size.height : null
+    };
+  }
+
   /* 尺寸控件 HTML。idp 前缀避免生图面板与设置页两份实例的 id 打架。
      val: { sizeMode, ratio, width, height, resolution }（来自设置里的生效默认值） */
   function imageSizeControlHTML(idp, val, modelKey) {
     const choices = idp === 'ip' ? configuredImageModels() : [];
     const selected = choices.find((m) => m.providerId + '|' + m.modelId === modelKey) || choices[0] || null;
     const spec = imgSizeSpec(selected && selected.modelId);
-    const v = val || {};
+    const v = imageSizeValue(spec, val);
     const ratiosList = (spec && spec.ratios) || [];
     const resList = (spec && spec.resolutions) || [];
     const presetsList = (spec && spec.presets) || [];
@@ -3523,9 +3540,9 @@
     if (!spec) {
       return '<div class="isz" id="' + idp + 'Size"><p class="hint-sm">尺寸选项需要刷新页面后可用。</p></div>';
     }
-    const providerPicker = choices.length > 1 ? (
-      '<div class="isz-inline"><span class="hint-sm">服务商 / 模型</span>' +
-      '<select class="input-sm" data-iszprovidersel>' +
+    const providerPicker = choices.length > 0 ? (
+      '<div class="isz-provider"><label class="hint-sm" for="' + idp + 'Model">服务商 / 模型</label>' +
+      '<select class="input-sm" id="' + idp + 'Model" data-iszprovidersel>' +
         choices.map((m) => '<option value="' + esc(m.providerId + '|' + m.modelId) + '"' +
           (m === selected ? ' selected' : '') + '>' + esc(m.providerLabel + ' · ' + m.modelLabel) + '</option>').join('') +
       '</select></div>'
@@ -3544,9 +3561,9 @@
     return '' +
       '<div class="isz" id="' + idp + 'Size" data-iszroot="' + idp + '" data-provider="' + esc(spec.providerId) + '" data-model="' + esc(spec.modelId) + '">' +
         '<div class="isz-row">' +
-          '<div class="chips" role="tablist">' +
-            (showRatioPane ? '<button type="button" class="chip' + (mode === 'ratio' ? ' on' : '') + '" data-iszmode="ratio">宽高比</button>' : '') +
-            (showPixelsPane ? '<button type="button" class="chip' + (mode === 'pixels' ? ' on' : '') + '" data-iszmode="pixels">像素</button>' : '') +
+          '<div class="chips" role="group" aria-label="尺寸模式">' +
+            (showRatioPane ? '<button type="button" class="chip' + (mode === 'ratio' ? ' on' : '') + '" aria-pressed="' + (mode === 'ratio') + '" data-iszmode="ratio">宽高比</button>' : '') +
+            (showPixelsPane ? '<button type="button" class="chip' + (mode === 'pixels' ? ' on' : '') + '" aria-pressed="' + (mode === 'pixels') + '" data-iszmode="pixels">像素</button>' : '') +
           '</div>' +
           '<span class="grow"></span>' +
           '<span class="hint-sm" id="' + idp + 'Prev"></span>' +
@@ -3554,7 +3571,7 @@
         providerPicker +
         '<div class="isz-pane" data-iszpane="ratio"' + (mode === 'ratio' ? '' : ' hidden') + '>' +
           '<div class="chips">' +
-            quick.map((r) => '<button type="button" class="chip' + (v.ratio === r.id ? ' on' : '') + '" data-iszratio="' + r.id + '">' + r.id + '</button>').join('') +
+            quick.map((r) => '<button type="button" class="chip' + (v.ratio === r.id ? ' on' : '') + '" aria-pressed="' + (v.ratio === r.id) + '" data-iszratio="' + r.id + '">' + r.id + '</button>').join('') +
             (ratioSel ? '<select class="input-sm" data-iszratiosel aria-label="全部宽高比">' + ratioSel + '</select>' : '') +
           '</div>' +
           (showResolutions ? '<div class="isz-inline"><span class="hint-sm">分辨率</span>' +
@@ -3579,14 +3596,7 @@
       ? root : root.querySelector('[data-iszroot="' + idp + '"]');
     const spec = imgSizeSpec(el && el.dataset.model);
     const q = (s) => el && el.querySelector(s);
-    const st = {
-      sizeMode: (initial && initial.sizeMode === 'pixels' && spec && spec.pixelMode !== false) ? 'pixels' : 'ratio',
-      ratio: (initial && spec && spec.ratios.some((r) => r.id === initial.ratio))
-        ? initial.ratio : (spec && spec.ratios[0] ? spec.ratios[0].id : '16:9'),
-      resolution: spec && spec.resolutions ? ((initial && initial.resolution) || spec.resolutions[0]) : null,
-      width: (initial && initial.width) || null,
-      height: (initial && initial.height) || null
-    };
+    const st = imageSizeValue(spec, initial);
     if (!el || !spec) return { get: () => null, set: () => {}, getSelectedProviderId: () => 'work-fisher', getSelectedModelId: () => 'workfisher-image-g-v2.5-flare', getSelectedModel: () => null };   // 降级
     /* 0.42.0：从控件态读出 provider / model（provider/model 选择器在 imageSizeControlHTML 里渲染） */
     function getSelectedProviderId() {
@@ -3630,13 +3640,19 @@
     }
 
     function setMode(m) {
+      if (m === 'pixels' && spec.pixelMode === false) return;
+      const previousMode = st.sizeMode;
       st.sizeMode = m;
-      if (q('[data-iszmode="ratio"]')) q('[data-iszmode="ratio"]').classList.toggle('on', m === 'ratio');
-      if (q('[data-iszmode="pixels"]')) q('[data-iszmode="pixels"]').classList.toggle('on', m === 'pixels');
+      el.querySelectorAll('[data-iszmode]').forEach((b) => {
+        const on = b.getAttribute('data-iszmode') === m;
+        b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on));
+      });
       pane('ratio').hidden = m !== 'ratio';
       pane('pixels').hidden = m !== 'pixels';
       /* 联动：比例 → 像素时把预览像素填进输入框；像素 → 比例时反猜枚举 */
-      if (m === 'pixels' && !(st.width > 0)) {
+      /* 再次切回像素必须按当前比例重算，不能复用上次 16:9 的宽高。
+         像素预设/服务端回落先进入 pixels 态，保留用户明确指定的尺寸。 */
+      if (m === 'pixels' && (previousMode === 'ratio' || !(st.width > 0))) {
         const px = imgSizeRatioPreview(spec, st.ratio, st.resolution);
         if (px) { st.width = px.width; st.height = px.height; }
       }
@@ -3651,17 +3667,20 @@
           st.ratio = guess;
           const sel = q('[data-iszratiosel]');
           if (sel) sel.value = guess;
-          q('[data-iszratio="' + guess + '"]');
-          el.querySelectorAll('[data-iszratio]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-iszratio') === guess));
+          markRatio(guess);
         }
         /* 猜不到（自定义比例）：保持原枚举不动 —— 精确自定义请留在像素模式（面板上说明） */
       }
+      if (m === 'ratio' && warnEl) { warnEl.hidden = true; warnEl.textContent = ''; }
       refreshPreview(); fire();
     }
 
     function markRatio(id) {
       st.ratio = id;
-      el.querySelectorAll('[data-iszratio]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-iszratio') === id));
+      el.querySelectorAll('[data-iszratio]').forEach((b) => {
+        const on = b.getAttribute('data-iszratio') === id;
+        b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on));
+      });
       const sel = q('[data-iszratiosel]');
       if (sel) sel.value = id;
       refreshPreview(); fire();
@@ -3748,15 +3767,12 @@
       }),
       set: (v) => {
         if (!v) return;
-        Object.assign(st, {
-          sizeMode: v.sizeMode === 'pixels' ? 'pixels' : 'ratio',
-          ratio: v.ratio || st.ratio, resolution: v.resolution || st.resolution,
-          width: v.width, height: v.height
-        });
+        Object.assign(st, imageSizeValue(spec, Object.assign({}, st, v)));
         const wEl2 = q('#' + idp + 'W'), hEl2 = q('#' + idp + 'H');
         if (wEl2 && st.width) wEl2.value = st.width;
         if (hEl2 && st.height) hEl2.value = st.height;
         if (resSel) resSel.value = st.resolution;
+        markRatio(st.ratio);
         setMode(st.sizeMode);
       }
     };
@@ -3772,7 +3788,7 @@
     /* 未配置密钥：给出**可操作**的指路（计划 §3.1 / §3.4），而不是把入口藏起来 ——
        素材详情本来就是设置页，藏掉反而让人找不到去哪儿配。 */
     if (!configured) {
-      return '<div class="sec-title" style="margin-top:12px">GPT 生图</div>' +
+      return '<div class="sec-title" style="margin-top:12px">图片生成</div>' +
         '<div class="banner warn" id="ipNotice"><span>' +
           '生图服务未配置。' +
           (S.imageProvidersError ? esc(S.imageProvidersError) : '请到「项目设置 → 图片生成服务」填入 API Key 后再回来。') +
@@ -3829,10 +3845,23 @@
       const previous = szCtl && szCtl.get();
       sizeHost.innerHTML = imageSizeControlHTML('ip', previous, key);
       szCtl = wireImageSizeControl(sizeHost, 'ip', previous);
+      const picker = sizeHost.querySelector('[data-iszprovidersel]');
+      if (picker) picker.focus();
+      refreshSubmitButton();
     });
     let job = null;
     let pollTimer = null;
     let disposed = false;
+    let submitting = false;
+    const genButton = q('#asGen') || q('#bpGen');
+    const genLabel = genButton ? genButton.innerHTML : '';
+
+    function refreshSubmitButton() {
+      if (!genButton || disposed) return;
+      const busy = job && IMG_BUSY_STATES.includes(job.state);
+      genButton.disabled = submitting || !!busy || !szCtl || !szCtl.get();
+      genButton.innerHTML = submitting ? '正在提交…' : (busy ? '图片生成中…' : genLabel);
+    }
 
     const clearPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
 
@@ -3849,6 +3878,7 @@
     /* 状态 → 界面。集中在一处，避免"提交后忘了刷按钮态"这类漏网。 */
     function render() {
       if (disposed || !box) return;
+      refreshSubmitButton();
       if (!job) { box.hidden = true; if (cmpEl) cmpEl.hidden = true; return; }
       box.hidden = false;
 
@@ -3939,11 +3969,13 @@
     function startPoll() { if (!pollTimer && !disposed) pollTimer = setInterval(refresh, 3000); }
 
     /* 首屏：先读一次，有活动任务就开始跟。 */
+    refreshSubmitButton();
     refresh();
 
     /* 动作分发 */
     if (box) {
-      box.addEventListener('click', async (ev) => {
+      /* 对比图在 ipBox 外，监听共用弹窗才能接到原图/新图的放大点击。 */
+      mask.addEventListener('click', async (ev) => {
         const zoom = ev.target.closest('[data-ipzoom]');
         if (zoom) { openFullscreenViewer(zoom.getAttribute('data-ipzoom'), '生成结果'); return; }
         const btn = ev.target.closest('[data-ipact]');
@@ -3985,13 +4017,26 @@
         if (!okApply) { btn.disabled = false; return; }
         const r = await Api.applyImageJob(assetId, job.jobId);
         toast('已采用生成的图片' + (r && r.impact && r.impact.count ? '（影响 ' + r.impact.count + ' 条分镜）' : ''), 'ok');
-        if (typeof o.onApplied === 'function') { try { await o.onApplied(); } catch (e) { /* 刷新失败不影响采用结果 */ } }
+        if (typeof o.onApplied === 'function') {
+          try {
+            const fresh = await o.onApplied();
+            if (fresh && fresh.url) o.origUrl = fresh.url;
+          } catch (e) { /* 刷新失败不影响采用结果 */ }
+        }
         await refresh();
       } catch (e) { btn.disabled = false; fail(e); }
     }
 
-    /* 对外：提交。raw=true 表示已由调用方做过确认（本组件自己弹确认框）。 */
+    /* 对外提交只开放一个入口；确认框打开、请求等待和活动任务期间禁止重复触发。 */
     async function submit() {
+      if (submitting || (job && IMG_BUSY_STATES.includes(job.state))) return { ok: false };
+      submitting = true;
+      refreshSubmitButton();
+      try { return await submitConfirmed(); }
+      finally { submitting = false; refreshSubmitButton(); }
+    }
+
+    async function submitConfirmed() {
       const prompt = String((typeof getPrompt === 'function' ? getPrompt() : '') || '').trim();
       /* 空文本 / 全空白禁止提交；超限明确报错不截断（计划 §3.2 第 2 条） */
       if (!prompt) { toast('提示词不能为空', 'err'); return { ok: false }; }
@@ -4009,17 +4054,18 @@
             : (sz.ratio === 'auto' ? '自动' : sz.ratio + (sz.resolution ? '（' + sz.resolution + '）' : '')));
       const confirmed = await uiConfirm('确认发起付费生图',
         '资产：' + (o.assetName || '(未命名)') + '\n' +
-        '服务商：' + providerId + '\n' +
+        '服务商：' + (((S.imageProvidersList || []).find((p) => p.providerId === providerId) || {}).label || providerId) + '\n' +
         '模型：' + (selected ? selected.label : modelId) + '\n' +
         '张数：1 张 · 尺寸：' + szText + ' · 格式：png\n' +
-        '提示词：' + (prompt.length > 120 ? prompt.slice(0, 120) + '…' : prompt) + '\n' +
+        '提示词：' + prompt + '\n' +
         '服务商按实际消耗收费，这次提交会产生真实调用。');
       if (!confirmed) return { ok: false, canceled: true };
 
       try {
         const r = await Api.submitImageJob(assetId, prompt, sz, providerId, modelId);
         /* created=false 表示已有活动任务（后端拦住第二次提交，防重复扣费） */
-        if (r && r.failed) {
+        const failed = r && (r.failed || (r.job && r.job.state === 'failed'));
+        if (failed) {
           toast((r.job && r.job.error) || '生图提交失败', 'err');
         } else if (r && r.created === false) {
           toast('该资产已有进行中的生图任务，已为你显示它的进度', 'warn');
@@ -4028,8 +4074,8 @@
         }
         job = r.job || null;
         render();
-        startPoll();
-        return { ok: !(r && r.failed), error: r && r.failed };
+        if (job && IMG_BUSY_STATES.includes(job.state)) startPoll(); else clearPoll();
+        return { ok: !failed, error: failed };
       } catch (e) {
         /* 服务端驳回尺寸（40000 + data.nearest）：自动采纳回落值并说明 ——
            服务端是权威校验，前端镜像可能有它没有的边界情况。 */
@@ -4083,9 +4129,9 @@
       const mask = document.createElement('div');
       mask.className = 'mask'; mask.style.zIndex = 200;
       mask.innerHTML =
-        '<div class="modal narrow">' +
+        '<div class="modal narrow image-modal">' +
           '<div class="modal-head"><h2>素材详情</h2><span class="grow"></span>' +
-            '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
+            '<button class="icon-btn" data-x aria-label="关闭素材详情">' + I.xDark + '</button></div>' +
           '<div class="modal-body">' +
             /* 无图时不铺渐变：改由 CSS 给一个半透明的「图片样式」占位（见 .asset-preview.pickable）；
                音频同理 —— 它本来就没有可显示的封面，用同一套半透明空槽位 + 播放器。 */
@@ -4128,6 +4174,12 @@
          表现为"图片要等点确定之后才换"。保存逻辑不受影响（仍上传 picked 原文件）。 */
       function showLocalPreview(f) {
         if (isAudio) return;                      // 音频无图片预览概念
+        if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+        previewBlobUrl = URL.createObjectURL(f);
+        showImagePreview(previewBlobUrl);
+      }
+      /* 上传预览与首次采用生成图都要补齐原本不存在的 img / 全屏按钮。 */
+      function showImagePreview(url) {
         let img = mask.querySelector('#asPreviewImg');
         if (!img) {                               // 无图资产补图：占位符让位，动态插入预览图
           const ph = mask.querySelector('.empty-ph');
@@ -4137,10 +4189,8 @@
           img.alt = asset.name;
           mask.querySelector('.asset-preview').appendChild(img);
         }
-        if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
-        previewBlobUrl = URL.createObjectURL(f);
-        img.src = previewBlobUrl;
-        currentImgUrl = previewBlobUrl;
+        img.src = url;
+        currentImgUrl = url;
         /* 视图要跟着状态一起变，否则按钮/占位和实际能力对不上：
            · 空槽位的虚线框让位（.has-pic），点进去才知道已经有图了；
            · 无图时 hidden 的「全屏」钮放出来（无图点它没意义）。 */
@@ -4173,9 +4223,9 @@
             /* 换图后把预览也更新到新图（否则弹窗里还显示旧图） */
             const fresh = await Api.getAsset(asset.id).catch(() => null);
             if (fresh && fresh.url) {
-              const im = mask.querySelector('#asPreviewImg');
-              if (im) im.src = fresh.url;
+              showImagePreview(fresh.url);
             }
+            return fresh;
           }
         });
       }
@@ -4299,17 +4349,17 @@
     const kindLabel = ASSET_TAB_LABEL[a.type] || a.type;
     /* 图号 = 提交时 --image 的上传顺序 = 提示词里该写的 @图片N，与后端 asset-lock.imageCatalog 同源。
        预览时把这句话摆出来，作者才知道该在提示词里怎么写。 */
-    const numText = a.imageIndex
-      ? '图片' + a.imageIndex + '（提交时第 ' + a.imageIndex + ' 张 --image；提示词里写 @图片' + a.imageIndex + ' 引用它）'
-      : (a.audioIndex
-          ? '音频' + a.audioIndex + '（走 --audio，不占图片号）'
+    const numberText = (item) => item.imageIndex
+      ? '图片' + item.imageIndex + '（提交时第 ' + item.imageIndex + ' 张 --image；提示词里写 @图片' + item.imageIndex + ' 引用它）'
+      : (item.audioIndex
+          ? '音频' + item.audioIndex + '（走 --audio，不占图片号）'
           : '未占用图号');
     /* 与素材详情同样先取生图服务状态（见 ensureImageProvider 的说明） */
     return Promise.all([ensureImageProvider(), ensureImageProviders()]).then(() => new Promise((resolve) => {
       const mask = document.createElement('div');
       mask.className = 'mask'; mask.style.zIndex = 210;
       mask.innerHTML =
-        '<div class="modal narrow">' +
+        '<div class="modal narrow image-modal">' +
           '<div class="modal-head"><h2>素材预览</h2>' +
             '<span class="hint-sm">分镜 ' + sb.seq + ' · ' + esc(meta.label) + '</span>' +
             '<span class="grow"></span>' +
@@ -4331,9 +4381,9 @@
             '<div class="row-inline"><span class="label-sm">类型</span>' +
               '<span class="hint-sm">' + esc(kindLabel) + ' · 槽位「' + esc(meta.label) + '」</span></div>' +
             '<div class="row-inline"><span class="label-sm">图号</span>' +
-              '<span class="hint-sm">' + esc(numText) + '</span></div>' +
+              '<span class="hint-sm" id="bpNumber">' + esc(numberText(a)) + '</span></div>' +
             (a.notCounted
-              ? '<div class="banner warn"><span>未计入图号：' + esc(a.notCounted) +
+              ? '<div class="banner warn" id="bpNotCounted"><span>未计入图号：' + esc(a.notCounted) +
                 '（后面的图号不会因它顺延；点「更换文件」补上图片即可恢复）</span></div>'
               : '') +
             /* 生图区（阶段 4）：与素材库详情**共用同一套组件**。
@@ -4349,7 +4399,7 @@
           '</div>' +
           '<div class="modal-foot">' +
             '<span class="hint-sm" id="bpHint"></span><span class="grow"></span>' +
-            (isAudio ? '' : '<button class="btn-outline" id="bpGen" title="用该素材在素材库中的最新提示词发起一次生图（会产生真实调用）">' + I.spark + ' 生图</button>') +
+            (isAudio || !configuredImageModels().length ? '' : '<button class="btn-outline" id="bpGen" title="用该素材在素材库中的最新提示词发起一次生图（会产生真实调用）">' + I.spark + ' 生图</button>') +
             '<button class="btn-outline" data-file title="把该素材的图片换成另一个本地文件；素材 id 与全部分镜绑定不变，但所有引用它的分镜都会跟着换图">更换文件</button>' +
             '<button class="btn-primary" data-swap title="在本分镜中改绑素材库里的另一个资产；原素材与其它分镜不受影响">替换素材</button>' +
           '</div>' +
@@ -4357,6 +4407,7 @@
       document.body.appendChild(mask);
 
       let busy = false, pickerOpen = false;
+      let currentBoundUrl = hasPic ? a.url : null;
       const q = (s) => mask.querySelector(s);
       const setHint = (t) => { const el = q('#bpHint'); if (el) el.textContent = t || ''; };
       const done = () => { if (imgPanel) imgPanel.dispose(); mask.remove(); resolve(true); };
@@ -4375,12 +4426,32 @@
                （计划 §3.3 第 4 条）*/
             try { await loadAssets(); } catch (e) { /* 刷新失败不影响采用结果 */ }
             try { await loadList({ skeleton: false }); } catch (e) { /* 同上 */ }
+            const latestSb = S.list.find((row) => row.id === sb.id);
+            const latestAsset = latestSb && (latestSb.assets || []).find((item) => item.assetId === a.assetId && item.role === role);
+            if (latestAsset) {
+              const num = q('#bpNumber');
+              if (num) num.textContent = numberText(latestAsset);
+              const warning = q('#bpNotCounted');
+              if (warning && !latestAsset.notCounted) warning.hidden = true;
+            }
             try {
               const fresh = await Api.getAsset(a.assetId);
               if (fresh && fresh.url) {
-                const im = box && box.querySelector('img');
-                if (im) im.src = fresh.url;
+                currentBoundUrl = fresh.url;
+                if (box) {
+                  let im = box.querySelector('img');
+                  if (!im) {
+                    const ph = box.querySelector('.empty-ph');
+                    if (ph) ph.style.display = 'none';
+                    im = document.createElement('img'); im.alt = a.name;
+                    box.appendChild(im);
+                  }
+                  im.src = fresh.url;
+                  box.classList.add('has-pic', 'zoomable');
+                  box.title = '点击全屏查看原图';
+                }
               }
+              return fresh;
             } catch (e) { /* 取最新失败则保留旧图，不影响已采用的库记录 */ }
           }
         });
@@ -4402,9 +4473,9 @@
 
       /* 预览区（含悬浮的全屏钮）统一走全屏查看器：这里看的就是原图本身，不再套第二层弹窗 */
       const box = q('.asset-preview');
-      if (box && hasPic) {
-        box.title = '点击全屏查看原图';
-        box.addEventListener('click', () => openFullscreenViewer(a.url, a.name));
+      if (box && !isAudio) {
+        if (hasPic) box.title = '点击全屏查看原图';
+        box.addEventListener('click', () => { if (currentBoundUrl) openFullscreenViewer(currentBoundUrl, a.name); });
         /* 文件被删掉、但素材记录里还留着旧 url 时，<img> 会 404 成一张"碎图"。
            槽位里的背景图 404 是看不见的，这里却能看见 —— 所以退化成占位并说明原因。 */
         const img = box.querySelector('img');
@@ -5784,13 +5855,14 @@
   function uiDialog(opts) {
     return new Promise((resolve) => {
       const mask = document.createElement('div');
-      mask.className = 'mask'; mask.style.zIndex = 200;
+      /* 分镜素材预览在 210；确认框必须更高，否则用户只能看到被遮住的等待态。 */
+      mask.className = 'mask'; mask.style.zIndex = 220;
       mask.innerHTML =
         '<div class="modal narrow">' +
           '<div class="modal-head"><h2>' + esc(opts.title) + '</h2><span class="grow"></span>' +
             '<button class="icon-btn" data-x>' + I.xDark + '</button></div>' +
           '<div class="modal-body">' +
-            (opts.message ? '<div style="font-size:13px;line-height:1.7;color:var(--ink80);white-space:pre-line">' + richText(opts.message) + '</div>' : '') +
+            (opts.message ? '<div style="font-size:13px;line-height:1.7;color:var(--ink80);white-space:pre-line;overflow-wrap:anywhere">' + richText(opts.message) + '</div>' : '') +
             (opts.input ? '<input class="input-sm" id="uiDlgInput" style="width:100%" value="' + esc(opts.value || '') + '" />' : '') +
           '</div>' +
           '<div class="modal-foot">' +
@@ -6461,7 +6533,7 @@
     /* 0.42.0：列出所有 provider，每个一行（已配/未配、桌面版给录入/删除）。 */
     const list = S.imageProvidersList;
     const head = '<div class="scard-hd"><div class="scard-hd-t">' +
-      '<h3>图片生成服务</h3><p>素材库图片资产的生图服务（多 provider 可选）</p></div></div>';
+      '<h3>图片生成服务</h3><p>配置服务商密钥后，可在素材详情中选择模型生成图片</p></div></div>';
     if (S.imageProvidersError) {
       return '<section class="scard" id="ipCard">' + head + '<div class="scard-bd">' +
         '<div class="banner warn"><span>' + esc(S.imageProvidersError) + '</span></div>' +
@@ -6487,8 +6559,8 @@
         if (!encOk) {
           rows.push('<div class="banner warn"><span>系统加密能力不可用，无法安全保存密钥。</span></div>');
         } else {
-          rows.push('<div class="row-inline"><label class="label-sm">API Key</label>' +
-            '<input class="input-sm" data-ipk-input type="password" autocomplete="off" ' +
+          rows.push('<div class="row-inline"><label class="label-sm" for="ipk-' + esc(p.providerId) + '">API Key</label>' +
+            '<input class="input-sm" id="ipk-' + esc(p.providerId) + '" data-ipk-input type="password" autocomplete="off" ' +
               'placeholder="粘贴 ' + esc(p.label) + ' 控制台创建的密钥" style="flex:1;min-width:0" /></div>');
           rows.push('<div class="cli-actions">' +
             '<button class="btn-primary" data-ipkact="save">保存密钥</button>' +
@@ -6496,14 +6568,14 @@
             '</div>');
         }
       } else {
-        rows.push('<div class="hint-sm">' + (hasKey ? '已由运行环境配置（' + esc(p.providerKeyEnv || '?') + '）。' : '未配置：启动前需设 ' + esc(p.providerKeyEnv || '?') + '。') + '</div>');
+        rows.push('<div class="hint-sm">' + (hasKey ? '已由运行环境配置。' : '未配置：请在启动服务前设置对应服务商的 API Key，详见运行配置说明。') + '</div>');
       }
       rows.push('</div>');
     });
     if (!isDesktop) {
       rows.push('<p class="hint-sm">网页版不提供密钥编辑入口 —— 前端没有安全的密钥存放位置。</p>');
     } else {
-      rows.push('<p class="hint-sm">每个 provider 的密钥单独加密存于本机；删除只影响本 provider。</p>');
+      rows.push('<p class="hint-sm">每个服务商的密钥单独加密存于本机；删除只影响对应服务商。</p>');
     }
     return '<section class="scard" id="ipCard">' + head + '<div class="scard-bd">' + rows.join('') + '</div></section>';
   }
@@ -7291,7 +7363,7 @@
             S.imageProvidersList = null;
             S.imageProvidersError = null;
             await Promise.all([ensureImageProvider(), ensureImageProviders()]);
-            renderSettings();
+            refreshImageProvidersCard();
           } else if (r && r.reason === 'unavailable') {
             toast('系统加密不可用，密钥未保存（不会降级为明文）', 'err');
           } else {
@@ -7313,7 +7385,7 @@
             S.imageProvidersList = null;
             S.imageProvidersError = null;
             await Promise.all([ensureImageProvider(), ensureImageProviders()]);
-            renderSettings();
+            refreshImageProvidersCard();
           } else {
             toast('删除失败：' + ((r && r.reason) || '未知原因'), 'err');
           }

@@ -1395,7 +1395,8 @@ html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--ch
 .menu button .tick{margin-left:auto;display:grid;place-items:center}
 
 /* ============================ Toast ============================ */
-.toasts{position:fixed;bottom:44px;left:50%;transform:translateX(-50%);z-index:120;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+/* 素材弹窗在 200/210、确认框在 220、全屏预览在 300；错误提示须在它们之上。 */
+.toasts{position:fixed;bottom:44px;left:50%;transform:translateX(-50%);z-index:400;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
 .toast{
   display:flex;align-items:center;gap:9px;padding:9px 15px;border-radius:999px;
   background:rgba(29,29,31,.94);color:#fff;font-size:12.5px;
@@ -1442,7 +1443,7 @@ html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--ch
    与 .recview 同构（#app 的兄弟节点 + position:fixed 铺满 + [hidden] 切换），
    但 z-index 取 **65**：在弹层遮罩（.mask = 60）之上、记录页与设置抽屉（70）之下。
    这样从项目主页能正常打开「生成记录」与「项目设置」，而这两个覆盖层又不会被本页盖住。
-   ⚠ 65 而不是 60 的原因：uiDialog 生成的确认弹层自带 z-index:200（在 .mask 之上），
+   ⚠ 65 而不是 60 的原因：uiDialog 生成的确认弹层自带 z-index:220（在 .mask 之上），
      所以"新建项目 / 重命名 / 删除确认"这些弹窗在本页之上是正常的；
      而 60 那批（导入提示词 / 分镜详情 / 干跑 / 自动匹配 / 时长重算）都只在控制台视图里打开，
      不会与本页同屏，无需为它们让位。 */
@@ -1922,6 +1923,25 @@ html.nav-back::view-transition-new(root){animation:nav-in-left .24s cubic-bezier
 .isz-pane .chips button{font-size:12px;padding:5px 12px}
 .isz-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .isz-inline .input-sm{font-weight:600}
+/* 模型名称比普通枚举长，select 的固有宽度会把窄弹窗撑出横向滚动。
+   给选择器独立一行，并允许它收缩到容器宽度。服务商卡片也明确分组。 */
+.isz-provider{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-width:0}
+.isz-provider select{width:100%;min-width:0;max-width:100%;font-family:var(--font);font-size:13px;text-overflow:ellipsis}
+.isz-pane select{max-width:100%;min-width:0}
+.ipk-row{display:flex;flex-direction:column;gap:10px;border:1px solid var(--hairline);border-radius:10px;padding:12px;background:var(--pearl);min-width:0}
+.ipk-row .hint-sm{overflow-wrap:anywhere;line-height:1.7}
+.ipk-row .cli-state{display:flex;align-items:center;gap:8px}
+.ipk-row .cli-state svg{width:18px;height:18px;flex:none}
+.image-modal .imgjob-head{flex-wrap:wrap}
+.image-modal .modal-foot{height:auto;min-height:76px;padding-top:12px;padding-bottom:12px;flex-wrap:wrap}
+.image-modal .modal-foot .hint-sm:empty{display:none}
+.image-modal #ipPrev{min-width:0;overflow-wrap:anywhere}
+@media(max-width:600px){
+  .image-modal .modal-foot{min-height:60px;gap:8px}
+  .image-modal .modal-foot .grow{display:none}
+  .image-modal .modal-foot .hint-sm{flex:0 0 100%}
+  .image-modal .modal-foot .btn-outline,.image-modal .modal-foot .btn-primary{flex:1 1 auto;justify-content:center}
+}
 /* 宽高输入框去掉浏览器自旋钮（step=16 的自旋毫无意义，还占宽度） */
 .isz-inline input[type=number]::-webkit-outer-spin-button,
 .isz-inline input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
