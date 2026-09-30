@@ -62,6 +62,38 @@ const OAI_LIMITS = { step: 16, min: 256, max: 3840, minPixels: 655360, maxPixels
 const STA_RATIOS = ['1:1', '16:9', '21:9', '2:3', '3:2', '4:5', '5:4', '9:16', '9:21'];
 const STA_LIMITS = { step: 1, min: 256, max: 1536, minPixels: 512 * 512, maxPixels: 1536 * 1536, maxRatio: 21 / 9 };
 
+/* 文生图目录按 2026-09-30 服务商文档逐族接入；不能只把模型名放进下拉，
+   Seedream / Qwen 的 metadata 与 Image G 的平铺字段并不互通。
+   不需参考图的生成入口才出现在本面板，编辑、拆层与放大使用另一种工作流。 */
+function wfModel(modelId, modelLabel, requestStyle, ratios, resolutions, promptMax, promptMin) {
+  return { modelId, modelLabel, endpoint: 'image-generations', requestStyle,
+    promptMax: promptMax || 10000, promptMin: promptMin || 1, supportsReferenceImage: false,
+    sizeSpec: { ratios, resolutions, fixedSizes: null, pixelMode: false, presets: null, limits: WF_LIMITS } };
+}
+const COMMON_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'];
+const WF_EXTRA_MODELS = [
+  wfModel('workfisher-image-g-v2.5-lowprice', 'Image G v2.5 低价版', 'flat-basic', WF_RATIOS, WF_RESOLUTIONS, 5000),
+  wfModel('workfisher-image-g-v2-lowprice', 'Image G v2 低价版', 'metadata-g-low', WF_RATIOS, WF_RESOLUTIONS),
+  wfModel('workfisher-image-g2-t2i', 'Image G-2', 'metadata-ratio', COMMON_RATIOS, ['1k'], 10000),
+  wfModel('workfisher-image-gk-v15', 'Grok Imagine 1.5', 'flat-basic', ['1:1', '16:9', '9:16', '3:2', '2:3'], null),
+  wfModel('workfisher-image-gk-v2', 'Grok Imagine 2.0', 'flat-basic', COMMON_RATIOS, null),
+  wfModel('workfisher-image-nb-flash', 'Nano Banana', 'flat-basic', COMMON_RATIOS.concat('21:9'), ['1k'], 1000),
+  wfModel('workfisher-image-nb-2', 'Nano Banana 2', 'flat-basic', COMMON_RATIOS.concat('21:9', '1:4', '4:1', '1:8', '8:1'), ['1k', '0.5k', '2k', '4k']),
+  wfModel('workfisher-image-nb-2-lite', 'Nano Banana Lite', 'flat-basic', COMMON_RATIOS, ['1k']),
+  wfModel('workfisher-image-nb-pro', 'Nano Banana Pro', 'flat-basic', COMMON_RATIOS.concat('21:9'), WF_RESOLUTIONS),
+  // Seedream 的 resolution 优先于 width/height；只暴露档位，让上游决定比例。
+  wfModel('seedream-v5-pro-t2i', 'Seedream V5 Pro（国内）', 'metadata-seedream', [], ['1k', '2k'], 2000, 5),
+  wfModel('dola-seedream-5.0-pro-t2i', 'Seedream V5 Pro（海外）', 'metadata-seedream', [], ['1k', '2k'], 2000, 5),
+  wfModel('seedream-v5-flash-t2i', 'Seedream V5 Flash（国内）', 'metadata-seedream', [], ['1k', '1.5k', '2k'], 5000, 5),
+  wfModel('dola-seedream-5.0-flash-t2i', 'Seedream V5 Flash（海外）', 'metadata-seedream', [], ['1k', '1.5k', '2k'], 5000, 5),
+  wfModel('qwen-image-3.0-t2i', 'Qwen Image 3.0（国内）', 'metadata-ratio', COMMON_RATIOS, ['1k', '2k'], 3000),
+  wfModel('qwen-image-3.0-pro-t2i', 'Qwen Image 3.0 Pro（国内）', 'metadata-ratio', COMMON_RATIOS, ['1k', '2k'], 3000),
+  wfModel('qwen-image-3.0-global-t2i', 'Qwen Image 3.0（海外）', 'metadata-ratio', COMMON_RATIOS, ['1k', '2k'], 3000),
+  wfModel('qwen-image-3.0-global-pro-t2i', 'Qwen Image 3.0 Pro（海外）', 'metadata-ratio', COMMON_RATIOS, ['1k', '2k'], 3000),
+  wfModel('qwen-image-global-2.1', 'Qwen Image 2.1（海外）', 'metadata-ratio', COMMON_RATIOS.concat('21:9'), WF_RESOLUTIONS, 10000),
+  wfModel('wan-2.7-global-t2i', 'Wan 2.7（海外）', 'default-size', [], null, 5000)
+];
+
 /* ---------------- 注册表 ----------------
    每个 provider 是一个独立 entry，包含元信息 + model 列表；
    model 列表里每个 model 自带 sizeSpec 与 endpoint。
@@ -104,7 +136,7 @@ const REGISTRY = [
           limits: WF_LIMITS
         }
       }
-    ]
+    ].concat(WF_EXTRA_MODELS)
   },
   {
     providerId: 'openai',
@@ -234,6 +266,8 @@ function specForFrontend() {
         modelId: m.modelId,
         modelLabel: m.modelLabel,
         supportsReferenceImage: !!m.supportsReferenceImage,
+        promptMin: m.promptMin || 1,
+        promptMax: m.promptMax || 10000,
         sizeSpec: m.sizeSpec
       });
     });

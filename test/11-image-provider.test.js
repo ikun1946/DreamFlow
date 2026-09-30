@@ -257,17 +257,16 @@ describe('状态映射与用量', () => {
     assert.equal((await make().query('t')).state, 'queued');
   });
 
-  test('终态带回 data.usage，且只保留数字（不做任何折算）', async () => {
+  test('终态带回 data.usage，保留数字与结算币种（不做任何折算）', async () => {
     IP.setTransport(ok('SUCCESS', { usage: { credits: 3, cost: '1.5', currency: 'CNY', note: 'x' } }));
     const r = await make().query('t');
     assert.equal(r.state, 'succeeded');
     assert.equal(r.usage.credits, 3);
     assert.equal(r.usage.cost, 1.5);
-    /* 非数字字段（currency / note）被丢弃：界面只显示服务商结算的数字，
-       保留 "CNY" 这种字符串会让前端以为可以自己拼价格 */
+    /* 币种是金额语义的一部分；备注不进入持久化，金额不做兑换或猜测。 */
     assert.equal(r.usage.note, undefined);
-    assert.equal(r.usage.currency, undefined);
-    assert.equal(Object.keys(r.usage).sort().join(','), 'cost,credits');
+    assert.equal(r.usage.currency, 'CNY');
+    assert.equal(Object.keys(r.usage).sort().join(','), 'cost,credits,currency');
   });
 
   test('没有 usage 时是 null（界面只在服务商已结算时显示扣费）', async () => {
@@ -354,4 +353,73 @@ describe('状态码映射表', () => {
     assert.equal(IP.kindOfStatus(429), 'ratelimit');
     assert.equal(IP.kindOfStatus(500), 'upstream');
   });
+});
+
+test('Work Fisher 文生图目录逐族提交，禁止把 Flare 参数发给 Nano Banana/Seedream', async () => {
+  const registry = require('../server/image-registry');
+  const SZ = require('../server/image-size');
+  const t = fakeTransport(() => ({ body: { task_id: 'catalog-test' } }));
+  IP.setTransport(t);
+  assert.equal(registry.listModels('work-fisher').length, 21);
+  for (const m of registry.listModels('work-fisher')) {
+    const size = SZ.resolveSize({ mode: 'ratio', ratio: m.sizeSpec.ratios[0] || 'auto', resolution: m.sizeSpec.resolutions && m.sizeSpec.resolutions[0] }, m.modelId);
+    assert.equal(size.ok, true, m.modelId);
+    const r = await IP.makeImageProvider({ apiKey: KEY }, { modelId: m.modelId }).submit('一只猫在温暖窗台上看夕阳', size);
+    assert.equal(r.taskId, 'catalog-test', m.modelId);
+    const b = JSON.parse(t.calls.at(-1).body);
+    assert.equal(b.model, m.modelId);
+    assert.equal(b.n, 1);
+    if (m.requestStyle && m.requestStyle.startsWith('metadata')) {
+      assert.equal(b.resolution, undefined); assert.equal(b.quality, undefined);
+      assert.equal(b.metadata.resolution, size.resolution);
+      if (m.requestStyle === 'metadata-ratio') assert.equal(b.metadata.ratio, size.size);
+      if (m.requestStyle === 'metadata-seedream') { assert.equal(b.size, undefined); assert.equal(b.metadata.output_format, 'png'); }
+    }
+    if (m.modelId.includes('nb-') || m.modelId.includes('v2.5-lowprice')) {
+      assert.equal(b.output_format, undefined); assert.equal(b.quality, undefined);
+    }
+  }
+});
+
+test('模型提示词边界在计费请求之前驳回，不截断内容', async () => {
+  const t = fakeTransport(() => ({ body: { id: 'should-not-submit' } }));
+  IP.setTransport(t);
+  const seed = IP.makeImageProvider({ apiKey: KEY }, { modelId: 'seedream-v5-pro-t2i' });
+  assert.equal((await seed.submit('猫')).kind, 'config');
+  assert.equal((await seed.submit('猫'.repeat(2001))).kind, 'config');
+  assert.equal(t.calls.length, 0);
+});
+
+test('终态实扣保留 amount/currency；退款零元与嵌套 image_url 均可读取', async () => {
+  IP.setTransport(fakeTransport(() => ({ body: { data: { status: 'SUCCESS', data: { content: { image_url: 'https://example.com/image.png' } }, usage: { amount: '0', currency: 'CNY', key: KEY } } } })));
+  const r = await make().query('settled-task');
+  assert.deepEqual(r.usage, { amount: 0, currency: 'CNY' });
+  assert.equal(r.resultUrl, 'https://example.com/image.png');
+});
+
+test('公开定价忽略免费占位与编辑多张样本，只下发有限的单张文生图金额', () => {
+  const pricing = require('../server/image-pricing');
+  const id = IP.DEFAULT_MODEL;
+  const p = pricing.normalizePricing({ price_estimates: { [id]: { entries: [
+    { price_cny: 0, params: {} }, { price_cny: 99, params: { input_image_count: '1' } },
+    { price_cny: 7, params: { output_count: '4' } }, { price_cny: Infinity },
+    { price_cny: 0.2, params: { input_image_count: '0', quality: 'low', resolution: '2k' } }
+  ] } }, observed_prices: { 'seedream-v5-flash-t2i': { entries: [{ price_cny: 0.14, params: { 'metadata.resolution': '1k' } }] } } }, '2026-09-30');
+  assert.deepEqual(p.models[id].entries, [{ resolution: '2k', quality: 'low', amount: 0.2 }]);
+  assert.equal(p.models['seedream-v5-flash-t2i'].entries[0].amount, 0.14);
+  assert.equal(JSON.stringify(p).includes(KEY), false);
+});
+
+test('定价传输没有回调时仍在限定时间内回落，不发送密钥', async () => {
+  const pricing = require('../server/image-pricing');
+  let called = 0;
+  IP.setTransport({ request(url, opts) {
+    called++; assert.equal(url, 'https://api.work-fisher.com/api/pricing');
+    assert.equal(opts.headers.Authorization, undefined);
+  } });
+  const start = Date.now();
+  const p = await pricing.refresh();
+  assert.equal(called, 1); assert.ok(Date.now() - start < 3000);
+  assert.equal(p.snapshot, true);
+  assert.ok(pricing.forModel('workfisher-image-nb-2-lite', p).entries[0].amount > 0);
 });

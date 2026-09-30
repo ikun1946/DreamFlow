@@ -247,12 +247,16 @@ function makeRouter(cfg, adapter) {
        未配置的 provider 也列出（页面要让用户看到"还有别的可选"），但 configured=false。 */
     ['GET', /^\/system\/image-providers$/, async (ctx) => {
       const REGISTRY = require('./image-registry');
+      const pricing = require('./image-pricing');
+      const wf = adapter.imageProviders && adapter.imageProviders['work-fisher'];
+      const prices = wf && wf.configured() ? await pricing.refresh() : null;
       const out = REGISTRY.listProviders().map((p) => ({
         providerId: p.providerId,
         label: p.providerLabel,
         description: p.description || '',
         configured: !!(adapter.imageProviders && adapter.imageProviders[p.providerId] && adapter.imageProviders[p.providerId].configured()),
-        models: p.models.map((m) => ({ id: m.modelId, label: m.modelLabel, sizeSpec: m.sizeSpec }))
+        models: p.models.map((m) => ({ id: m.modelId, label: m.modelLabel, sizeSpec: m.sizeSpec,
+          pricing: p.providerId === 'work-fisher' ? pricing.forModel(m.modelId, prices) : null }))
       }));
       ok(ctx.res, out);
     }],

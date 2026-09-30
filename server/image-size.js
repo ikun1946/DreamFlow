@@ -55,7 +55,7 @@ function specOf(modelId) {
 }
 
 /* modelId 形如 "workfisher-image-g-v2.5-flare"，没有 providerId 前缀；
-   反查 provider 需要扫一遍 registry。model 数量很少（< 10），扫一次可接受。 */
+   反查 provider 扫一遍注册表；当前几十个模型，线性查找足够。 */
 function providerFromModelId(modelId) {
   const id = String(modelId || '');
   for (const p of REGISTRY.listProviders()) {
@@ -251,6 +251,11 @@ function resolveSize(input, modelId) {
         ratio: v.ratio, resolution: null, errors: [] };
     }
     return { ok: false, mode: 'pixels', errors: v.errors, nearest: v.nearest };
+  }
+  /* 有些模型只接收分辨率档，不能把旧模型的比例强塞进 metadata。 */
+  if (Array.isArray(spec.ratios) && !spec.ratios.length) {
+    return { ok: true, mode: 'ratio', size: null, ratio: null,
+      resolution: spec.resolutions ? normResolution(spec, i.resolution) : null, errors: [] };
   }
   /* 比例模式 */
   if (i.mode === 'ratio' || i.ratio != null) {

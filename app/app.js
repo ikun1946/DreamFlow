@@ -3418,10 +3418,23 @@
     (S.imageProvidersList || []).forEach((p) => {
       if (!(S.imageKeyMap ? S.imageKeyMap[p.providerId] : p.configured)) return;
       (p.models || []).forEach((m) => list.push({
-        providerId: p.providerId, providerLabel: p.label, modelId: m.id, modelLabel: m.label
+        providerId: p.providerId, providerLabel: p.label, modelId: m.id, modelLabel: m.label, pricing: m.pricing
       }));
     });
     return list;
+  }
+
+  /* 公开价格是单张文生图的历史样本；quality=auto 无固定报价，显示范围。
+     缺少对应分辨率样本必须说暂无参考价，不能套用另一档或把 model_price=0 当免费。 */
+  function imagePriceText(pricing, resolution, pixelMode) {
+    if (!pricing || !Array.isArray(pricing.entries)) return '参考价未提供';
+    let entries = pricing.entries.filter((e) => Number.isFinite(e.amount) && e.amount > 0);
+    if (!pixelMode && resolution) entries = entries.filter((e) => !e.resolution || e.resolution === resolution);
+    if (!entries.length) return '暂无对应参考价';
+    const amounts = entries.map((e) => e.amount);
+    const lo = Math.min(...amounts), hi = Math.max(...amounts);
+    const fmt = (n) => n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+    return '参考约 ¥' + fmt(lo) + (hi - lo > 0.0005 ? '–' + fmt(hi) : '') + '/张';
   }
 
   function imgSizeSpec(modelId) {
@@ -3520,7 +3533,7 @@
       ? imgSizeFallback(spec, v.width, v.height) : null;
     return {
       sizeMode: pixels ? 'pixels' : 'ratio',
-      ratio: ratios.some((r) => r.id === v.ratio) ? v.ratio : (ratios[0] ? ratios[0].id : '16:9'),
+      ratio: ratios.some((r) => r.id === v.ratio) ? v.ratio : (ratios[0] ? ratios[0].id : 'auto'),
       resolution: resolutions.includes(v.resolution) ? v.resolution : (resolutions[0] || null),
       width: size ? size.width : null, height: size ? size.height : null
     };
@@ -3544,8 +3557,9 @@
       '<div class="isz-provider"><label class="hint-sm" for="' + idp + 'Model">服务商 / 模型</label>' +
       '<select class="input-sm" id="' + idp + 'Model" data-iszprovidersel>' +
         choices.map((m) => '<option value="' + esc(m.providerId + '|' + m.modelId) + '"' +
-          (m === selected ? ' selected' : '') + '>' + esc(m.providerLabel + ' · ' + m.modelLabel) + '</option>').join('') +
-      '</select></div>'
+          (m === selected ? ' selected' : '') + '>' + esc(m.providerLabel + ' · ' + m.modelLabel + ' · ' +
+            imagePriceText(m.pricing, m === selected ? v.resolution : imageSizeValue(imgSizeSpec(m.modelId), v).resolution, m === selected && v.sizeMode === 'pixels')) + '</option>').join('') +
+      '</select><p class="hint-sm isz-price" id="' + idp + 'Price"></p></div>'
     ) : '';
     const mode = v.sizeMode === 'pixels' && spec.pixelMode !== false ? 'pixels' : 'ratio';
     const quick = (ratiosList || []).slice(0, 4);
@@ -3612,7 +3626,7 @@
       for (const p of list) {
         if (p.providerId !== pid) continue;
         for (const m of (p.models || [])) {
-          if (m.id === id) return { providerId: pid, modelId: id, label: m.label || id };
+          if (m.id === id) return { providerId: pid, modelId: id, label: m.label || id, pricing: m.pricing };
         }
       }
       return null;
@@ -3623,10 +3637,28 @@
     const fire = () => { if (typeof onChange === 'function') onChange(st); };
 
     function refreshPreview() {
+      const model = getSelectedModel();
+      const priceEl = q('#' + idp + 'Price');
+      const picker = q('[data-iszprovidersel]');
+      if (picker && picker.options) {
+        const choices = configuredImageModels();
+        Array.from(picker.options).forEach((opt) => {
+          const m = choices.find((x) => x.providerId + '|' + x.modelId === opt.value);
+          if (!m) return;
+          const val = imageSizeValue(imgSizeSpec(m.modelId), st);
+          opt.textContent = m.providerLabel + ' · ' + m.modelLabel + ' · ' + imagePriceText(m.pricing, val.resolution, st.sizeMode === 'pixels' && m.modelId === getSelectedModelId());
+        });
+      }
+      if (priceEl) {
+        const p = model && model.pricing;
+        priceEl.textContent = imagePriceText(p, st.resolution, st.sizeMode === 'pixels') +
+          '。参考价来自单张文生图历史成交，实际扣费以任务结算为准。' +
+          (p && p.checkedAt ? ' ' + (p.snapshot ? '离线快照' : '查询日期') + '：' + p.checkedAt.slice(0, 10) : '');
+      }
       if (!prevEl) return;
       if (st.sizeMode === 'ratio') {
-        if (st.ratio === spec.auto) { prevEl.textContent = '尺寸：自动'; return; }
-        if (!spec.resolutions) { prevEl.textContent = '比例：' + st.ratio + '（服务商决定像素）'; return; }
+        if (!spec.ratios.length || st.ratio === spec.auto) { prevEl.textContent = '比例由服务商决定' + (st.resolution ? ' · ' + st.resolution : ' · 自动尺寸'); return; }
+        if (!spec.resolutions || spec.pixelMode === false) { prevEl.textContent = '比例：' + st.ratio + (st.resolution ? ' · ' + st.resolution : '') + '（服务商决定像素）'; return; }
         const px = imgSizeRatioPreview(spec, st.ratio, st.resolution);
         const detail = st.ratio + (st.resolution ? ' · ' + st.resolution : '');
         prevEl.textContent = px ? ('约 ' + px.width + ' × ' + px.height + ' px（' + detail + '）') : detail;
@@ -3889,9 +3921,11 @@
       /* 实际扣费只在服务商已结算时显示；**不写死价格**（计划 §3.4） */
       if (usageEl) {
         const u = job.usage;
-        if (u && (u.total_tokens != null || u.cost != null || u.credits != null)) {
+        if (u && (u.amount != null || u.total_tokens != null || u.cost != null || u.credits != null)) {
           const parts = [];
-          if (u.credits != null) parts.push('扣费 ' + u.credits);
+          if (u.amount != null) parts.push('实际扣费 ' + (u.currency === 'CNY' ? '¥' : '') + u.amount + (u.currency && u.currency !== 'CNY' ? ' ' + u.currency : ''));
+          else if (u.cost != null) parts.push('实际扣费 ' + u.cost + (u.currency ? ' ' + u.currency : '（服务商单位）'));
+          if (u.credits != null) parts.push('扣费 ' + u.credits + ' 积分');
           if (u.total_tokens != null) parts.push(u.total_tokens + ' tokens');
           usageEl.textContent = parts.join(' · ');
         } else usageEl.textContent = '';
@@ -4046,6 +4080,11 @@
       const selected = szCtl && szCtl.getSelectedModel && szCtl.getSelectedModel();
       const providerId = szCtl && szCtl.getSelectedProviderId ? szCtl.getSelectedProviderId() : 'work-fisher';
       const modelId = szCtl && szCtl.getSelectedModelId ? szCtl.getSelectedModelId() : 'workfisher-image-g-v2.5-flare';
+      const modelSpec = (S.options && S.options.imageModels || []).find((m) => m.modelId === modelId);
+      if (modelSpec && (prompt.length < modelSpec.promptMin || prompt.length > modelSpec.promptMax)) {
+        toast('该模型提示词长度须为 ' + modelSpec.promptMin + '–' + modelSpec.promptMax + ' 字符', 'err');
+        return { ok: false };
+      }
       /* 尺寸描述进付费确认 —— 用户应当知道这次按什么尺寸扣费 */
       const sz = szCtl ? szCtl.get() : null;
       const szText = !sz ? '自动（1k）'
@@ -4056,7 +4095,8 @@
         '资产：' + (o.assetName || '(未命名)') + '\n' +
         '服务商：' + (((S.imageProvidersList || []).find((p) => p.providerId === providerId) || {}).label || providerId) + '\n' +
         '模型：' + (selected ? selected.label : modelId) + '\n' +
-        '张数：1 张 · 尺寸：' + szText + ' · 格式：png\n' +
+        '张数：1 张 · 尺寸：' + szText + '\n' +
+        '费用：' + imagePriceText(selected && selected.pricing, sz && sz.resolution, sz && sz.sizeMode === 'pixels') + '（估算，最终以实际结算为准）\n' +
         '提示词：' + prompt + '\n' +
         '服务商按实际消耗收费，这次提交会产生真实调用。');
       if (!confirmed) return { ok: false, canceled: true };

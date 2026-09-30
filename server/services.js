@@ -1795,6 +1795,10 @@ async function submitImageJob(db, assetId, body, adapter, scope) {
     throw e;
   }
 
+  const entry = REGISTRY.findModel(providerId, modelId);
+  if (prompt.length < (entry.promptMin || 1) || prompt.length > (entry.promptMax || 10000)) {
+    throw new ApiError(ERR.PARAM, '该模型提示词长度须为 ' + (entry.promptMin || 1) + '–' + (entry.promptMax || 10000) + ' 字符');
+  }
   /* 尺寸校验要在计费提交之前（见 resolveImageSize 的注释） */
   const sz = resolveImageSize(body, modelId);
 

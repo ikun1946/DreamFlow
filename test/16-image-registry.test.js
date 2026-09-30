@@ -26,11 +26,11 @@ describe('注册表 · 基本形状', () => {
       });
     });
   });
-  test('每个 model 必带 sizeSpec：ratios 非空', () => {
+  test('每个 model 必带 sizeSpec；自动比例模型的 ratios 可为空', () => {
     REGISTRY.listProviders().forEach((p) => {
       (p.models || []).forEach((m) => {
         assert.ok(m.sizeSpec && Array.isArray(m.sizeSpec.ratios), m.modelId + '.sizeSpec.ratios');
-        assert.ok(m.sizeSpec.ratios.length > 0, m.modelId + '.sizeSpec.ratios 不能为空');
+        if (!m.sizeSpec.ratios.length) assert.equal(m.sizeSpec.pixelMode, false, m.modelId + ' 自动尺寸不能显示像素控件');
         assert.ok(m.sizeSpec.limits, m.modelId + '.sizeSpec.limits');
       });
     });

@@ -6,8 +6,8 @@
    异步模型：submit 返 taskId；上层按 taskId 轮询 query。
 
    ⚠ 约束（沿用 0.41.0 文件顶部的五条）：
-   1. 只按 v2.5-flare 的官方示例实现（平铺参数）。Seedream 系参数在 metadata
-      对象里 —— 想"顺手兼容"的结果通常是两边都写错。
+   1. 请求形状按注册表的 requestStyle 分族构建；Seedream/Qwen 用 metadata，
+      Image G/Nano Banana 用平铺字段。不能给所有模型发 Flare 的质量和输出格式。
    2. 提交路径是单数的 `image`：/v1/image/generations（不是 images）。
    3. 提交请求不做自动重试。
    4. 缺字段时报告协议错误，不猜。
@@ -36,21 +36,28 @@ function makeWorkFisherAdapter(cfg, model, opts) {
     if (!configured()) return mkErr('config', '未配置生图服务的 API Key');
     const text = String(prompt == null ? '' : prompt);
     if (!text.trim()) return mkErr('config', '提示词不能为空');
+    const entry = model.model;
+    if (text.length < (entry.promptMin || 1) || text.length > (entry.promptMax || 10000)) {
+      return mkErr('config', '该模型提示词长度须为 ' + (entry.promptMin || 1) + '–' + (entry.promptMax || 10000) + ' 字符');
+    }
 
     const so = submitOpts || {};
-    const body = {
-      model: modelId,
-      prompt: text,
-      n: 1,
-      quality: 'auto',
-      output_format: 'png'
-    };
+    const style = entry.requestStyle || 'flat-flare';
+    const body = { model: modelId, prompt: text, n: 1 };
     const size = so.size == null ? '' : String(so.size).trim();
-    if (size) {
-      body.size = size;
-      if (size.indexOf('x') < 0) body.resolution = so.resolution || '1k';
-    } else {
-      body.resolution = so.resolution || '1k';
+    if (style === 'metadata-ratio' || style === 'metadata-seedream' || style === 'metadata-g-low') {
+      body.metadata = { resolution: so.resolution || entry.sizeSpec.resolutions[0] };
+      if (style === 'metadata-ratio' && size && size !== 'auto') body.metadata.ratio = size;
+      if (style === 'metadata-g-low' && size) body.size = size;
+      if (style === 'metadata-seedream') body.metadata.output_format = 'png';
+    } else if (style !== 'default-size') {
+      if (size) body.size = size;
+      if (entry.sizeSpec.resolutions && size.indexOf('x') < 0) {
+        body.resolution = so.resolution || entry.sizeSpec.resolutions[0];
+      }
+      if (style === 'flat-flare') {
+        body.quality = 'auto'; body.output_format = 'png';
+      }
     }
 
     const r = await callJson({
@@ -108,7 +115,8 @@ function makeWorkFisherAdapter(cfg, model, opts) {
       };
     }
     if (/SUCCESS|SUCCEED|DONE|COMPLETE/.test(rawStatus)) {
-      const resultUrl = d.result_url || d.resultUrl || null;
+      const content = d.data && d.data.content;
+      const resultUrl = d.result_url || d.resultUrl || (content && content.image_url) || null;
       if (!resultUrl) return mkErr('protocol', '任务已成功但响应缺少结果地址（result_url）');
       return { state: 'succeeded', resultUrl: String(resultUrl), usage: usage };
     }
@@ -123,6 +131,7 @@ function makeWorkFisherAdapter(cfg, model, opts) {
       if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
       else if (typeof v === 'string' && v && /^-?\d+(\.\d+)?$/.test(v)) out[k] = Number(v);
     });
+    if (typeof u.currency === 'string' && /^[A-Z]{3}$/.test(u.currency)) out.currency = u.currency;
     return Object.keys(out).length ? out : null;
   }
 

@@ -101,3 +101,24 @@ test('仅一家单模型服务商配置时，也能看见实际使用的服务�
   assert.match(html, /OpenAI · GPT Image 2.5 Flare/);
   assert.match(html, /data-provider="openai"/);
 });
+
+test('列表在模型名后显示对应档位的参考费用，未知价格不能显示为免费', () => {
+  const context = ui();
+  const wf = context.S.imageProvidersList.find((p) => p.providerId === 'work-fisher');
+  const pricing = require('../server/image-pricing');
+  wf.models.forEach((m) => { m.pricing = pricing.forModel(m.id); });
+  const html = context.imageSizeControlHTML('ip', { ratio: '1:1', resolution: '2k' }, 'work-fisher|workfisher-image-g-v2.5-lowprice');
+  assert.match(html, /Image G v2.5 低价版 · 参考约 ¥0.115\/张/);
+  assert.equal(context.imagePriceText(null, '1k'), '参考价未提供');
+  assert.equal(context.imagePriceText({ entries: [{ resolution: '1k', amount: 0.1 }] }, '4k'), '暂无对应参考价');
+});
+
+test('Seedream 切换后只显示分辨率，上游自动比例不会沿用旧的像素和比例', () => {
+  const context = ui();
+  const html = context.imageSizeControlHTML('ip', { sizeMode: 'pixels', width: 1920, height: 1088, ratio: '16:9', resolution: '4k' }, 'work-fisher|seedream-v5-flash-t2i');
+  assert.match(html, /data-iszres/);
+  assert.match(html, /1.5k/);
+  assert.doesNotMatch(html, /data-iszmode|data-iszratiosel/);
+  const value = context.imageSizeValue(context.imgSizeSpec('seedream-v5-flash-t2i'), { sizeMode: 'pixels', ratio: '16:9', resolution: '4k' });
+  assert.equal(value.ratio, 'auto'); assert.equal(value.resolution, '1k'); assert.equal(value.sizeMode, 'ratio');
+});

@@ -1,0 +1,335 @@
+{
+  "source": "https://api.work-fisher.com/api/pricing",
+  "checkedAt": "2026-09-30T15:36:40.971Z",
+  "models": {
+    "workfisher-image-g-v2.5-flare": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": "low",
+          "amount": 0.0480645375
+        },
+        {
+          "resolution": null,
+          "quality": "medium",
+          "amount": 0.08561376249999997
+        },
+        {
+          "resolution": null,
+          "quality": "high",
+          "amount": 0.35557051249999994
+        },
+        {
+          "resolution": null,
+          "quality": "xhigh",
+          "amount": 0.5768126874999999
+        }
+      ]
+    },
+    "workfisher-image-g-v2.5-sunburst": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": "medium",
+          "amount": 0.0731101
+        },
+        {
+          "resolution": "2k",
+          "quality": "medium",
+          "amount": 0.10668262499999996
+        },
+        {
+          "resolution": "4k",
+          "quality": "low",
+          "amount": 0.15463244999999998
+        },
+        {
+          "resolution": "1k",
+          "quality": "high",
+          "amount": 0.24665099374999996
+        },
+        {
+          "resolution": "4k",
+          "quality": "medium",
+          "amount": 0.28766071249999997
+        },
+        {
+          "resolution": "2k",
+          "quality": "high",
+          "amount": 0.33453988749999997
+        },
+        {
+          "resolution": "2k",
+          "quality": "xhigh",
+          "amount": 0.7605056374999999
+        },
+        {
+          "resolution": "2k",
+          "quality": "max",
+          "amount": 1.5275307687499997
+        }
+      ]
+    },
+    "workfisher-image-g-v2.5-lowprice": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.0487528125
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.1147125
+        },
+        {
+          "resolution": "4k",
+          "quality": null,
+          "amount": 0.17206874999999996
+        }
+      ]
+    },
+    "workfisher-image-g-v2-lowprice": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.046129213483146074
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.10853932584269663
+        },
+        {
+          "resolution": "4k",
+          "quality": null,
+          "amount": 0.16280898876404493
+        }
+      ]
+    },
+    "workfisher-image-g2-t2i": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.1356741573033708
+        }
+      ]
+    },
+    "workfisher-image-gk-v15": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.1509375
+        }
+      ]
+    },
+    "workfisher-image-gk-v2": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.1509375
+        }
+      ]
+    },
+    "workfisher-image-nb-flash": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.07235955056179776
+        }
+      ]
+    },
+    "workfisher-image-nb-2": {
+      "entries": [
+        {
+          "resolution": "0.5k",
+          "quality": null,
+          "amount": 0.1356741573033708
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.1808988764044944
+        },
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.1808988764044944
+        },
+        {
+          "resolution": "4k",
+          "quality": null,
+          "amount": 0.2713483146067416
+        }
+      ]
+    },
+    "workfisher-image-nb-2-lite": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.08140449438202246
+        }
+      ]
+    },
+    "workfisher-image-nb-pro": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.2713483146067416
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.2713483146067416
+        },
+        {
+          "resolution": "4k",
+          "quality": null,
+          "amount": 0.452247191011236
+        }
+      ]
+    },
+    "seedream-v5-pro-t2i": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.2487105
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.497421
+        }
+      ]
+    },
+    "dola-seedream-5.0-pro-t2i": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.2921370967741935
+        },
+        {
+          "resolution": "custom",
+          "quality": null,
+          "amount": 0.33887903225806454
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.6660725806451614
+        }
+      ]
+    },
+    "seedream-v5-flash-t2i": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.14475214285714286
+        }
+      ]
+    },
+    "dola-seedream-5.0-flash-t2i": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.11592
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.11592
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.11592
+        }
+      ]
+    },
+    "qwen-image-3.0-t2i": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.184
+        }
+      ]
+    },
+    "qwen-image-3.0-pro-t2i": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.5175
+        }
+      ]
+    },
+    "qwen-image-3.0-global-t2i": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.2129683544303797
+        },
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.2129683544303797
+        }
+      ]
+    },
+    "qwen-image-3.0-global-pro-t2i": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.28073101265822775
+        }
+      ]
+    },
+    "qwen-image-global-2.1": {
+      "entries": [
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.11499999999999999
+        },
+        {
+          "resolution": "2k",
+          "quality": null,
+          "amount": 0.22999999999999998
+        },
+        {
+          "resolution": "4k",
+          "quality": null,
+          "amount": 0.45999999999999996
+        }
+      ]
+    },
+    "wan-2.7-global-t2i": {
+      "entries": [
+        {
+          "resolution": null,
+          "quality": null,
+          "amount": 0.2442134831460674
+        },
+        {
+          "resolution": "1k",
+          "quality": null,
+          "amount": 0.2442134831460674
+        }
+      ]
+    }
+  }
+}
