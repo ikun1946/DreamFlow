@@ -12,28 +12,38 @@
    容量上限 KEEP 条，超出后丢弃最旧的（本地单用户场景，够回溯用）。
 
    字段分区（前端列表与详情共用同一份定义）：
-     · 身份    id / at / storyboardId / seq / projectId
-     · 动作    action(generate|dryrun) / outcome(succeeded|failed|canceled|previewed)
+     · 身份    id / at / kind / storyboardId / seq / projectId
+     · 动作    action(generate|dryrun|image) / outcome(succeeded|failed|canceled|previewed)
      · 执行    engine / engineLabel / model / modelLabel / cliModel / mode
      · 参数    params{ratio,resolution,durationSec,motion,seed,negativePrompt}
      · 输入    prompt / promptWithLock / lockBlock / images[] / audios[] / skipped[]
      · 命令    command / argv / adapted[] / missing[] / refs[] / submitId
      · 产物    remoteId / resourceId / videoUrl / coverUrl
      · 结果    elapsedMs / startedAt / finishedAt / errorCode / errorMessage
+
+   ⚠ 两类记录（2026-10-02 新增生图留痕）：
+     · kind='video'（**历史记录没有这个字段，读时一律按 video 处理**）—— 分镜视频生成；
+     · kind='image' —— 图片资产生图（见 imageSnapshot/appendImage）。生图记录**不挂分镜**，
+       它的身份是 assetId/assetName，参数是 size/像素尺寸，产物是 candidateFile/appliedFile
+       （本地相对名，绝不存服务商直链 —— 直链约 24 小时过期，见 image-jobs 约束 6）。
    ============================================================ */
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const store = require('./store');
 const { nowIso, rid } = require('./util');
 const AL = require('./asset-lock');
 const models = require('./models');
 const P = require('./projects');   // 项目/工作区归属与名称快照
+const IMGREG = require('./image-registry');   // 生图 provider/model 的中文标签（唯一事实来源）
+const PATHS = require('./paths');   // 资源 URL 形状的唯一事实来源（结果图地址现拼，不落库）
 
 const KEEP = 800;            // 最多保留的记录条数（新的在前，超出丢最旧）
 const TEXT_CAP = 60000;      // 单条记录中单个文本字段的上限（防单条超大提示词把库撑爆）
 const SUMMARY_LEN = 72;
 
-const ACTION_LABEL = { generate: '真实生成', dryrun: '干跑' };
+const ACTION_LABEL = { generate: '真实生成', dryrun: '干跑', image: '生图' };
 const OUTCOME_LABEL = { succeeded: '成功', failed: '失败', canceled: '已取消', previewed: '仅预览' };
 
 function clip(s, n) {
@@ -95,6 +105,9 @@ function snapshot(db, sb, extra) {
   return {
     id: rid('rc_'),
     at: nowIso(),
+    /* 新记录显式带 kind。历史记录没有这个字段，**读时一律按 video 处理**（见 imageSnapshot 注释），
+       所以不写迁移脚本 —— 迁移会动到用户的记录库，而"缺省即 video"已经能正确读旧数据。 */
+    kind: 'video',
     projectId: proj ? proj.id : (sb.projectId || null),
     projectName: proj ? proj.name : null,
     workspaceId: ws ? ws.id : (sb.workspaceId || null),
@@ -182,6 +195,176 @@ function append(db, sb, extra) {
   }
 }
 
+/* ---------------- 生图记录（kind='image'） ----------------
+   为什么视频与生图共用一张记录表：用户要的是**一个**「生成记录」页 ——
+   "我花过哪些钱、生成了什么"这件事不因为产物是视频还是图片而分家。
+   分家会让筛选、导出、清空全部要各写一套，且两边的历史口径会漂移。
+
+   与视频记录的差异（刻意的）：
+     · 身份是**素材**而不是分镜（生图不挂分镜，storyboardId/seq 恒为 null）；
+     · 参数没有画幅/时长，只有 size（比例枚举或像素）+ 分辨率档 + 实际像素；
+     · 产物是 candidateFile（候选图）/ appliedFile（已采用图）的**本地相对名**，
+       地址在读取时由 paths.js 现拼 —— 直链不落库（过期即死数据）也不交给页面。 */
+
+/* 生图记录的确定性 id：由本地任务 id 派生。
+   为什么要确定性而不是 rid('rc_')：落记录是"咽喉点扫描"（saveAll 会扫全部任务），
+   随机 id 无法回答"这个任务落过了没有"。确定性 id 让去重变成一次集合查找，
+   服务重启 / reconcile / 重复 saveAll 都不会产生第二条。 */
+const imageRecordId = (job) => (job && job.id ? 'rc_img_' + job.id : null);
+
+/* 结果图的可打开地址。**只认本地相对名**，URL 形状由 paths.js 决定（唯一事实来源）。
+   文件已不在（被清理 / 被采用后旧的候选被删）就返回 null —— 前端据此显示"文件已被清理"，
+   而不是给一个必然 404 的链接。 */
+function imageResultUrl(r) {
+  const pj = PATHS.safeId(r.projectId);
+  if (!pj) return null;
+  const cand = PATHS.safeFile(r.candidateFile);
+  if (cand) {
+    try { if (fs.existsSync(path.join(PATHS.candidateDir(pj), cand))) return PATHS.candidateUrl(pj, cand); }
+    catch (e) { /* 目录不存在等：当作没有 */ }
+  }
+  const applied = PATHS.safeFile(r.appliedFile);
+  if (applied) {
+    try { if (fs.existsSync(path.join(PATHS.assetDir(pj), applied))) return PATHS.assetUrl(pj, applied); }
+    catch (e) { /* 同上 */ }
+  }
+  return null;
+}
+
+/* 从「当前素材」+「生图任务」生成一条不可变快照。
+   ⚠ 素材可能已被删除（用户删了资产）——这时资产相关字段按空处理，记录本身仍然完整。 */
+function imageSnapshot(db, asset, job, extra) {
+  const o = extra || {};
+  const id = imageRecordId(job);
+  if (!id) return null;
+  /* 项目 / 素材名的**快照**：与 snapshot() 同一理由 —— 项目或素材之后改名/软删，
+     旧记录仍要显示当时叫什么。 */
+  const pjId = job.projectId || (asset && asset.projectId) || null;
+  const proj = pjId ? P.projectOf(db, pjId) : null;
+  const ws = (asset && asset.workspaceId) ? P.workspaceOf(db, asset.workspaceId) : null;
+  const provider = job.providerId ? IMGREG.findProvider(job.providerId) : null;
+  const model = (job.providerId && job.modelId) ? IMGREG.findModel(job.providerId, job.modelId) : null;
+  const prompt = String(job.prompt == null ? '' : job.prompt);
+  const startedAt = job.createdAt || null;
+  const finishedAt = job.updatedAt || nowIso();
+  let elapsedMs = null;
+  if (startedAt) {
+    const s = Date.parse(startedAt);
+    const f = Date.parse(finishedAt);
+    if (!isNaN(s)) elapsedMs = Math.max(0, (isNaN(f) ? Date.now() : f) - s);
+  }
+  const outcome = o.outcome || (job.state === 'ready' ? 'succeeded' : 'failed');
+  const assetName = o.assetName || (asset && asset.name) || null;
+
+  return {
+    id: id,
+    at: nowIso(),
+    kind: 'image',
+    projectId: proj ? proj.id : pjId,
+    projectName: proj ? proj.name : null,
+    workspaceId: ws ? ws.id : ((asset && asset.workspaceId) || null),
+    workspaceName: ws ? ws.name : null,
+    /* 生图不挂分镜：显式置 null，前端按 kind 分支渲染（绝不显示"镜头 undefined"） */
+    storyboardId: null,
+    seq: null,
+    storyboardTitle: null,
+
+    assetId: job.assetId || (asset && asset.id) || null,
+    assetName: assetName,
+
+    action: 'image',
+    outcome: outcome,
+
+    /* engine 沿用视频记录的字段名承载"谁在干活"：生图的执行者就是服务商。
+       置成 providerId（协议稳定字符串）而不是塞进 byEngine 的两个桶 ——
+       statsOf 的 byEngine 只统计 dreamina/canvas，多一个键不会被计入，语义不变。 */
+    engine: job.providerId || null,
+    engineLabel: (provider && provider.providerLabel) || job.providerId || '生图服务',
+    model: job.modelId || job.model || null,
+    modelLabel: (model && model.modelLabel) || null,
+    cliModel: null,
+    mode: null,
+    engineReason: null,
+    providerId: job.providerId || null,
+    providerLabel: (provider && provider.providerLabel) || null,
+    modelId: job.modelId || null,
+
+    title: '素材 ' + (assetName || job.assetId || ''),
+    summary: summaryOf(prompt),
+    prompt: clip(prompt, TEXT_CAP),
+    promptChars: prompt.length,
+    promptWithLock: null,
+    lockBlock: null,
+
+    /* 生图没有素材锁定 / 音频参考（这些是分镜的概念），留空数组让共用渲染不报错 */
+    images: [], audios: [], skipped: [], assetCount: 0,
+
+    params: {
+      /* 沿用视频记录的 params 字段名（列表渲染读的是这一份），生图没有的置 null */
+      ratio: null, resolution: job.resolution || null, durationSec: null,
+      motion: null, seed: null, negativePrompt: ''
+    },
+    size: job.size || null,
+    resolution: job.resolution || null,
+    imageWidth: job.imageWidth || null,
+    imageHeight: job.imageHeight || null,
+    imageFormat: job.imageFormat || null,
+
+    /* 费用**原样快照**，不在记录层折算 —— 各家 usage 形状不同（credits / tokens），
+       折算要各自 provider 的知识，放这里就把两家规则焊死在记录层了。 */
+    usage: job.usage || null,
+
+    /* 产物：本地相对名（与 image-jobs 的候选/已采用字段一致），地址读时现拼 */
+    candidateFile: job.candidateFile || null,
+    appliedFile: job.appliedFile || null,
+    autoApply: !!job.autoApply,
+
+    command: null, argv: null, adapted: [], missing: [], refs: [],
+    /* providerTaskId 是服务商任务号（不是带签名的直链），留作对账用 */
+    submitId: job.providerTaskId || null,
+
+    remoteId: null, resourceId: null,
+    videoUrl: null, coverUrl: null,
+
+    startedAt: startedAt,
+    finishedAt: finishedAt,
+    elapsedMs: elapsedMs,
+
+    /* errorKind 是失败原因的分类（audit/auth/no_credit/ratelimit/timeout/network/
+       upstream/protocol），界面据此直说原因；errorCode 与它同值，让既有（视频侧）
+       读 errorCode 的展示逻辑直接可用。 */
+    errorKind: job.errorKind || null,
+    errorCode: job.errorKind || null,
+    errorMessage: job.error || null,
+    retryCount: 0
+  };
+}
+
+/**
+ * 追加一条生图记录。**幂等**：同一任务（确定性 id）只落一条。
+ * **永不抛异常**——落记录失败不能把正在跑的任务带崩（纪律同 append()）。
+ * @returns {object|null} 写入的记录；已存在或失败返回 null
+ */
+function appendImage(db, asset, job, extra) {
+  if (!db || !job) return null;
+  try {
+    const id = imageRecordId(job);
+    if (!id) return null;
+    if (!Array.isArray(db.records)) db.records = [];
+    if (db.records.some((r) => r && r.id === id)) return null;
+    const rec = imageSnapshot(db, asset, job, extra);
+    if (!rec) return null;
+    db.records.unshift(rec);                       // 新的在前，列表天然按时间倒序
+    if (db.records.length > KEEP) db.records.length = KEEP;
+    db.recordSeq = (Number(db.recordSeq) || 0) + 1;
+    store.save();
+    return rec;
+  } catch (e) {
+    console.error('[records] 落生图记录失败（不影响任务）：' + (e && e.message));
+    return null;
+  }
+}
+
 /* ---------------- 查询 ---------------- */
 
 const dateOf = (r) => String(r.at || '').slice(0, 10);
@@ -196,6 +379,8 @@ function filtered(db, q) {
   /* 按分镜过滤：产物预览要列「这个分镜的历史产物」，数据源就是它历次生成的记录。
      （记录里每条都带自己那一次的 videoUrl / coverUrl 快照，所以历史是完整且不可变的。） */
   if (o.storyboardId && o.storyboardId !== 'all') list = list.filter((r) => r.storyboardId === o.storyboardId);
+  /* 按类型过滤（video / image）。历史记录没有 kind 字段，一律按 video 处理。 */
+  if (o.kind && o.kind !== 'all') list = list.filter((r) => (r.kind || 'video') === o.kind);
   if (o.action && o.action !== 'all') list = list.filter((r) => r.action === o.action);
   if (o.outcome && o.outcome !== 'all') list = list.filter((r) => r.outcome === o.outcome);
   if (o.engine && o.engine !== 'all') list = list.filter((r) => r.engine === o.engine);
@@ -207,6 +392,9 @@ function filtered(db, q) {
     list = list.filter((r) => [
       r.summary, r.prompt, r.title, r.command, r.errorMessage, r.errorCode,
       r.remoteId, r.submitId, r.model, r.modelLabel, r.storyboardId,
+      /* 生图记录的关键词检索面：素材名与提供方/模型标签。少了素材名，
+         用户按素材名搜生图历史会一条都搜不到（那正是最自然的搜法）。 */
+      r.assetName, r.assetId, r.providerId, r.providerLabel, r.imageFormat,
       (r.images || []).map((x) => x.name).join(' ')
     ].filter(Boolean).join(' ').toLowerCase().includes(kw));
   }
@@ -216,6 +404,8 @@ function filtered(db, q) {
 function lite(r) {
   return {
     id: r.id, at: r.at,
+    /* 类型：历史记录没有该字段 → 一律 video。列表要据此分支（生图行没有镜头号）。 */
+    kind: r.kind || 'video',
     /* 归属与生成时的名称快照：列表与导出都要能显示"这条属于哪个项目/页面"，
        且名称取自记录本身而不是现查（项目改名后仍显示当时的名字）。 */
     projectId: r.projectId || null, projectName: r.projectName || null,
@@ -241,18 +431,43 @@ function lite(r) {
        原来 lite() 没带这个字段，列表里拿不到，只能在详情里看。 */
     submitId: r.submitId || null,
     errorCode: r.errorCode || null,
-    shortError: r.errorMessage ? clip(r.errorMessage, 90) : null
+    /* 失败分类（生图记录带 errorKind；视频记录恒为 null）。列表行要能直说
+       "为什么失败"（审核 / 余额 / 限流…），所以一并下发。 */
+    errorKind: r.errorKind || null,
+    shortError: r.errorMessage ? clip(r.errorMessage, 90) : null,
+
+    /* ---- 生图记录专用（视频行恒为 null，不影响既有字段）----
+       为什么放在同一份 lite() 而不是另开函数：列表/导出是同一张表，
+       分两份会让"是否带了某字段"随路径而异，前端就得写两套取值逻辑。 */
+    assetId: r.assetId || null,
+    assetName: r.assetName || null,
+    providerId: r.providerId || null,
+    providerLabel: r.providerLabel || null,
+    modelId: r.modelId || null,
+    size: r.size || null,
+    imageWidth: r.imageWidth || null,
+    imageHeight: r.imageHeight || null,
+    imageFormat: r.imageFormat || null,
+    usage: r.usage || null,
+    applied: !!(r.kind === 'image' && r.appliedFile),
+    /* 结果图地址：**读时现拼**（paths.js 唯一事实来源），文件已清理则为 null */
+    resultUrl: (r.kind || 'video') === 'image' ? imageResultUrl(r) : null
   };
 }
 
 function statsOf(list) {
   /* byEngine 保留 canvas 桶**只为统计 2026-09-18 之前落下的历史记录**：
-     新记录恒为 dreamina（画布 CLI 已移除）。若把桶删掉，历史记录会在统计里凭空消失。 */
-  const s = { total: list.length, succeeded: 0, failed: 0, canceled: 0, previewed: 0, images: 0, audioCount: 0, byEngine: { dreamina: 0, canvas: 0 }, byAction: { generate: 0, dryrun: 0 } };
+     新记录恒为 dreamina（画布 CLI 已移除）。若把桶删掉，历史记录会在统计里凭空消失。
+     ⚠ 生图记录的 engine 是 providerId（如 work-fisher），不在桶里 → 不计入 byEngine，
+       两个既有计数器的语义完全不变。 */
+  const s = { total: list.length, succeeded: 0, failed: 0, canceled: 0, previewed: 0, images: 0, audioCount: 0, byEngine: { dreamina: 0, canvas: 0 }, byAction: { generate: 0, dryrun: 0 }, byKind: { video: 0, image: 0 } };
   list.forEach((r) => {
     if (s[r.outcome] != null) s[r.outcome]++;
     if (s.byEngine[r.engine] != null) s.byEngine[r.engine]++;
     if (s.byAction[r.action] != null) s.byAction[r.action]++;
+    /* 类型计数：缺字段按 video（历史记录）。byKind 供筛选条「全部 / 视频 / 生图」带计数。 */
+    const k = r.kind || 'video';
+    if (s.byKind[k] != null) s.byKind[k]++;
     s.images += (r.images || []).length;
     s.audioCount += (r.audios || []).length;
   });
@@ -330,6 +545,15 @@ const fmtParams = (r) => {
   return [p.ratio, p.resolution, (p.durationSec != null ? p.durationSec + 's' : null)].filter(Boolean).join(' · ');
 };
 const csvCell = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+/* 类型判定：缺 kind 的历史记录一律 video（与 filtered/lite 同一口径）。 */
+const isImageRec = (r) => (r.kind || 'video') === 'image';
+const imageDims = (r) => (r.imageWidth && r.imageHeight ? r.imageWidth + '×' + r.imageHeight : null);
+/* 费用原样快照 → 一句可读文本。各家 usage 形状不同（credits / tokens / currency），
+   这里只做扁平化展示，**不折算**（折算要 provider 知识，属于记录层之外）。 */
+const fmtUsage = (u) => {
+  if (!u || typeof u !== 'object') return '';
+  return Object.keys(u).filter((k) => u[k] != null && u[k] !== '').map((k) => k + '=' + u[k]).join(' · ');
+};
 
 function exportRecords(db, q, format) {
   const list = filtered(db, q);
@@ -342,16 +566,28 @@ function exportRecords(db, q, format) {
   }
 
   if (f === 'csv') {
-    const head = ['时间', '项目', '分镜表', '动作', '结果', '引擎', '模型', 'CLI 型号', '镜头', '摘要', '画幅', '分辨率', '时长s', '图片数', '音频数', '耗时s', '提交ID', '产物地址', '错误码', '错误信息'];
-    const rows = list.map((r) => [
-      r.at, r.projectName || r.projectId || '', r.workspaceName || r.workspaceId || '',
-      ACTION_LABEL[r.action] || r.action, OUTCOME_LABEL[r.outcome] || r.outcome,
-      r.engineLabel, r.model, r.cliModel, r.seq, r.summary,
-      (r.params || {}).ratio, (r.params || {}).resolution, (r.params || {}).durationSec,
-      (r.images || []).length, (r.audios || []).length,
-      r.elapsedMs == null ? '' : (r.elapsedMs / 1000).toFixed(1),
-      r.submitId || '', r.videoUrl || '', r.errorCode || '', (r.errorMessage || '').replace(/\s+/g, ' ')
-    ].map(csvCell).join(','));
+    /* ⚠ 列顺序**不能改**（既有下游/用户脚本按位置读）；「类型」作为**最后一列**追加，
+       这样视频行的既有 20 列位置一个都不动，生图行也不会错列。 */
+    const head = ['时间', '项目', '分镜表', '动作', '结果', '引擎', '模型', 'CLI 型号', '镜头', '摘要', '画幅', '分辨率', '时长s', '图片数', '音频数', '耗时s', '提交ID', '产物地址', '错误码', '错误信息', '类型'];
+    const rows = list.map((r) => {
+      const img = isImageRec(r);
+      const p = r.params || {};
+      /* 生图行：没有分镜号，用「素材：<名字>」占摘要位；画幅/分辨率取 size/resolution；
+         产物地址取**结果图**（现拼的本地地址）。列数与非生图行完全一致。 */
+      const summary = img ? (['素材：' + (r.assetName || '—'), r.summary].filter(Boolean).join(' · ')) : r.summary;
+      return [
+        r.at, r.projectName || r.projectId || '', r.workspaceName || r.workspaceId || '',
+        ACTION_LABEL[r.action] || r.action, OUTCOME_LABEL[r.outcome] || r.outcome,
+        r.engineLabel, r.model, r.cliModel,
+        img ? '' : r.seq, summary,
+        img ? (r.size || '') : p.ratio, img ? (r.resolution || '') : p.resolution, img ? '' : p.durationSec,
+        (r.images || []).length, (r.audios || []).length,
+        r.elapsedMs == null ? '' : (r.elapsedMs / 1000).toFixed(1),
+        r.submitId || '', img ? (imageResultUrl(r) || '') : (r.videoUrl || ''),
+        r.errorCode || '', (r.errorMessage || '').replace(/\s+/g, ' '),
+        img ? '生图' : '视频'
+      ].map(csvCell).join(',');
+    });
     // BOM：Windows Excel 直接双击打开时中文才不会乱码
     return { filename: base + '.csv', mime: 'text/csv; charset=utf-8', content: '\ufeff' + head.map(csvCell).join(',') + '\r\n' + rows.join('\r\n') };
   }
@@ -360,17 +596,31 @@ function exportRecords(db, q, format) {
   const s = statsOf(list);
   lines.push('| 口径 | 条数 |', '| --- | --- |');
   lines.push('| 成功 | ' + s.succeeded + ' |', '| 失败 | ' + s.failed + ' |', '| 已取消 | ' + s.canceled + ' |', '| 干跑预览 | ' + s.previewed + ' |');
+  lines.push('| 视频生成 | ' + s.byKind.video + ' |', '| 图片生图 | ' + s.byKind.image + ' |');
   lines.push('| 创作 CLI | ' + s.byEngine.dreamina + ' |');
   /* 画布 CLI 这一行只在确实存在历史记录时才输出 —— 否则导出里会永远挂着一行 0 */
   if (s.byEngine.canvas > 0) lines.push('| 画布 CLI（历史记录，已移除） | ' + s.byEngine.canvas + ' |');
   lines.push('');
   lines.push('---', '');
   list.forEach((r, i) => {
+    const img = isImageRec(r);
     lines.push('## ' + (i + 1) + '. ' + r.at + ' · ' + (ACTION_LABEL[r.action] || r.action) + ' · ' + (OUTCOME_LABEL[r.outcome] || r.outcome));
     lines.push('');
-    lines.push('- 镜头：' + r.seq + '（分镜 ' + r.storyboardId + '）');
     /* 项目/页面用**生成时的名称快照**，而不是现查 —— 改名或软删后这里仍显示当时的名字 */
     lines.push('- 归属：' + (r.projectName || r.projectId || '—') + ' › ' + (r.workspaceName || r.workspaceId || '—'));
+    if (img) {
+      /* 生图记录没有分镜/命令，改为素材 + 服务商 + 尺寸 + 费用 + 结果图。 */
+      lines.push('- 素材：' + (r.assetName || '—') + '（' + (r.assetId || '—') + '）');
+      lines.push('- 服务商：' + (r.providerLabel || r.providerId || '—') + ' · 模型 ' + (r.modelLabel || r.model || '—'));
+      lines.push('- 参数：' + ([r.size, r.resolution, imageDims(r)].filter(Boolean).join(' · ') || '—') + ' · 耗时 ' + fmtElapsed(r.elapsedMs));
+      if (fmtUsage(r.usage)) lines.push('- 费用：' + fmtUsage(r.usage));
+      const url = imageResultUrl(r);
+      if (url) lines.push('- 结果图：' + url);
+      if (r.errorCode || r.errorMessage) lines.push('- 错误：' + [r.errorCode, r.errorMessage].filter(Boolean).join(' '));
+      lines.push('', '### 提示词原文', '', '```', r.prompt || '（空）', '```', '');
+      return;
+    }
+    lines.push('- 镜头：' + r.seq + '（分镜 ' + r.storyboardId + '）');
     lines.push('- 引擎：' + r.engineLabel + ' · 模型 ' + r.model + (r.modelLabel ? '（' + r.modelLabel + '）' : '') + ' → CLI 型号 ' + (r.cliModel || '—'));
     lines.push('- 参数：' + (fmtParams(r) || '—') + ' · 耗时 ' + fmtElapsed(r.elapsedMs));
     if (r.images && r.images.length) lines.push('- 素材锁定：' + r.images.map((x) => '图片' + x.n + '=' + x.name + '（' + x.roleLabel + '）').join('、'));
@@ -389,6 +639,7 @@ function exportRecords(db, q, format) {
 module.exports = {
   KEEP, ACTION_LABEL, OUTCOME_LABEL,
   append, snapshot, summaryOf,
+  appendImage, imageSnapshot, imageResultUrl,
   listRecords, getRecord, deleteRecord, clearRecords, exportRecords,
   statsOf, lite
 };

@@ -35,6 +35,7 @@ const https = require('https');
 const crypto = require('crypto');
 
 const PATHS = require('./paths');
+const REC = require('./records');   // 生成记录：生图任务进入终态时留一条痕（见 appendTerminalRecords）
 
 /* ---------------- 状态机 ----------------
    ⚠ 这些字符串是落库值，改名等于让已有任务变成"未知状态"。 */
@@ -259,6 +260,10 @@ const PERSIST_FIELDS = [
   'providerId', 'modelId',
   'providerTaskId', 'syncResultUrl', 'candidateFile', 'appliedFile', 'usage', 'error', 'errorKind',
   'imageWidth', 'imageHeight', 'imageFormat', 'queryFailures',
+  /* recordedAt 是「这条记录已经落到生成记录里了」的**持久化去重闸**（2026-10-02）。
+     必须在白名单里：否则每次 saveAll 前的 sanitize 都会把它删掉，
+     重启/重复 saveAll 就会给同一个任务再落一条记录。 */
+  'recordedAt',
   'createdAt', 'updatedAt'
 ];
 function sanitizeForSave(job) {
@@ -344,7 +349,44 @@ function makeImageJobs(env) {
         if (f.charAt(0) === '_') { held.push([j, f, j[f]]); delete j[f]; }
       });
     });
-    try { if (flush) e.flush(); else e.save(); } finally { held.forEach((h) => { h[0][h[1]] = h[2]; }); }
+    try {
+      /* 落记录必须与任务状态**同一次落盘**：先扫描终态任务补记录，再 save/flush。
+         顺序反了（先存再落记录）会留一个窗口：断电后任务已是终态、记录却不在。 */
+      appendTerminalRecords(db);
+      if (flush) e.flush(); else e.save();
+    } finally { held.forEach((h) => { h[0][h[1]] = h[2]; }); }
+  }
+
+  /* ============================================================
+     终态任务留痕（2026-10-02）
+     为什么要放在 saveAll 这个咽喉点、而不是在 8 个终态赋值点各调一次：
+       · 终态赋值点分散在 handleSyncInline / handleSyncUrl / step 的多个分支 /
+         submit 的失败分支 / reconcile —— 逐处调用一定会漏（历史上就是这么漏掉的：
+         生图链路从一开始就从不写记录，用户在「生成记录」里什么都看不到）。
+       · saveAll 是**唯一**的落库出口，在它里面扫描"已终态但还没留痕"的任务，
+         覆盖所有路径而不依赖调用方记得多做一步。
+     去重靠两道闸：
+       ① job.recordedAt（持久化标记，在 PERSIST_FIELDS 里）—— 重启后依然有效，
+          也保证用户手动删掉那条记录后不会被下次 saveAll 又冒出来；
+       ② records.appendImage 的确定性 id（'rc_img_'+job.id）—— 进程内重复调用兜底。
+     终态 = ready（成功）/ failed / submission_unknown（提交结果未知，需人工核对）。
+     applied / discarded 是"用户在 ready 之后的动作"，**不**再落记录。
+     ============================================================ */
+  const RECORDED_STATES = [STATE.READY, STATE.FAILED, STATE.SUBMISSION_UNKNOWN];
+  function appendTerminalRecords(db) {
+    const map = ensureMap(db);
+    Object.keys(map).forEach((k) => {
+      const j = map[k];
+      if (!j || j.recordedAt) return;
+      if (!RECORDED_STATES.includes(j.state)) return;
+      const asset = (db.assets || []).find((a) => a && a.id === j.assetId) || null;
+      const rec = REC.appendImage(db, asset, j, {
+        outcome: j.state === STATE.READY ? 'succeeded' : 'failed'
+      });
+      /* 只在真的落成功时打标记：appendImage 出异常会返回 null，那种情况留待下次
+         saveAll 重试（而不是永久放弃留痕）。 */
+      if (rec) j.recordedAt = now();
+    });
   }
   /* 轮询定时器：**服务端持有**（约束 2）。同一进程内只有一个 tick 循环，
      它扫描 db.imageJobs 里的活动任务，而不是给每个任务各起一个 timer ——
@@ -427,6 +469,9 @@ function makeImageJobs(env) {
       if (r.kind === 'timeout') {
         job.state = STATE.SUBMISSION_UNKNOWN;
         job.error = '提交结果未知：请求超时，任务可能已在服务商侧创建。请到服务商控制台核对后再决定是否重新提交。';
+        /* 记下失败分类（终态留痕要用）：state 只说明"未知"，
+           记录页需要"为什么未知"才能直说原因。 */
+        job.errorKind = 'timeout';
       } else {
         job.state = STATE.FAILED;
         job.error = providerMessage(r);

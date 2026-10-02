@@ -877,12 +877,25 @@ describe('自动替换与生成历史', () => {
     assert.equal(history.length, 2);
     assert.equal(history.find((j) => j.selected).jobId, second.jobId);
     for (const j of history) assert.equal((await fetch(base + j.previewUrl)).status, 200);
+    /* 历史图必须落在**候选目录**里的独立文件上 —— 这正是"每张生成图都留作历史、
+       可随时替换或下载"的磁盘前提（素材目录里那份会被下一次采用按设计删掉）。 */
+    const candDir = path.join(SANDBOX, 'projects', proj.id, 'image-candidates');
+    for (const j of history) {
+      assert.match(j.previewUrl, /^\/media\/candidates\//);
+      assert.ok(fs.existsSync(path.join(candDir, path.basename(j.previewUrl))),
+        '候选文件必须真在磁盘上：' + j.previewUrl);
+    }
     const calls = t.calls.length;
     const picked = await api('POST', `/api/v1/assets/${asset.id}/image-jobs/${first.jobId}/apply`, { projectId: proj.id });
     assert.equal(picked.env.code, 0);
     assert.equal((await list()).find((j) => j.selected).jobId, first.jobId);
     assert.equal(t.calls.length, calls, '选历史图绝不再请求服务商');
-    for (const j of await list()) assert.equal((await fetch(base + j.previewUrl)).status, 200);
+    /* 重选之后两张依然可下载且候选文件还在（手动采用不清掉历史副本） */
+    for (const j of await list()) {
+      assert.ok(j.previewUrl, '重选后历史项不得掉出列表');
+      assert.equal((await fetch(base + j.previewUrl)).status, 200);
+      assert.ok(fs.existsSync(path.join(candDir, path.basename(j.previewUrl))));
+    }
   });
 
   test('已落盘的自动候选重启后继续采用，不重新查询或付费提交', async () => {
@@ -969,5 +982,201 @@ describe('持久化边界', () => {
     assert.equal(db.schemaVersion, 4);
     assert.equal(typeof db.imageJobs, 'object');
     assert.ok(!Array.isArray(db.imageJobs));
+  });
+});
+
+/* ============================================================
+   11. 生成记录留痕（2026-10-02）
+   生图链路以前**从不写记录**，用户在「生成记录」里完全看不到生图。
+   这一组钉住：终态恰好一条、字段正确、幂等、采用/放弃不重复。
+   ============================================================ */
+const recListOf = async (projId, extra) =>
+  (dataOf(await api('GET', `/api/v1/records?projectId=${projId}&kind=image` + (extra || ''))).list || []);
+
+describe('生图生成记录', () => {
+  test('生图成功落一条 kind=image 的成功记录（素材/提供方/尺寸/费用/候选文件齐全）', async () => {
+    IP.setTransport(happyScript());
+    srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('生图留痕成功');
+    const sub = await api('POST', `/api/v1/assets/${asset.id}/image-jobs`,
+      { prompt: '一只在雪地里的猫', projectId: proj.id, sizeMode: 'ratio', ratio: '16:9', resolution: '1k' });
+    assert.equal(sub.env.data.job.state, 'ready');
+
+    const r = await api('GET', `/api/v1/records?projectId=${proj.id}&kind=image`);
+    assert.equal(r.env.code, 0);
+    assert.equal(r.env.data.list.length, 1, '每个生图任务恰好一条记录');
+    const rec = r.env.data.list[0];
+    assert.equal(rec.kind, 'image');
+    assert.equal(rec.id, 'rc_img_' + sub.env.data.job.jobId, '记录 id 由任务 id 确定性派生');
+    assert.equal(rec.outcome, 'succeeded');
+    assert.equal(rec.assetId, asset.id);
+    assert.equal(rec.assetName, asset.name);
+    assert.equal(rec.providerId, 'work-fisher');
+    assert.equal(rec.providerLabel, 'Work Fisher');
+    assert.equal(rec.modelId, 'workfisher-image-g-v2.5-flare');
+    assert.equal(rec.size, '16:9');
+    assert.equal(rec.resolution, '1k');
+    assert.equal(rec.imageWidth, 64);
+    assert.equal(rec.imageHeight, 48);
+    assert.equal(rec.imageFormat, 'png');
+    assert.equal(rec.usage.credits, 1);
+    assert.ok(rec.elapsedMs != null && rec.elapsedMs >= 0, '耗时要算得出来');
+    /* 结果图地址是本地候选图（**绝不是**服务商直链） */
+    assert.match(rec.resultUrl, /^\/media\/candidates\//);
+    assert.equal((await fetch(base + rec.resultUrl)).status, 200, '结果图必须真能打开');
+    /* 类型统计 */
+    assert.equal(r.env.data.stats.byKind.image, 1);
+    assert.equal(r.env.data.stats.byKind.video, 0);
+
+    /* 详情：素材仍在 → assetExists=true；素材名/候选相对名齐全 */
+    const d = await api('GET', `/api/v1/records/${rec.id}?projectId=${proj.id}`);
+    assert.equal(d.env.data.assetExists, true);
+    assert.equal(d.env.data.kind, 'image');
+    assert.ok(d.env.data.candidateFile, '候选文件相对名要落进记录');
+    assert.equal(d.env.data.storyboardId, null, '生图记录不挂分镜');
+    assert.ok(d.env.data.elapsedMs != null);
+    /* 详情要能预览结果图：地址同样是读时现拼的（这条踩过：只给列表补、没给详情补，
+       详情页的预览与「打开结果图」会是空的）。 */
+    assert.match(d.env.data.resultUrl, /^\/media\/candidates\//);
+    assert.equal(d.env.data.assetCurrentName, asset.name);
+  });
+
+  test('生图失败与提交结果未知各落一条 failed 记录，errorKind 如实带出', async () => {
+    IP.setTransport(apiTransport(() => ({ status: 402, body: { error: { message: 'insufficient balance' } } })));
+    const a = await makeAsset('生图留痕失败');
+    const subA = await api('POST', `/api/v1/assets/${a.asset.id}/image-jobs`, { prompt: 'p', projectId: a.proj.id });
+    assert.equal(subA.env.data.job.state, 'failed');
+    const listA = await recListOf(a.proj.id);
+    assert.equal(listA.length, 1);
+    assert.equal(listA[0].outcome, 'failed');
+    assert.equal(listA[0].errorCode, 'no_credit');
+    assert.equal(listA[0].errorKind, 'no_credit');
+    assert.ok(listA[0].shortError, '失败原因要能展示');
+
+    /* 提交超时 → submission_unknown，同样是"这次没拿到图"，记 failed 且 errorKind=timeout */
+    IP.setTransport(apiTransport(() => ({ error: new Error('请求超时') })));
+    const b = await makeAsset('生图留痕超时');
+    const subB = await api('POST', `/api/v1/assets/${b.asset.id}/image-jobs`, { prompt: 'p', projectId: b.proj.id });
+    assert.equal(subB.env.data.job.state, 'submission_unknown');
+    const listB = await recListOf(b.proj.id);
+    assert.equal(listB.length, 1);
+    assert.equal(listB[0].outcome, 'failed');
+    assert.equal(listB[0].errorCode, 'timeout');
+  });
+
+  test('幂等：重启 / 重复 saveAll / 去重标记丢失都不会产生第二条', async () => {
+    IP.setTransport(happyScript());
+    srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('生图幂等');
+    const sub = dataOf(await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: 'p', projectId: proj.id }));
+    const jobId = sub.job.jobId;
+    const recId = 'rc_img_' + jobId;
+    assert.equal((await recListOf(proj.id)).length, 1);
+
+    /* ① 标记已持久化（否则重启后又落一条） */
+    srv.store.flush();
+    const raw = srv.imageJobs.rawJob(jobId);
+    assert.ok(raw.recordedAt, '落记录后必须写下持久化去重标记');
+    assert.ok(JSON.parse(fs.readFileSync(path.join(SANDBOX, 'db.json'), 'utf8')).imageJobs[jobId].recordedAt);
+
+    /* ② 重启语义：reconcile + flush 不新增 */
+    srv.imageJobs.reconcile(srv.store.load());
+    srv.store.flush();
+    assert.equal((await recListOf(proj.id)).length, 1, '重启恢复不得新增记录');
+
+    /* ③ 兜底闸：去掉持久化标记后再触发一次 saveAll（用第二个任务提交来触发），
+          确定性 id 仍保证同一任务只有一条。 */
+    delete raw.recordedAt;
+    const other = await api('POST', '/api/v1/assets',
+      { type: 'character', name: '另一个素材', projectId: proj.id });
+    IP.setTransport(happyScript());
+    await api('POST', `/api/v1/assets/${other.env.data.id}/image-jobs`, { prompt: 'p2', projectId: proj.id });
+    const list = await recListOf(proj.id);
+    assert.equal(list.filter((x) => x.id === recId).length, 1, '同一任务的记录绝不能有第二条');
+  });
+
+  test('采用 / 放弃 / 重存都不会新增记录', async () => {
+    IP.setTransport(happyScript());
+    srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('生图采用不重复');
+    const sub = dataOf(await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: 'p', projectId: proj.id }));
+    const jobId = sub.job.jobId;
+    assert.equal((await recListOf(proj.id)).length, 1);
+
+    const ap = await api('POST', `/api/v1/assets/${asset.id}/image-jobs/${jobId}/apply`, { projectId: proj.id });
+    assert.equal(ap.env.code, 0);
+    assert.equal((await recListOf(proj.id)).length, 1, '采用不得新增记录');
+
+    /* 重存（下载失败后的手动重试）也不得新增 */
+    await srv.imageJobs.resave(asset, srv.imageJobs.rawJob(jobId));
+    assert.equal((await recListOf(proj.id)).length, 1, '重存不得新增记录');
+
+    /* 另一个任务：放弃同样不新增 */
+    const second = await api('POST', '/api/v1/assets', { type: 'character', name: '放弃素材', projectId: proj.id });
+    const s2 = dataOf(await api('POST', `/api/v1/assets/${second.env.data.id}/image-jobs`, { prompt: 'p3', projectId: proj.id }));
+    assert.equal((await recListOf(proj.id)).length, 2);
+    const del = await api('DELETE', `/api/v1/assets/${second.env.data.id}/image-jobs/${s2.job.jobId}`, { projectId: proj.id });
+    assert.equal(del.env.code, 0);
+    assert.equal((await recListOf(proj.id)).length, 2, '放弃不得新增记录');
+  });
+
+  test('记录层：缺 kind 的历史记录按视频处理，筛选 / 统计 / 导出 / 清理都正确', async () => {
+    /* 前半段：纯数据层（不经过服务）—— 钉住"历史记录无 kind"的兼容口径 */
+    const REC = require('../server/records');
+    const legacy = {
+      id: 'rc_legacy', at: '2026-01-01T00:00:00.000Z', action: 'generate', outcome: 'succeeded',
+      engine: 'dreamina', engineLabel: '创作 CLI', seq: 1, storyboardId: 'st_1', projectId: 'pj_old',
+      params: { ratio: '16:9', resolution: '1080p', durationSec: 5 }, prompt: '老视频提示词',
+      images: [], audios: [], videoUrl: '/files/pj_old/st_1/a.mp4'
+    };
+    const img = {
+      id: 'rc_img_ij_x', at: '2026-01-02T00:00:00.000Z', kind: 'image', action: 'image', outcome: 'succeeded',
+      projectId: 'pj_old', assetId: 'as_1', assetName: '素材甲', providerId: 'work-fisher', providerLabel: 'Work Fisher',
+      modelId: 'workfisher-image-g-v2.5-flare', modelLabel: 'Image G v2.5 Flare', size: '16:9',
+      candidateFile: 'as_1-x.png', prompt: '生图提示词', images: [], audios: []
+    };
+    const db = { records: [img, legacy] };
+    const all = REC.listRecords(db, {});
+    assert.equal(all.total, 2);
+    assert.equal(REC.listRecords(db, { kind: 'image' }).total, 1);
+    assert.equal(REC.listRecords(db, { kind: 'video' }).total, 1, '缺 kind 的历史记录按视频');
+    assert.equal(REC.listRecords(db, { keyword: '素材甲' }).total, 1, '关键词要能搜素材名');
+    assert.equal(REC.listRecords(db, { engine: 'dreamina' }).total, 1, '既有的 engine 筛选语义不变');
+    const st = all.stats;
+    assert.equal(st.byKind.video, 1); assert.equal(st.byKind.image, 1);
+    assert.equal(st.byEngine.dreamina, 1, '生图的 providerId 不得混进 byEngine');
+    assert.equal(st.withVideo, 1, '生图记录不得被算成视频产物');
+    assert.equal(REC.lite(legacy).kind, 'video');
+    assert.equal(REC.lite(img).kind, 'image');
+    assert.equal(REC.lite(img).resultUrl, null, '候选文件不存在时不给出死链');
+    assert.equal(REC.lite(legacy).errorKind, null, '视频记录的 errorKind 恒为 null');
+    const csv = REC.exportRecords(db, {}, 'csv').content;
+    assert.match(csv, /"类型"/);
+    assert.match(csv, /生图/);
+    const md = REC.exportRecords(db, {}, 'md').content;
+    assert.match(md, /素材：素材甲/);
+    assert.match(md, /镜头：1/, '视频记录仍按镜头导出');
+
+    /* 后半段：经服务端把「删除 / 按 action 清空」走一遍 */
+    IP.setTransport(happyScript());
+    srv.imageJobs.setDownloadTransport(downloadTransport({ body: PNG }));
+    const { proj, asset } = await makeAsset('生图清理');
+    await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: 'p', projectId: proj.id });
+    const list = await recListOf(proj.id);
+    assert.equal(list.length, 1);
+    const del = await api('DELETE', `/api/v1/records/${list[0].id}`, { projectId: proj.id });
+    assert.equal(del.env.code, 0);
+    assert.equal((await recListOf(proj.id)).length, 0, '单条删除对生图记录同样可用');
+
+    await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: 'p2', projectId: proj.id });
+    /* 同一资产 ready 后是活动任务，第二次提交会被复用 → 先放弃再重提 */
+    const cur = dataOf(await api('GET', `/api/v1/assets/${asset.id}/image-jobs/current?projectId=${proj.id}`));
+    await api('DELETE', `/api/v1/assets/${asset.id}/image-jobs/${cur.job.jobId}`, { projectId: proj.id });
+    await api('POST', `/api/v1/assets/${asset.id}/image-jobs`, { prompt: 'p3', projectId: proj.id });
+    assert.ok((await recListOf(proj.id)).length >= 1);
+    const cl = await api('POST', '/api/v1/records/clear', { action: 'image', projectId: proj.id });
+    assert.equal(cl.env.code, 0);
+    assert.ok(cl.env.data.removed >= 1, '按 action=image 能清掉生图记录');
+    assert.equal((await recListOf(proj.id)).length, 0);
   });
 });

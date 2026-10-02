@@ -39,14 +39,29 @@ function getRecordDetail(db, id, scope) {
     throw new ApiError(ERR.NOTFOUND, '生成记录不属于当前项目：' + id);
   }
   const sb = services.findSb(db, r.storyboardId);
+  const img = (r.kind || 'video') === 'image';
+  /* 生图记录的身份是**素材**（不挂分镜）：详情页据此显示"原素材已被删除"，
+     与视频侧的 storyboardExists 对应。素材在不在只影响"能否跳回素材"，
+     不影响记录本身的完整性。 */
+  const asset = (img && r.assetId) ? ((db.assets || []).find((a) => a && a.id === r.assetId) || null) : null;
   return Object.assign({}, r, {
+    // 类型：历史记录没有该字段 → video（与 records.lite 同一口径）
+    kind: r.kind || 'video',
     // 中文标签：列表走 records.lite() 会带，详情直接返回原记录，这里补齐
     actionLabel: REC.ACTION_LABEL[r.action] || r.action,
     outcomeLabel: REC.OUTCOME_LABEL[r.outcome] || r.outcome,
+    /* 生图记录的结果图地址：详情直接返回原记录，而地址是**读时现拼**的
+       （记录里只存相对名）——不在这里补，详情页的预览与「打开结果图」就是空的。
+       与列表用同一个来源（REC.imageResultUrl），地址形状不会两边漂移。 */
+    resultUrl: img ? REC.imageResultUrl(r) : null,
+    applied: !!(img && r.appliedFile),
     // 分镜是否还在：只影响"能否跳回分镜"，不影响记录本身的完整性
     storyboardExists: !!sb,
     storyboardStatus: sb ? sb.status : null,
     storyboardCurrentModel: sb ? sb.model : null,
+    // 素材是否还在（生图记录用；视频记录恒为 null，不干扰既有渲染）
+    assetExists: img ? !!asset : null,
+    assetCurrentName: asset ? asset.name : null,
     // 若现在重跑，会走哪条链路（记录里的 engine 是当时的真实事实，两者不同属正常）
     currentEngine: sb ? services.plannedEngineFor(db, sb).engine : null
   });

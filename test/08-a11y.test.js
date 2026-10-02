@@ -121,3 +121,53 @@ describe('a11y —— 键盘可达性（P3-2）', () => {
     assert.match(m[0], /live\.textContent\s*=\s*''/, '先清空再写入，强制重新播报');
   });
 });
+
+/* ============================================================
+   设置页 · 懒加载状态卡：占位文案不得成为终态（2026-10-02 补回）
+
+   这一组原先在**被丢弃的那个本地提交**里（0.41.2「设置页图片生成服务卡在读取中」的修复）。
+   2026-10-02 把本地分支对齐到 origin/main 时那个重复提交被丢掉，而远端 0.42.x 已把这块
+   重写成**多服务商**形态（函数名变复数）：原断言引用的 imageProviderCardHTML /
+   refreshImageProviderCard 如今只剩兼容别名/已改名 —— 照抄必失败。这里按**当前实现**改写，
+   钉住的是同一个失效模式。
+
+   这类缺陷形态很隐蔽：卡片本身没错，错在**没人去把它刷掉** ——
+   状态是懒加载的、渲染又早于状态到达，缺一个"到手后重绘"的回调，界面就永远停在占位文案上。
+   使用者实测过的正是这一条：设置页「图片生成服务」一直显示「读取中…」。
+   ============================================================ */
+describe('设置页 · 懒加载状态卡（占位文案不得成为终态）', () => {
+  const appJs2 = fs.readFileSync(path.join(REPO, 'app', 'app.js'), 'utf8');
+  function fnOf(name) {
+    const i = appJs2.indexOf('function ' + name + '(');
+    assert.ok(i >= 0, '找不到函数：' + name);
+    /* 只取到下一个顶层函数为止 —— 取固定长度会把后面的函数一起吞进来
+       （实测踩过：后面紧跟着别的函数里有 renderSettings()，"不得整抽屉重绘"那条会被误判失败）。 */
+    const m = /\n {1,3}(?:async )?function /.exec(appJs2.slice(i + 1));
+    return m ? appJs2.slice(i, i + 1 + m.index) : appJs2.slice(i, i + 4000);
+  }
+
+  test('★ 生图服务卡有稳定 id（重绘需要一个可定位的锚点）', () => {
+    assert.match(fnOf('imageProvidersCardHTML'), /id="ipCard"/);
+  });
+
+  test('★ renderSettings 里「数据目录」与「生图服务」两组状态都要懒加载', () => {
+    const rs = fnOf('renderSettings');
+    assert.match(rs, /ensurePaths\(\)/, '数据目录状态懒加载');
+    assert.match(rs, /ensureImageProviders\(\)/,
+      '生图服务状态也必须在渲染时去取 —— 少了这一步，没开过素材弹窗的用户会永远看到「读取中…」');
+  });
+
+  test('★ 取到状态后要重绘卡片（占位文案不得成为终态）', () => {
+    /* ⚠ 这里是**复数** refreshImageProvidersCard（0.42.x 多服务商改造后的名字）。
+       顺带记一笔：这个多出来的 s 让我 grep 时漏看过它一次 —— 正是"靠人看不如靠测试钉住"的例子。 */
+    assert.match(fnOf('ensureImageProviders'), /refreshImageProvidersCard\(\)/);
+  });
+
+  test('★ refreshImageProvidersCard 只重绘这一张卡，不得整抽屉重绘', () => {
+    const fn = fnOf('refreshImageProvidersCard');
+    assert.match(fn, /getElementById\('ipCard'\)/);
+    assert.match(fn, /outerHTML/);
+    assert.ok(!fn.includes('renderSettings()'),
+      '整抽屉重绘会刷掉用户的滚动位置与正在查看的内容（纪律同 refreshUpdateCard）');
+  });
+});

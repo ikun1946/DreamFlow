@@ -40,6 +40,9 @@
     warn:  '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M10.3 4.2L2.6 17.5A2 2 0 004.3 20.5h15.4a2 2 0 001.7-3L13.7 4.2a2 2 0 00-3.4 0z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/><path d="M12 9.5v4M12 16.5h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
     check: '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M8 12.4l2.8 2.8L16 9.6" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     expand:'<svg width="14" height="14" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    /* 下载图标（2026-10-02）：与 I.expand 同为白描边，专供半透明圆钮（.fs-btn）——
+       它落在图片上，底色深浅不定，所以不能用 currentColor。 */
+    download:'<svg width="14" height="14" viewBox="0 0 24 24"><path d="M12 4v10.5M7.6 10.6L12 15l4.4-4.4M5 19.5h14" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     /* 放大图标（深色描边，用于白底表格）：I.expand 是白描边，只适合深色底，别混用 */
     expandDark: '<svg width="12" height="12" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     /* 编辑图标（铅笔，0.38.0 新增）：与 expandDark 同为 currentColor 描边，用于分镜行内编辑提示词 */

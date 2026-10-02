@@ -72,6 +72,7 @@
   --warn-line-2:#F0DDB0;    /* 警示解析项描边 */
   --warn-ink:#B26A00;       /* 满额槽位图标描边 */
   --dry-bg:#EDF3FF; --dry-ink:#2B5FD9;      /* .rec-badge.dry */
+  --img-bg:#E4F5F1; --img-ink:#0E7C6B;      /* .rec-badge.img（生图记录类型徽标） */
   --aud-bg:#F2EDFB; --aud-ink:#6A45B8;      /* .rec-lock .n.aud */
   --sk-1:#F0F0F2; --sk-2:#F7F7F9;           /* 骨架屏渐变（浅色） */
   --sb-thumb:#D8D8DD; --sb-thumb-h:#C2C2C9; /* 滚动条滑块 */
@@ -162,6 +163,7 @@
   --warn-line-2:#6E5520;
   --warn-ink:#FFB340;      /* = --warn 深色值 */
   --dry-bg:#122033; --dry-ink:#8AB4F8;
+  --img-bg:#0C2A26; --img-ink:#5FE0C8;
   --aud-bg:#2A1D3D; --aud-ink:#C39BFF;
   --sk-1:#232326; --sk-2:#2C2C30;
   --sb-thumb:#48484A; --sb-thumb-h:#5A5A5E;
@@ -943,18 +945,25 @@ html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--ch
 .asset-preview.pickable:hover .empty-ph svg{opacity:.45}
 .asset-preview.pickable:hover .empty-ph{color:var(--primary-ink)}
 /* ============================ 素材详情：全屏预览（悬停淡入按钮 + 全屏查看器） ============================ */
-/* 按钮默认隐形（opacity:0 + 不可点），悬停预览区时淡入浮现，移出淡出 */
-.asset-preview .fs-btn{
-  position:absolute;top:10px;right:10px;width:30px;height:30px;border-radius:999px;
+/* 悬浮圆钮的**共同外观**（2026-10-02）：素材预览的「全屏」与生成历史的「下载」是同一套视觉语言，
+   外观只在这里写一份 —— 定位（top/right）交给各自的容器规则，避免两处外观各自漂移
+   （仓库红线：关键设计只留一个事实来源）。按钮默认隐形（opacity:0 + 不可点），
+   悬停所属容器时淡入浮现，移出淡出。 */
+.fs-btn{
+  position:absolute;width:30px;height:30px;border-radius:999px;
   background:var(--scrim-1);display:grid;place-items:center;cursor:pointer;
   opacity:0;pointer-events:none;
   transition:opacity .25s ease, background .15s ease;
 }
-.asset-preview:hover .fs-btn{opacity:1;pointer-events:auto}
-.asset-preview .fs-btn:hover{background:var(--scrim-3)}
+.fs-btn:hover{background:var(--scrim-3)}
 /* 上面的 display:grid 会盖掉 UA 对 hidden 属性的 display:none（作者样式优先级更高），
-   故必须显式声明，否则"无图时藏起全屏钮"根本不生效。 */
-.asset-preview .fs-btn[hidden]{display:none}
+   故必须显式声明，否则"无图时藏起全屏钮"根本不生效。
+   ⚠ 选择器优先级不能低于 .fs-btn（类 + 属性 > 单类），否则又被 display:grid 压回去。 */
+.fs-btn[hidden]{display:none}
+/* --- 素材预览区：右上角并排两个钮（全屏在右、下载贴在它左边），互不重叠 --- */
+.asset-preview .fs-btn{top:10px;right:10px}
+.asset-preview .fs-btn.dl-btn{right:48px}
+.asset-preview:hover .fs-btn{opacity:1;pointer-events:auto}
 /* 换图入口已收敛到图片区本身（点击即选文件），此处不再有并排的换图钮，
    故也不需要 .fs-btn.pick 的让位规则 —— 全屏钮就用基类的 right:10px。 */
 /* 全屏查看器：黑透遮罩 + 原图 contain 居中，任意屏幕尺寸清晰完整显示 */
@@ -1652,7 +1661,11 @@ html.nav-back::view-transition-new(root){animation:nav-in-left .24s cubic-bezier
 .rec-badge.warn{background:var(--warn-bg);color:var(--warn)}
 .rec-badge.mute{background:var(--parchment);color:var(--ink48)}
 .rec-badge.dry{background:var(--dry-bg);color:var(--dry-ink)}
+.rec-badge.img{background:var(--img-bg);color:var(--img-ink)}
 .rec-badge.eng{background:var(--parchment);color:var(--ink80);font-weight:500}
+/* 生图记录的结果图预览：限高 + 居中，避免大图把详情栏撑开 */
+.rec-resultimg{display:flex;justify-content:center;background:var(--parchment);border-radius:10px;padding:8px}
+.rec-resultimg img{max-width:100%;max-height:420px;border-radius:8px;object-fit:contain}
 
 .rec-pager{
   display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:none;
@@ -1908,9 +1921,14 @@ html.nav-back::view-transition-new(root){animation:nav-in-left .24s cubic-bezier
 .img-history{margin-top:18px;border-top:1px solid var(--divider);padding-top:14px}
 .img-history h4{margin:0 0 8px;font-size:14px}
 .img-history-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-.img-history-item{margin:0;border:1px solid var(--hairline);border-radius:10px;overflow:hidden;background:var(--surface)}
+/* ⚠ position:relative 是历史图下载钮（.fs-btn）的定位基准 —— 少了它，
+   绝对定位会一路向上找到 .asset-preview / .modal 上，钮就跑到弹窗外了。 */
+.img-history-item{margin:0;position:relative;border:1px solid var(--hairline);border-radius:10px;overflow:hidden;background:var(--surface)}
 .img-history-item.selected{border-color:var(--primary)}
 .img-history-item img{display:block;width:100%;height:150px;object-fit:contain;background:var(--parchment);cursor:zoom-in}
+/* 历史图的下载钮：右上角，外观走 .fs-btn 基类，悬停该图时浮现 */
+.img-history-item .fs-btn{top:6px;right:6px}
+.img-history-item:hover .fs-btn{opacity:1;pointer-events:auto}
 .img-history-item figcaption{display:flex;flex-direction:column;gap:6px;padding:8px;font-size:11px;color:var(--ink48)}
 .img-history-item button{font-size:12px}
 .imgcmp-cell{margin:0;border:1px solid var(--hairline);border-radius:10px;overflow:hidden;background:var(--surface)}

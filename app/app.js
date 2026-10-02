@@ -144,7 +144,7 @@
     /* 生成记录视图（全屏）：列表分页 + 筛选 + 选中详情。
        记录由后端在任务收尾时落盘（成功/失败/取消/干跑各一条），前端只读+删。 */
     rec: { loading: false, list: [], page: 1, pageSize: 20, total: 0, pageCount: 1, stats: null, kept: 0, capacity: 0 },
-    recF: { action: 'all', outcome: 'all', engine: 'all', keyword: '', from: '', to: '' },
+    recF: { kind: 'all', action: 'all', outcome: 'all', engine: 'all', keyword: '', from: '', to: '' },
     recSel: null, recDetail: null, recDetailLoading: false, recTimer: null, recPoll: null,
     /* 模块级计时器（不在 S 里的那些）也要能在切换时清掉，这里统一收口 */
     patchTimers: {}, panelTimer: null
@@ -1277,6 +1277,11 @@
   const REC_ACTIONS = [
     { v: 'all', label: '全部' }, { v: 'generate', label: '真实生成' }, { v: 'dryrun', label: '干跑' }
   ];
+  /* 类型筛选（2026-10-02）：视频生成与图片生图同在一张「生成记录」表里，
+     这个分组让用户能只看生图。计数由后端 stats.byKind 下发。 */
+  const REC_KINDS = [
+    { v: 'all', label: '全部类型' }, { v: 'video', label: '视频' }, { v: 'image', label: '生图' }
+  ];
   const REC_OUTCOMES = [
     { v: 'all', label: '全部结果' }, { v: 'succeeded', label: '成功' }, { v: 'failed', label: '失败' },
     { v: 'canceled', label: '已取消' }, { v: 'previewed', label: '仅预览' }
@@ -1334,22 +1339,45 @@
     const base = String(Api.CFG.baseUrl || '').replace(/\/api\/v1\/?$/, '');
     return base + u;
   }
+  /* 生图记录判定：历史记录没有 kind 字段 → 一律 video（与后端同一口径）。 */
+  const isImageRec = (r) => (r.kind || 'video') === 'image';
   function recBadge(r) {
-    if (r.action === 'dryrun') return '<span class="rec-badge dry">干跑</span>';
-    if (r.outcome === 'succeeded') return '<span class="rec-badge ok">成功</span>';
-    if (r.outcome === 'failed') return '<span class="rec-badge err">失败</span>';
-    if (r.outcome === 'canceled') return '<span class="rec-badge warn">已取消</span>';
-    return '<span class="rec-badge mute">' + esc(r.outcomeLabel || r.outcome || '—') + '</span>';
+    /* 生图行先挂一个类型徽标，再挂结果徽标 —— 否则生图与视频在列表里长得一模一样，
+       用户没法一眼分出哪条是生图。 */
+    const kindBadge = isImageRec(r) ? '<span class="rec-badge img">生图</span>' : '';
+    if (r.action === 'dryrun') return kindBadge + '<span class="rec-badge dry">干跑</span>';
+    if (r.outcome === 'succeeded') return kindBadge + '<span class="rec-badge ok">成功</span>';
+    if (r.outcome === 'failed') return kindBadge + '<span class="rec-badge err">失败</span>';
+    if (r.outcome === 'canceled') return kindBadge + '<span class="rec-badge warn">已取消</span>';
+    return kindBadge + '<span class="rec-badge mute">' + esc(r.outcomeLabel || r.outcome || '—') + '</span>';
   }
   const recHasFilter = () => {
     const f = S.recF;
-    return !!(f.action !== 'all' || f.outcome !== 'all' || f.engine !== 'all' || f.keyword || f.from || f.to);
+    return !!(f.kind !== 'all' || f.action !== 'all' || f.outcome !== 'all' || f.engine !== 'all' || f.keyword || f.from || f.to);
   };
   /* 导出用：不带分页，只带筛选口径 */
   const recFilterQuery = () => ({
-    action: S.recF.action, outcome: S.recF.outcome, engine: S.recF.engine,
+    kind: S.recF.kind, action: S.recF.action, outcome: S.recF.outcome, engine: S.recF.engine,
     keyword: S.recF.keyword || undefined, from: S.recF.from || undefined, to: S.recF.to || undefined
   });
+
+  /* 生图行参数：size（比例枚举或像素）+ 分辨率档 + 实际像素。
+     实际像素也要显示 —— 服务商可能对请求尺寸做了归一，记录里的宽高才是真结果。 */
+  function recImageParams(r) {
+    const dims = (r.imageWidth && r.imageHeight) ? r.imageWidth + '×' + r.imageHeight : null;
+    return [r.size, r.resolution, dims].filter(Boolean).join(' · ');
+  }
+  /* 生图行的「素材」列：实际像素与格式（视频行的这一列是"图N · 音N"）。 */
+  function recImageMedia(r) {
+    const dims = (r.imageWidth && r.imageHeight) ? r.imageWidth + '×' + r.imageHeight : null;
+    const fmt = r.imageFormat ? String(r.imageFormat).replace(/^\./, '').toUpperCase() : null;
+    return [dims, fmt].filter(Boolean).join(' · ') || '—';
+  }
+  /* 费用：usage 是各家原样快照（credits / tokens…），只做展示不做折算。 */
+  function fmtUsage(u) {
+    if (!u || typeof u !== 'object') return '';
+    return Object.keys(u).filter((k) => u[k] != null && u[k] !== '').map((k) => k + '=' + u[k]).join(' · ');
+  }
 
   /* 打开记录视图。两种呈现方式共用这一份实现：
        · 默认（从控制台顶栏「生成记录」进来）→ 整屏覆盖层，看完用返回箭头回控制台；
@@ -1435,11 +1463,13 @@
   function renderRecords() {
     const st = S.rec.stats || {};
     const act = (st.byAction || {});
+    const kd = (st.byKind || {});
     $('#recSummary').textContent = S.rec.loading && !S.rec.list.length
       ? '加载中…'
       : '匹配 ' + (S.rec.total || 0) + ' 条 · 库内 ' + (S.rec.kept || 0) + '/' + (S.rec.capacity || 0) +
         ' 条上限（成功 ' + (st.succeeded || 0) + ' · 失败 ' + (st.failed || 0) +
-        ' · 已取消 ' + (st.canceled || 0) + ' · 干跑 ' + (act.dryrun || 0) + '）';
+        ' · 已取消 ' + (st.canceled || 0) + ' · 干跑 ' + (act.dryrun || 0) +
+        ' · 视频 ' + (kd.video || 0) + ' · 生图 ' + (kd.image || 0) + '）';
     renderRecBar();
     renderRecListHead();
     renderRecList();
@@ -1452,6 +1482,8 @@
     const act = st.byAction || {};
     const cntA = { all: st.total || 0, generate: act.generate || 0, dryrun: act.dryrun || 0 };
     const cntO = { all: st.total || 0, succeeded: st.succeeded || 0, failed: st.failed || 0, canceled: st.canceled || 0, previewed: st.previewed || 0 };
+    const kind = st.byKind || {};
+    const cntK = { all: st.total || 0, video: kind.video || 0, image: kind.image || 0 };
     const grp = (name, list, counts, cur) =>
       '<span class="rec-fgroup" data-fg="' + name + '">' + list.map((o) =>
         '<button data-f="' + name + '" data-v="' + o.v + '"' + (cur === o.v ? ' class="on"' : '') +
@@ -1459,11 +1491,12 @@
 
     $('#recBar').innerHTML =
       '<span class="rec-filters">' +
+        grp('kind', REC_KINDS, cntK, S.recF.kind) +
         grp('action', REC_ACTIONS, cntA, S.recF.action) +
         grp('outcome', REC_OUTCOMES, cntO, S.recF.outcome) +
       '</span>' +
       '<label class="rec-search">' + I.search +
-        '<input id="recKeyword" placeholder="搜索提示词 / 命令 / 错误 / 提交ID" value="' + esc(S.recF.keyword) + '" />' +
+        '<input id="recKeyword" placeholder="搜索提示词 / 素材名 / 命令 / 错误 / 提交ID" value="' + esc(S.recF.keyword) + '" />' +
       '</label>' +
       (recHasFilter() ? '<button class="btn-mini" data-recact="resetf">重置筛选</button>' : '') +
       (act.dryrun ? '<button class="btn-mini" data-recact="cleardry" title="只删掉 action=干跑 的记录，真实生成记录保留">清理干跑记录（' + act.dryrun + '）</button>' : '') +
@@ -1491,30 +1524,38 @@
     }
     if (!S.rec.list.length) {
       host.innerHTML = '<div class="empty-mini">' +
-        (recHasFilter() ? '没有符合筛选条件的记录' : '还没有生成记录<br/>提交（或干跑提交）后，任务收尾时会自动落一条记录') + '</div>';
+        (recHasFilter() ? '没有符合筛选条件的记录' : '还没有生成记录<br/>视频提交、干跑或图片生图收尾后，都会自动落一条记录') + '</div>';
       return;
     }
     host.innerHTML = S.rec.list.map((r) => {
       const t = fmtAt(r.at);
-      const par = [r.ratio, r.resolution, (r.durationSec != null ? r.durationSec + 's' : null)].filter(Boolean).join(' · ');
-      const med = '图' + (r.imageCount || 0) + (r.audioCount ? ' · 音' + r.audioCount : '');
-      const abs = absUrl(r.videoUrl);
+      const img = isImageRec(r);
+      const par = img ? recImageParams(r)
+        : [r.ratio, r.resolution, (r.durationSec != null ? r.durationSec + 's' : null)].filter(Boolean).join(' · ');
+      const med = img ? recImageMedia(r) : ('图' + (r.imageCount || 0) + (r.audioCount ? ' · 音' + r.audioCount : ''));
+      const abs = absUrl(img ? r.resultUrl : r.videoUrl);
+      /* 首行标题：视频是「镜头 N」，生图是「素材 名字」（生图不挂分镜，绝不能显示"镜头 undefined"）。 */
+      const head = img
+        ? '素材 ' + esc(r.assetName || '（素材已删除）') + ' · ' + esc(r.summary || '（无提示词）')
+        : '镜头 ' + r.seq + ' · ' + esc(r.summary || '（无提示词）');
       let sub = '';
       if (r.outcome === 'failed') sub = '<span class="s2">' + esc(((r.errorCode || '') + ' ' + (r.shortError || '')).trim() || '失败') + '</span>';
       else if (r.action === 'dryrun') sub = '<span class="s2 mute">未发送给即梦，仅组装命令</span>';
       else if (r.outcome === 'canceled') sub = '<span class="s2 mute">已取消（即梦侧可能仍在跑）</span>';
+      else if (img) sub = '<span class="s2 mute">' + (abs ? (r.applied ? '结果图已就绪（已采用）' : '结果图已就绪，可打开') : '结果图文件已被清理') + '</span>';
       else if (abs) sub = '<span class="s2 mute">产物已就绪，可打开</span>';
+      const offTitle = img ? '没有可打开的结果图' : (r.action === 'dryrun' ? '干跑没有产物' : '没有可打开的产物文件');
       return '<div class="rec-row' + (S.recSel === r.id ? ' sel' : '') + '" data-rec="' + esc(r.id) + '">' +
         '<span class="rec-time"><b>' + t.d + '</b><span>' + t.t + '</span></span>' +
         '<span>' + recBadge(r) + '</span>' +
         '<span class="rec-cell c-hide">' + esc(r.engineLabel || '—') + '</span>' +
-        '<span class="rec-sum"><span class="s1">镜头 ' + r.seq + ' · ' + esc(r.summary || '（无提示词）') + '</span>' + sub + '</span>' +
+        '<span class="rec-sum"><span class="s1">' + head + '</span>' + sub + '</span>' +
         '<span class="rec-cell c-hide">' + esc(par || '—') + '</span>' +
-        '<span class="rec-cell c-hide">' + med + '</span>' +
+        '<span class="rec-cell c-hide">' + esc(med || '—') + '</span>' +
         '<span class="rec-cell c-hide">' + fmtElapsed(r.elapsedMs) + '</span>' +
         (abs
-          ? '<a class="rec-dl" data-dl="1" href="' + esc(abs) + '" target="_blank" rel="noopener" title="打开产物">↓</a>'
-          : '<span class="rec-dl off" title="' + (r.action === 'dryrun' ? '干跑没有产物' : '没有可打开的产物文件') + '">—</span>') +
+          ? '<a class="rec-dl" data-dl="1" href="' + esc(abs) + '" target="_blank" rel="noopener" title="' + (img ? '打开结果图' : '打开产物') + '">↓</a>'
+          : '<span class="rec-dl off" title="' + offTitle + '">—</span>') +
       '</div>';
     }).join('');
   }
@@ -1531,6 +1572,60 @@
       '<span style="font-family:var(--mono);font-size:11.5px">第 ' + p.page + ' / ' + p.pageCount + ' 页</span>' +
       '<button class="btn-mini" data-page="next"' + (p.page >= p.pageCount ? ' disabled' : '') + '>下一页</button>' +
       '<button class="btn-mini" data-page="last"' + (p.page >= p.pageCount ? ' disabled' : '') + '>末页</button>';
+  }
+
+  /* 生图记录详情。与视频详情的差别：身份是素材、参数是尺寸、产物是结果图，
+     并提供结果图预览。素材被删除时显示提示而不是空白/报错（对应视频侧的 storyboardExists）。 */
+  function imageRecordDetailHtml(r, t, closeBtn) {
+    const abs = absUrl(r.resultUrl);
+    const dims = (r.imageWidth && r.imageHeight) ? r.imageWidth + '×' + r.imageHeight : null;
+    const fmtExt = r.imageFormat ? String(r.imageFormat).replace(/^\./, '').toUpperCase() : null;
+    const paramTxt = [r.size, r.resolution, dims, fmtExt].filter(Boolean).join(' · ');
+    const usage = fmtUsage(r.usage);
+    const banners = [];
+    if (r.outcome === 'failed') banners.push('<div class="rec-banner err"><b>' + esc(r.errorCode || '失败') + '</b><br/>' + esc(r.errorMessage || '（无错误信息）') + '</div>');
+    if (r.assetExists === false) banners.push('<div class="rec-banner warn">原素材已被删除 —— 本记录是生成当时的快照，仍然完整可读（记录与素材分开存就是为了这个）。</div>');
+    /* 结果图文件被清理只在"本该有图"时提示；失败记录本来就没有结果图，不必打扰。 */
+    else if (r.outcome !== 'failed' && !abs) banners.push('<div class="rec-banner info">结果图文件已被清理，无法预览（记录与费用信息仍然保留）。</div>');
+
+    return '<div class="rec-dhead">' +
+        '<div class="rec-dtitle">' +
+          '<h3>' + recBadge(r) + ' 素材 ' + esc(r.assetName || '（已删除）') + '</h3>' +
+          '<span class="sub">' + t.d + ' ' + t.t + ' · ' + esc(r.id) + '<br/>素材 ' + esc(r.assetId || '—') + (r.assetExists === false ? '（已删除）' : '') + '</span>' +
+        '</div>' + closeBtn +
+      '</div>' +
+      banners.join('') +
+
+      '<div class="rec-block"><h4>概览</h4><div class="rec-sect">' +
+        '<dl class="rec-kv">' +
+          '<dt>动作</dt><dd>' + esc(r.actionLabel || '生图') + ' · ' + esc(r.outcomeLabel || r.outcome) + '</dd>' +
+          '<dt>服务商</dt><dd>' + esc(r.providerLabel || r.providerId || '—') + '</dd>' +
+          '<dt>模型</dt><dd>' + esc(r.modelLabel || r.modelId || r.model || '—') + '</dd>' +
+          '<dt>尺寸</dt><dd>' + esc(paramTxt || '—') + '</dd>' +
+          (usage ? '<dt>费用</dt><dd>' + esc(usage) + '</dd>' : '') +
+          '<dt>耗时</dt><dd>' + fmtElapsed(r.elapsedMs) + (r.finishedAt ? '（完成于 ' + esc(String(r.finishedAt).slice(11, 19)) + '）' : '') + '</dd>' +
+          (r.autoApply ? '<dt>自动采用</dt><dd>' + (r.applied ? '已采用' : '未采用') + '</dd>' : '') +
+          (r.submitId ? '<dt>服务商任务ID</dt><dd>' + esc(r.submitId) + '</dd>' : '') +
+        '</dl>' +
+        '<div class="rec-acts">' +
+          (abs ? '<a class="btn-outline" href="' + esc(abs) + '" target="_blank" rel="noopener">打开结果图</a>' : '') +
+          '<button class="btn-mini" data-reccopy="prompt">复制提示词原文</button>' +
+          '<span class="grow"></span>' +
+          '<button class="btn-mini btn-danger" data-recact="del">删除这条记录</button>' +
+        '</div>' +
+      '</div></div>' +
+
+      (abs
+        ? '<div class="rec-block"><h4>结果图</h4><div class="rec-sect"><div class="rec-resultimg">' +
+            '<a href="' + esc(abs) + '" target="_blank" rel="noopener"><img src="' + esc(abs) + '" alt="生图结果" loading="lazy" /></a>' +
+          '</div></div></div>'
+        : '') +
+
+      '<div class="rec-block"><h4>提示词原文（' + (r.promptChars || 0) + ' 字）<span class="grow"></span>' +
+        '<button class="btn-mini" data-reccopy="prompt">复制</button></h4>' +
+        '<pre class="rec-pre">' + esc(r.prompt || '（空）') + '</pre></div>' +
+
+      '<div class="rec-note">记录在生图任务收尾时落盘，是一份<b>快照</b>：提示词、尺寸、费用与结果图都取自当时，之后改素材或删除素材都不会改写它。</div>';
   }
 
   function renderRecDetail() {
@@ -1550,8 +1645,11 @@
       return;
     }
     const r = S.recDetail;
-    const p = r.params || {};
     const t = fmtAt(r.at);
+    /* 生图记录走独立的详情渲染：它没有分镜/命令/素材锁定，却有服务商、尺寸、
+       费用与结果图。硬塞进视频模板会出现一堆"镜头 undefined"和空的命令块。 */
+    if (isImageRec(r)) { host.innerHTML = imageRecordDetailHtml(r, t, closeBtn); return; }
+    const p = r.params || {};
     const abs = absUrl(r.videoUrl);
     const paramTxt = [
       p.ratio, p.resolution,
@@ -1698,7 +1796,7 @@
       const act = e.target.closest('[data-recact]');
       if (act) {
         const k = act.dataset.recact;
-        if (k === 'resetf') { S.recF = { action: 'all', outcome: 'all', engine: 'all', keyword: '', from: '', to: '' }; loadRecords(1); return; }
+        if (k === 'resetf') { S.recF = { kind: 'all', action: 'all', outcome: 'all', engine: 'all', keyword: '', from: '', to: '' }; loadRecords(1); return; }
         if (k === 'cleardry') { doClearRecords('dryrun'); return; }
       }
     });
@@ -3810,6 +3908,27 @@
     };
   }
 
+  /* 生成图下载的默认文件名（2026-10-02）。
+     为什么不用 URL 里那串内部 id：下载下来会是一堆 `char-xxx-1a2b3c.png`，用户根本认不出
+     是哪张图、属于哪个素材。形如「素材名-202610022230.png」，一眼能认。
+     ⚠ 必须过滤 Windows 非法字符（\ / : * ? " < > |）与控制字符 —— 素材名允许中文与空格，
+       但也可能被粘进这些字符；不过滤的话浏览器会静默改名、甚至拒绝保存。
+       结尾的点和空格会被 Windows 直接丢掉，一并去掉，免得"看着有扩展名其实没有"。
+     放在生图界面这片代码里，好让 test/18 的界面回归直接执行它（Windows 文件名的坑不该靠人肉记）。 */
+  function imageDownloadName(baseName, srcHint, atHint) {
+    const src = String(srcHint || '');
+    const ext = (src.match(/\.(png|jpe?g|webp|gif|bmp)$/i) || ['.png'])[0].toLowerCase();
+    /* 时间戳优先取**这张图自己的时刻**（历史项传 createdAt，主预览传素材 updatedAt）。
+       全部取"此刻"的话，连着下载几张历史图会得到一堆同名文件 —— 浏览器只会在后面加 (1)(2)，
+       文件名就失去了"一眼认出是哪张"的意义（这正是本函数存在的理由）。取不到或不合法才回落当前时间。 */
+    const hint = atHint ? new Date(atHint) : null;
+    const d = hint && !isNaN(hint.getTime()) ? hint : new Date();
+    const p = (n) => (n < 10 ? '0' : '') + n;
+    const stamp = '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes());
+    const safe = String(baseName || '').replace(/[\\/:*?"<>|\r\n\t]/g, '_').trim().slice(0, 60).replace(/[. ]+$/, '');
+    return (safe || '生成图片') + '-' + stamp + ext;
+  }
+
   /* 渲染「生图区」的静态骨架。参数：
      asset       资产对象（图片类型）
      opts        { showPromptEcho } —— 无输入框的入口（分镜预览）需要回声区
@@ -3888,13 +4007,19 @@
         const r = await Api.listImageJobs(assetId);
         if (disposed) return;
         historyJobs = (r.jobs || []).filter((item) => item.previewUrl && ['ready', 'applied'].includes(item.state));
-        historyEl.innerHTML = historyJobs.length ? historyJobs.slice().reverse().map((item) =>
-          '<figure class="img-history-item' + (item.selected ? ' selected' : '') + '">' +
-            '<img src="' + esc(mediaUrl(item.previewUrl)) + '" alt="生成图片" loading="lazy" data-ipzoom="' + esc(mediaUrl(item.previewUrl)) + '" />' +
+        historyEl.innerHTML = historyJobs.length ? historyJobs.slice().reverse().map((item) => {
+          const url = mediaUrl(item.previewUrl);
+          return '<figure class="img-history-item' + (item.selected ? ' selected' : '') + '">' +
+            '<img src="' + esc(url) + '" alt="生成图片" loading="lazy" data-ipzoom="' + esc(url) + '" />' +
+            /* 下载钮是 <img> 的**兄弟**，不是把 <img> 包进 <a>：包起来会把"点图=全屏看细节"
+               变成"点图=下载"，而全屏才是这里点图的主操作。点击委托先判 [data-ipzoom]，
+               这个 <a> 不携带 data-ipzoom / data-iphistory，所以两条既有逻辑都不会被它触发。 */
+            '<a class="fs-btn" href="' + esc(url) + '" download="' + esc(imageDownloadName(o.assetName, item.previewUrl, item.createdAt)) + '"' +
+              ' title="下载这张图片" aria-label="下载这张图片">' + I.download + '</a>' +
             '<figcaption><span>' + esc(item.createdAt ? fmtWhen(item.createdAt) : '') + '</span>' +
               '<button type="button" class="btn-outline" data-iphistory="' + esc(item.jobId) + '"' +
-                (item.selected ? ' disabled' : '') + '>' + (item.selected ? '当前选定' : '设为当前图片') + '</button></figcaption></figure>'
-        ).join('') : '<p class="hint-sm">还没有生成过的图片。</p>';
+                (item.selected ? ' disabled' : '') + '>' + (item.selected ? '当前选定' : '设为当前图片') + '</button></figcaption></figure>';
+        }).join('') : '<p class="hint-sm">还没有生成过的图片。</p>';
       } catch (e) { if (!disposed) historyEl.innerHTML = '<p class="hint-sm">历史图片读取失败，重新打开详情可重试。</p>'; }
     }
     /* 尺寸控件（2026-09-25）：与面板同生命周期。降级（无规格）时 get() 回 null，
@@ -4198,6 +4323,13 @@
          选中文件后由 showLocalPreview 放出来。 */
       const fsBtn = isAudio ? '' :
         '<button class="fs-btn" id="asFull" title="全屏预览（查看细节）"' + (hasPic ? '' : ' hidden') + '>' + I.expand + '</button>';
+      /* 下载钮（2026-10-02）：外观与「全屏」完全一致（同一套 .fs-btn 基类），
+         贴在它左边（right:48px，见 styles.css），无图时同样 hidden。
+         用 <a download> 直接下同源的 /media/...，不为它新增接口。 */
+      const dlBtn = isAudio ? '' :
+        '<a class="fs-btn dl-btn" id="asDownload" title="下载图片" aria-label="下载图片"' +
+          (hasPic ? '' : ' hidden') + ' href="' + esc(asset.url || '') + '"' +
+          ' download="' + esc(imageDownloadName(asset.name, asset.url, asset.updatedAt)) + '">' + I.download + '</a>';
       const promptHTML = isAudio ? '' :
         '<div class="sec-title" style="margin-top:12px">文生图提示词</div>' +
         '<div class="asset-promptwrap">' +
@@ -4219,6 +4351,7 @@
             '<div class="asset-preview' + (isAudio ? ' audio' : ' pickable' + (hasPic ? ' has-pic' : '')) + '">' +
               previewHTML +
               fsBtn +
+              dlBtn +
               (!hasPic && !isAudio ? '<span class="empty-ph">' + I.img + '<span>点击上传图片</span></span>' : '') +
             '</div>' +
             '<div class="row-inline"><span class="label-sm">名称</span>' +
@@ -4257,10 +4390,12 @@
         if (isAudio) return;                      // 音频无图片预览概念
         if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
         previewBlobUrl = URL.createObjectURL(f);
-        showImagePreview(previewBlobUrl);
+        /* 把原始文件名当扩展名提示带下去：blob URL 里读不出 .jpg/.png，
+           不带的话下载文件名会一律写 .png，与实际内容不符。 */
+        showImagePreview(previewBlobUrl, f.name);
       }
       /* 上传预览与首次采用生成图都要补齐原本不存在的 img / 全屏按钮。 */
-      function showImagePreview(url) {
+      function showImagePreview(url, nameHint) {
         let img = mask.querySelector('#asPreviewImg');
         if (!img) {                               // 无图资产补图：占位符让位，动态插入预览图
           const ph = mask.querySelector('.empty-ph');
@@ -4274,11 +4409,19 @@
         currentImgUrl = url;
         /* 视图要跟着状态一起变，否则按钮/占位和实际能力对不上：
            · 空槽位的虚线框让位（.has-pic），点进去才知道已经有图了；
-           · 无图时 hidden 的「全屏」钮放出来（无图点它没意义）。 */
+           · 无图时 hidden 的「全屏」钮放出来（无图点它没意义）；
+           · 下载钮同理放出来，且 href/download 必须跟着**当前显示的这张图**走 ——
+             否则生图采用后（或本地选了新文件后）会下到上一张图。 */
         const box = mask.querySelector('.asset-preview');
         if (box) { box.classList.add('has-pic'); box.title = '点击更换图片'; }
         const fsBtnEl = mask.querySelector('#asFull');
         if (fsBtnEl) fsBtnEl.hidden = false;
+        const dlEl = mask.querySelector('#asDownload');
+        if (dlEl) {
+          dlEl.href = url;
+          dlEl.download = imageDownloadName(asset.name, nameHint || url);
+          dlEl.hidden = false;
+        }
       }
       const nameEl = mask.querySelector('#asName');
       const promptEl = mask.querySelector('#asPrompt');
