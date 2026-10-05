@@ -1,5 +1,5 @@
 'use strict';
-/* 分镜表列显隐（0.47.0）：设置 →「个性化 → 分镜表列」把分镜表里不想看的列收起来。
+/* 分镜表列显隐（0.48.0）：设置 →「个性化 → 分镜表列」把分镜表里不想看的列收起来。
    「序号 / 结果与进度 / 操作」是骨架列，不可隐藏；其余 8 列逐列显示 / 隐藏。
 
    为什么这几条值得单独钉住 —— 这条链路的失效方式**全是静默的**，肉眼看不出：
@@ -34,7 +34,7 @@ const FIXED_KEYS = ['rail', 'result', 'acts'];
 
 /* 切片运行 app.js 的「列显隐」模块（纯函数：只碰 document.documentElement.dataset 与
    localStorage，不依赖 S / 渲染），配最小 DOM 与存储替身。 */
-const COLHIDE_MARK = '/* ---------------------------------------------------------- 分镜表列显隐（0.47.0） */';
+const COLHIDE_MARK = '/* ---------------------------------------------------------- 分镜表列显隐（0.48.0） */';
 function colhideEnv(stored) {
   const start = appJs.indexOf(COLHIDE_MARK);
   const end = appJs.indexOf('/* 「设置」按钮上主题图标的可读文案', start);

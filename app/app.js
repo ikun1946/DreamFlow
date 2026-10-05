@@ -251,7 +251,7 @@
     renderTable(); renderPanel(); renderStatusbar();
   }
   function renderColhead() {
-    /* data-col：列显隐（0.47.0）的挂载点 —— CSS 用 [data-col="<key>"] 定位要隐藏的那一格。
+    /* data-col：列显隐（0.48.0）的挂载点 —— CSS 用 [data-col="<key>"] 定位要隐藏的那一格。
        表头与数据行**必须都带**：少一处就只剩表头消失（或只剩数据消失），列宽仍在，看着像错行。 */
     $('#colhead').innerHTML = COLUMNS.map((c) => {
       if (c.key === 'rail') {
@@ -395,7 +395,7 @@
 
   /* 素材槽位单元格（0.39.0）：cell-slots 类供堆叠模式的 overflow:visible 使用；
      deck-open 按行+角色记录（轮询整表重绘后摊开状态不丢）。
-     data-col（0.47.0）取 role —— 槽位角色名与列 key 是同一套名字（见 constants.js 的
+     data-col（0.48.0）取 role —— 槽位角色名与列 key 是同一套名字（见 constants.js 的
      COLUMNS 与 ROLE_META），列显隐的 CSS 规则正是按它定位。 */
   const slotCell = (s, role) => '<div class="cell cell-slots" data-col="' + role + '"><span class="slots' +
     (S.deckOpen && S.deckOpen[s.id + ':' + role] ? ' deck-open' : '') +
@@ -532,6 +532,198 @@
     if (el) el.classList.toggle('compact', !!on);
   }
 
+  /* ---------------------------------------------------------- 环境体检（0.48.0）
+     首次启动的「开箱即用」向导：逐项列出缺什么，一键装好。
+     事实来源 = GET /system/env（server/env-setup.js 判），这里只负责呈现与派发 ——
+     判定逻辑（什么算"缺"、能不能自动修）**不在前端另写一份**。
+
+     三条约定：
+     · 只弹一次（jmc.envWizard 标记）—— 用户点过「稍后再说」就不再缠人；
+     · 永远可手动打开（设置 →「生成引擎与账号 → 环境体检」）；
+     · 安装是长请求（ffmpeg 190 MB 且会断点续传重试），所以要**独立轮询** progress，
+       不能让界面只转圈；关窗不取消（服务端任务继续，下次打开接着看）。 */
+  const ENVWIZ_KEY = 'jmc.envWizard';
+  function envWizardSeen() {
+    try { return localStorage.getItem(ENVWIZ_KEY) === '1'; } catch (e) { return false; }
+  }
+  function markEnvWizardSeen() {
+    try { localStorage.setItem(ENVWIZ_KEY, '1'); } catch (e) { /* 隐私模式忽略 */ }
+  }
+  const ENV_GROUP_LABEL = { engine: '生成引擎', tools: '外部工具', local: '本机环境' };
+
+  /* 打开向导。opts: { auto } —— auto=true 是首启那次（决定要不要写"已看过"标记）。 */
+  async function openEnvWizard(opts) {
+    const o = opts || {};
+    const mask = document.createElement('div');
+    mask.className = 'mask'; mask.style.zIndex = 215;
+    mask.innerHTML =
+      '<div class="modal narrow env-wiz">' +
+        '<div class="modal-head"><h2>环境体检</h2><span class="grow"></span>' +
+          '<button class="icon-btn" data-envact="close" aria-label="关闭环境体检">' + I.xDark + '</button></div>' +
+        '<div class="modal-body">' +
+          '<p class="hint-sm" id="envLead">正在检测本机环境…</p>' +
+          '<div id="envList"></div>' +
+          '<div class="env-prog" id="envProg" hidden>' +
+            '<div class="imgjob-bar"><span id="envBar"></span></div>' +
+            '<p class="hint-sm" id="envProgTxt"></p>' +
+          '</div>' +
+          '<p class="hint-sm err" id="envErr" hidden></p>' +
+        '</div>' +
+        '<div class="modal-foot">' +
+          '<button class="btn-outline" data-envact="settings">去设置登录</button>' +
+          '<button class="btn-outline" data-envact="check">重新检测</button>' +
+          '<span class="grow"></span>' +
+          '<button class="btn-outline" data-envact="close">稍后再说</button>' +
+          '<button class="btn-primary" data-envact="fixall">一键配好</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(mask);
+
+    let report = null, busy = false, pollTimer = null, disposed = false;
+    const q = (s) => mask.querySelector(s);
+    const close = () => { disposed = true; if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } mask.remove(); };
+
+    function render() {
+      if (disposed) return;
+      const list = q('#envList'), fixAll = q('[data-envact="fixall"]'), settings = q('[data-envact="settings"]');
+      if (!report) { if (list) list.innerHTML = ''; if (fixAll) fixAll.disabled = true; return; }
+      const s = report.summary || {};
+      const lead = q('#envLead');
+      if (lead) {
+        lead.textContent = s.problems
+          ? ('已检查 ' + s.total + ' 项，有 ' + s.problems + ' 项需要处理' + (s.fixable ? '（其中 ' + s.fixable + ' 项可以一键装好）' : '（都要你手动处理）') + '。')
+          : ('已检查 ' + s.total + ' 项，环境齐备。' + (report.source ? '外部工具来自 ' + report.source + '。' : ''));
+      }
+      const groups = {};
+      (report.items || []).forEach((it) => { (groups[it.group] = groups[it.group] || []).push(it); });
+      if (list) {
+        list.innerHTML = Object.keys(groups).map((g) =>
+          '<div class="sec-title" style="margin-top:10px">' + esc(ENV_GROUP_LABEL[g] || g) + '</div>' +
+          groups[g].map((it) =>
+            '<div class="env-item' + (it.ok ? ' ok' : '') + '">' +
+              '<span class="env-dot"></span>' +
+              '<span class="env-txt"><b>' + esc(it.label) + '</b>' +
+                '<span class="hint-sm">' + esc(it.detail || '') + '</span></span>' +
+              (it.installable
+                ? '<button class="btn-outline btn-sm" data-envact="install" data-env-comp="' + esc(it.action || '') + '"' +
+                  (busy ? ' disabled' : '') + '>' + esc(it.installable) + '</button>'
+                : '') +
+            '</div>').join('')
+        ).join('');
+      }
+      if (fixAll) {
+        fixAll.disabled = busy || !s.fixable;
+        fixAll.textContent = busy ? '正在配好…' : (s.fixable ? ('一键配好（' + s.fixable + ' 项）') : '无需配置');
+      }
+      /* 登录那项是**手动**的：按钮只在"CLI 已装但没登录"时点亮，
+         点它直接去设置页（那里有既有的登录流程，不在这里重造一个）。 */
+      if (settings) {
+        const loginItem = (report.items || []).find((it) => it.id === 'cliLogin');
+        const cliItem = (report.items || []).find((it) => it.id === 'cli');
+        settings.hidden = !(loginItem && !loginItem.ok && cliItem && cliItem.ok);
+      }
+    }
+
+    function showProgress(p) {
+      const box = q('#envProg'), bar = q('#envBar'), txt = q('#envProgTxt');
+      if (!box) return;
+      if (!p || !p.active) { box.hidden = true; return; }
+      box.hidden = false;
+      const pct = (p.percent != null) ? Math.max(0, Math.min(100, p.percent))
+        : (p.total ? Math.round(p.got / p.total * 100) : 0);
+      if (bar) bar.style.width = pct + '%';
+      if (txt) {
+        const got = Math.round((p.got || 0) / 1024 / 1024);
+        const total = p.total ? Math.round(p.total / 1024 / 1024) : null;
+        txt.textContent = (p.step || '正在处理…') + (total ? ('（' + got + ' / ' + total + ' MB）') : '');
+      }
+    }
+    function showError(msg) {
+      const el = q('#envErr');
+      if (!el) return;
+      el.hidden = !msg;
+      el.textContent = msg || '';
+    }
+
+    async function load(probe) {
+      try {
+        report = await Api.getEnvReport(probe);
+        showProgress(report.progress);
+        render();
+      } catch (e) {
+        showError('检测失败：' + errText(e));
+        render();
+      }
+    }
+    /* 安装期间轮询 progress —— 这就是"190 MB 要几分钟"不看着像卡死的原因。 */
+    function startPoll() {
+      if (pollTimer) return;
+      pollTimer = setInterval(async () => {
+        if (disposed) return;
+        try {
+          const r = await Api.getEnvReport(false);
+          if (disposed) return;
+          report = r;
+          showProgress(r.progress);
+          render();
+        } catch (e) { /* 轮询失败不打扰：装完自然会刷新 */ }
+      }, 1200);
+    }
+    async function install(component) {
+      if (busy || !component) return;
+      busy = true; showError(''); render();
+      startPoll();
+      try {
+        const r = await Api.envInstall(component);
+        toast('已装好 ' + (r.component === 'cli' ? '创作 CLI' : 'ffmpeg / ffprobe'), 'ok');
+      } catch (e) {
+        showError(errText(e));
+      } finally {
+        busy = false;
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        showProgress(null);
+        await load(false);   // 装完立刻重检，让用户看到项变成"已就绪"
+      }
+    }
+
+    mask.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-envact]');
+      if (!b) return;
+      const act = b.getAttribute('data-envact');
+      if (act === 'close') { markEnvWizardSeen(); close(); return; }
+      if (act === 'check') { markEnvWizardSeen(); load(true); return; }
+      if (act === 'settings') { markEnvWizardSeen(); close(); openSettings(); return; }
+      if (act === 'install') { install(b.getAttribute('data-env-comp')); return; }
+      if (act === 'fixall') {
+        /* 一键配好 = 依次装**缺着的那些**。顺序有讲究：先 CLI（30 MB，快），
+           再 ffmpeg（190 MB）—— 万一网络在第二个上出问题，第一个已经能用。 */
+        const need = ['cli', 'ffmpeg'].filter((c) => (report.items || []).some((it) => !it.ok && it.action === c));
+        markEnvWizardSeen();
+        (async () => { for (const c of need) { await install(c); } })();
+      }
+    });
+    mask.addEventListener('click', (e) => { if (e.target === mask) { markEnvWizardSeen(); close(); } });
+    document.addEventListener('keydown', function escEnv(ev) {
+      if (ev.key !== 'Escape') return;
+      document.removeEventListener('keydown', escEnv);
+      markEnvWizardSeen(); close();
+    });
+
+    render();
+    /* 首启那次（auto）才查上游连通性：普通打开不查，免得每次都等一次网络往返。 */
+    await load(!!o.auto);
+    if (o.auto && report && report.summary && report.summary.problems) {
+      markEnvWizardSeen();   // 弹过就算"看过"，不再自动弹（可手动再打开）
+    }
+  }
+
+  /* 首启自动弹一次。只在"桌面版或网页版都算"，但要避开两种情况：
+     ① 用户看过（标记）；② 上次装的过程中应用被关掉（下次继续弹是合理的）。 */
+  async function maybeOpenEnvWizard() {
+    if (envWizardSeen()) return;
+    try { await openEnvWizard({ auto: true }); } catch (e) { /* 首启体检失败不该挡住应用 */ }
+  }
+
   /* ---------------------------------------------------------- 主题（深色模式） */
   /* 三态外观：auto（跟随系统，默认）/ light / dark。
      **两个属性分工明确**（这是本设计的关键）：
@@ -659,7 +851,7 @@
     deckResizeTimer = setTimeout(layoutDecks, 120);   // 防抖：拖拽窗口时避免频繁重排
   });
 
-  /* ---------------------------------------------------------- 分镜表列显隐（0.47.0） */
+  /* ---------------------------------------------------------- 分镜表列显隐（0.48.0） */
   /* 「设置 → 个性化 → 分镜表列」把分镜表里不想看的列收起来（序号 / 结果与进度 / 操作
      是骨架列，constants.js 里 marked fixed:true，不参与）。
      做法与主题 / 素材槽位**完全同构**：唯一事实来源是 <html data-colhide>（空格分隔的
@@ -3231,6 +3423,23 @@
           '<span class="hint-sm" id="naPromptCount">0 / 10000</span>' +
         '</div>';
 
+      /* 生图行（0.48.0）：**参数在左、生成图片按钮在右**，下面接生图区的状态条与历史。
+         未配置生图服务时整块不出现 —— 与素材详情把「生成图片」按钮藏起来是同一口径
+         （没有密钥时这个按钮点下去只会报错，摆着不如不给）。
+         素材此时**还不存在**：真正建它的时机是"点下生成按钮"那一刻（见下面的 ensureCreated）——
+         用户只是打开弹窗看看、或改完名字就取消时，素材库里不该多出一条记录。 */
+      const canGen = !isAudio && configuredImageModels().length > 0;
+      const genHTML = !canGen ? '' :
+        '<div class="sec-title" style="margin-top:12px">图片生成</div>' +
+        '<div class="na-gen">' +
+          '<div class="na-gen-params" id="naSizeHost">' +
+            imageSizeControlHTML('na', S.settings && S.settings.imageDefaults) +
+          '</div>' +
+          '<button type="button" class="btn-outline" id="naGen" title="用上面的「文生图提示词」生成图片：提交时会先按「名称」把该素材建出来，生成成功后自动作为它的图片（会产生真实调用）">' +
+            I.spark + ' 生成图片</button>' +
+        '</div>' +
+        imagePanelHTML({}, { bare: true });
+
       const mask = document.createElement('div');
       mask.className = 'mask'; mask.style.zIndex = 200;
       mask.innerHTML =
@@ -3249,6 +3458,7 @@
                   '音频参考有数量与总时长两重上限（总时长上限 ' + secMax + ' 秒）。</div>'
               : '') +
             promptHTML +
+            genHTML +
             '<input type="file" id="naFile" accept="' + accept + '" hidden />' +
           '</div>' +
           '<div class="modal-foot">' +
@@ -3262,11 +3472,20 @@
       let picked = null;              // 选中的文件（可为空 = 先建空素材）
       let pickedSec = null;           // 音频读到的时长（秒），读不到为 null
       let previewBlobUrl = null;
+      let createdAsset = null;        // 弹窗内已经建出来的素材（0.48.0：生成图片的副产品）
+      let creatingAsset = null;       // 正在创建（防并发重复建同一条素材）
+      let imgPanel = null;            // 生图面板控制器（关弹窗要 dispose 停轮询）
       const done = (v) => {
+        /* 关弹窗必须停掉生图面板的前端轮询 —— 否则弹窗已销毁，回调里全是 null。
+           （服务端任务本身不受影响，重新打开详情还能继续看到它。） */
+        if (imgPanel) { try { imgPanel.dispose(); } catch (e) { /* 忽略 */ } }
         if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
         mask.remove();
         resolve(v);
       };
+      /* 取消 / 关闭：弹窗里已经建过素材的话，要把"已创建"如实告诉调用方去刷新素材库 ——
+         素材确实已经存在了，不能当什么都没发生（否则用户回到列表看不见它）。 */
+      const cancel = () => done(createdAsset ? { created: createdAsset } : null);
       const hint = (t, kind) => {
         const el = mask.querySelector('#naHint');
         if (el) { el.textContent = t || ''; el.className = 'hint-sm' + (kind ? ' ' + kind : ''); }
@@ -3328,34 +3547,139 @@
       const nameEl = mask.querySelector('#naName');
       if (nameEl) nameEl.focus();
 
-      const submit = () => {
+      /* ---------------------------------------------------------- 生图（0.48.0）
+         三件事在下面接好：① 尺寸参数行（模型 / 比例 / 分辨率）由 imageSizeControlHTML('na')
+         出，② 「生成图片」按钮交给生图面板，③ 素材在**第一次提交时**才建出来。
+
+         为什么素材要"按需建"而不是"点了按钮就先建"：
+         · 打开弹窗只为看看、改完名字又取消 —— 那时不该在素材库里留下记录；
+         · 但任务接口是按资产 ID 走的（/assets/{id}/image-jobs），所以只能等到
+           真正要提交的那一刻再建 —— 这就是 ensureCreated() 的时机。
+         为什么 idOf() 与 ensureCreated() 分开：面板打开时会读一次历史与当前任务，
+         那两条路径**绝不能**建素材（idOf 返回 null 时它们直接跳过）。 */
+      const curName = () => {
         let name = String((nameEl && nameEl.value) || '').trim();
+        /* 没填名称时用所选文件名兜底 —— 与「创建」按钮、与后端默认命名同一条规则 */
+        if (!name && picked) name = stripAssetExt(String(picked.name || '')).trim();
+        return name;
+      };
+      /* 建完之后：页脚从「创建 / 取消」变成「完成 / 关闭」，并说明素材已经存在。 */
+      function onCreated(a) {
+        const okBtn = mask.querySelector('[data-ok]');
+        const cancelBtn = mask.querySelector('[data-cancel]');
+        if (okBtn) okBtn.textContent = '完成';
+        if (cancelBtn) cancelBtn.textContent = '关闭';
+        hint('已创建' + label + '「' + a.name + '」，图片生成中…（关闭弹窗不会取消任务）');
+      }
+      async function ensureCreated() {
+        if (createdAsset) return createdAsset.id;
+        if (creatingAsset) return creatingAsset;
+        const name = curName();
+        /* 名称是唯一的硬前提：与「创建」按钮同一条校验，避免建出没有名字的素材 */
+        if (!name) { hint('请先填素材名称，或选一个文件用文件名作为默认名称', 'err'); throw new Error('素材名称为空'); }
+        if (name.length > 60) { hint('素材名称不能超过 60 个字符', 'err'); throw new Error('素材名称过长'); }
+        creatingAsset = (async () => {
+          const a = await Api.createAsset({
+            name: name,
+            type: type,
+            prompt: promptEl ? String(promptEl.value || '').trim() : ''
+          });
+          createdAsset = a;
+          onCreated(a);
+          return a.id;
+        })().finally(() => { creatingAsset = null; });
+        return creatingAsset;
+      }
+      /* 生成并**自动采用**之后，把弹窗里的预览区换成新图（否则停在"点击上传图片"的占位上，
+         用户会以为没生成成功）。 */
+      function showCreatedPreview(url) {
+        const box = mask.querySelector('#naPreview');
+        if (!box || !url) return;
+        const ph = box.querySelector('.empty-ph');
+        if (ph) ph.style.display = 'none';
+        let img = box.querySelector('img');
+        if (!img) { img = document.createElement('img'); img.alt = '生成图'; box.appendChild(img); }
+        img.src = url;
+        box.classList.add('has-pic');
+      }
+      if (canGen) {
+        imgPanel = wireImagePanel(mask, () => (createdAsset ? createdAsset.id : null), () => (promptEl ? promptEl.value : ''), {
+          sizeIdp: 'na',
+          sizeHost: mask.querySelector('#naSizeHost'),
+          genButtonId: 'naGen',
+          assetName: curName,
+          ensureAssetId: ensureCreated,
+          onApplied: async () => {
+            /* 采用成功 = 该素材的图片换成了生成图：素材库与分镜面板的缩略图都要刷新 */
+            try { await loadProjAssets(); } catch (e) { /* 不在资产库视图时的正常失败 */ }
+            if (S.proj.tab === 'assets') renderProjAssets();
+            try { await loadAssets(); } catch (e) { /* 同上 */ }
+            const fresh = createdAsset ? await Api.getAsset(createdAsset.id).catch(() => null) : null;
+            if (fresh && fresh.url) showCreatedPreview(mediaUrl(fresh.url));
+            return fresh;
+          }
+        });
+        const genBtn = mask.querySelector('#naGen');
+        if (genBtn) genBtn.addEventListener('click', async () => {
+          /* 与素材详情同一条秩序：有待上传文件时先拦住 —— 否则"新选的本地图"与"生成的图"
+             会争用同一块预览区，用户看到的那张并不属于当前状态。 */
+          if (picked) { hint('请先完成或取消已选择的本地文件，再生成图片', 'err'); return; }
+          const name = curName();
+          if (!name) { hint('请填素材名称，或先选一个文件（会用文件名作为默认名称）', 'err'); if (nameEl) nameEl.focus(); return; }
+          if (name.length > 60) { hint('素材名称不能超过 60 个字符', 'err'); return; }
+          if (!String((promptEl && promptEl.value) || '').trim()) {
+            hint('提示词不能为空 —— 生成图片用的就是上面的「文生图提示词」', 'err');
+            if (promptEl) promptEl.focus();
+            return;
+          }
+          hint('');
+          try {
+            await imgPanel.submit();      // 面板自己负责付费确认、提交、进度与失败提示
+          } catch (e) { hint(errText(e), 'err'); }
+        });
+      }
+
+      const submit = async () => {
+        const name = curName();
         /* 名称留空不直接拦：**有文件就用文件名兜底**（与后端默认命名一致）。
            两个都没有才报错 —— 那时确实没有任何可用的名字。 */
-        if (!name && picked) name = stripAssetExt(String(picked.name || '')).trim();
         if (!name) {
           hint(picked ? '这个文件名取不出名称，请手动填一个' : '请填素材名称，或先选一个文件（会用文件名作为默认名称）', 'err');
           if (nameEl) nameEl.focus();
           return;
         }
         if (name.length > 60) { hint('素材名称不能超过 60 个字符', 'err'); return; }
+        const prompt = promptEl ? String(promptEl.value || '').trim() : '';
+        /* 弹窗内已经建过素材（是"生成图片"建的）：这里只把改名 / 改提示词落库，
+           **不再新建一条** —— 否则会留下两条同名素材，而用户只填过一次名字。 */
+        if (createdAsset) {
+          const patch = {};
+          if (name !== createdAsset.name) patch.name = name;
+          if (prompt !== String(createdAsset.prompt || '')) patch.prompt = prompt;
+          if (Object.keys(patch).length) {
+            try { await Api.updateAsset(createdAsset.id, patch); }
+            catch (e) { hint(errText(e), 'err'); return; }
+          }
+          done({ created: createdAsset });
+          return;
+        }
         done({
           name: name,
-          prompt: promptEl ? String(promptEl.value || '').trim() : '',
+          prompt: prompt,
           file: picked,
           durationSec: pickedSec
         });
       };
-      mask.querySelector('[data-ok]').addEventListener('click', submit);
+      mask.querySelector('[data-ok]').addEventListener('click', () => { submit(); });
       if (nameEl) {
         nameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
       }
-      mask.querySelector('[data-cancel]').addEventListener('click', () => done(null));
-      mask.querySelector('[data-x]').addEventListener('click', () => done(null));
-      mask.addEventListener('click', (ev) => { if (ev.target === mask) done(null); });
+      mask.querySelector('[data-cancel]').addEventListener('click', cancel);
+      mask.querySelector('[data-x]').addEventListener('click', cancel);
+      mask.addEventListener('click', (ev) => { if (ev.target === mask) cancel(); });
       document.addEventListener('keydown', function esc3(ev) {
         if (ev.key !== 'Escape') return;
-        document.removeEventListener('keydown', esc3); done(null);
+        document.removeEventListener('keydown', esc3); cancel();
       });
     });
   }
@@ -3401,6 +3725,18 @@
     if (S.assetBusy) return;
     const r = await openAssetCreate(type);
     if (!r) return;
+    /* 弹窗里已经建过素材（0.48.0：用「生成图片」时按需建的）：
+       这里只刷新素材库，**绝不再建一条** —— 否则会留下两条同名素材，
+       而用户只填过一次名字。图片的生成进度在素材详情里看。 */
+    if (r.created) {
+      toast('已创建' + (ASSET_TAB_LABEL[type] || '素材') + '「' + r.created.name + '」（可在素材详情里查看生成进度与历史图片）', 'ok');
+      try {
+        await loadProjAssets();
+        if (S.proj.tab === 'assets') renderProjAssets();
+        await loadAssets();
+      } catch (e) { /* 刷新失败不影响"素材已创建"这个事实 */ }
+      return;
+    }
     S.assetBusy = true;
     try {
       const body = { name: r.name, type: type };
@@ -3694,9 +4030,12 @@
   }
 
   /* 尺寸控件 HTML。idp 前缀避免生图面板与设置页两份实例的 id 打架。
-     val: { sizeMode, ratio, width, height, resolution }（来自设置里的生效默认值） */
+     val: { sizeMode, ratio, width, height, resolution }（来自设置里的生效默认值）
+     ⚠ 只有「能选模型」的入口才给服务商 / 模型选择器：ip = 素材详情与分镜预览的生图区，
+       na = 新建素材弹窗的生成行（0.48.0）；设置页的 isz 管的是**默认尺寸**，
+       模型在它上面那张卡里选，这里再放一个会变成两处真相。 */
   function imageSizeControlHTML(idp, val, modelKey) {
-    const choices = idp === 'ip' ? configuredImageModels() : [];
+    const choices = (idp === 'ip' || idp === 'na') ? configuredImageModels() : [];
     const selected = choices.find((m) => m.providerId + '|' + m.modelId === modelKey) || choices[0] || null;
     const spec = imgSizeSpec(selected && selected.modelId);
     const v = imageSizeValue(spec, val);
@@ -3988,6 +4327,10 @@
   /* 渲染「生图区」的静态骨架。参数：
      asset       资产对象（图片类型）
      opts        { showPromptEcho } —— 无输入框的入口（分镜预览）需要回声区
+                 { bare }（0.48.0）—— 只出状态条 / 对比区 / 历史，**不要**标题与尺寸块：
+                 新建素材弹窗把「尺寸参数 + 生成图片按钮」自己排成一行（见 openAssetCreate），
+                 再由这里出进度与历史。两份尺寸块会各自持有一套选中值（改了上面那份、
+                 提交却用下面那份），所以必须二选一，而不是都画出来。
      返回 HTML 字符串；事件绑定由 wireImagePanel 负责。 */
   function imagePanelHTML(asset, opts) {
     const o = opts || {};
@@ -4001,7 +4344,7 @@
           (S.imageProvidersError ? esc(S.imageProvidersError) : '请到「项目设置 → 图片生成服务」填入 API Key 后再回来。') +
         '</span></div><section class="img-history" id="ipHistory"><h4>生成过的图片</h4><div class="img-history-grid" id="ipHistoryList"></div></section>';
     }
-    return '<div class="sec-title" style="margin-top:12px">图片生成</div>' +
+    return (o.bare ? '' : '<div class="sec-title" style="margin-top:12px">图片生成</div>') +
       /* 提示词回声区：只有"分镜预览"这种**没有输入框**的入口才需要它 ——
          素材详情那边提示词就在上面的文本框里，再显示一遍是重复。
          由调用方决定是否使用（见 openBoundAsset 的 Api.getAsset 回填）。 */
@@ -4012,8 +4355,9 @@
       /* 尺寸配置（2026-09-25）：两处入口共用。初值取设置里的生效默认
          （S.settings.imageDefaults，GET /settings 已带回）；弹窗内的调整只影响
          这一次提交，不改默认值 —— 「保存后可复用」在设置页的那张卡片上。 */
-      '<div class="sec-title" style="margin-top:10px">尺寸</div>' +
-      '<div id="ipSizeHost">' + imageSizeControlHTML('ip', S.settings && S.settings.imageDefaults) + '</div>' +
+      (o.bare ? '' :
+        '<div class="sec-title" style="margin-top:10px">尺寸</div>' +
+        '<div id="ipSizeHost">' + imageSizeControlHTML('ip', S.settings && S.settings.imageDefaults) + '</div>') +
       /* 状态条：进度 / 结果提示都在这里更新（不重建 DOM，避免输入框失焦） */
       '<div class="imgjob" id="ipBox" hidden>' +
         '<div class="imgjob-head">' +
@@ -4034,13 +4378,26 @@
   /* 把生图区接到弹窗上。返回一个控制器，供外部（如"保存并生图"按钮）驱动。
      参数：
        mask       弹窗根元素
-       assetId    资产 ID
+       assetId    资产 ID；**也可以是 `() => Promise<string|null>`**（0.48.0）——
+                  新建素材弹窗在"还没生成"之前根本没有资产：那时返回 null，
+                  只读类调用（历史 / 当前任务）直接跳过，**不许因为打开弹窗就建素材**。
        getPrompt  取当前输入框里的提示词（素材库详情用输入框；分镜预览用只读值）
        opts       { onApplied, keepInput } —— onApplied 在采用成功后回调（刷新缩略图）
+                  · ensureAssetId()  提交时才需要的"按需建资产"（没有它就用 assetId）
+                  · sizeIdp / sizeHost  尺寸控件的前缀与宿主（新建弹窗用 'na'）
+                  · genButtonId      提交按钮 id（新建弹窗用 'naGen'）
+                  · assetName        字符串或 getter（新建弹窗里名字随时会改）
      ⚠ 所有 DOM 查询都在 mask 内（不查 document），避免两个弹窗同时存在时互相串。 */
   function wireImagePanel(mask, assetId, getPrompt, opts) {
     const o = opts || {};
     const q = (s) => mask.querySelector(s);
+    /* 资产 id 的两条取法：idOf() 只读（可能给 null），ensureId() 会按需建资产。
+       ⚠ 提交以外的路径一律走 idOf() —— 见上面 assetId 的说明。 */
+    const idOf = typeof assetId === 'function' ? assetId : () => Promise.resolve(assetId);
+    const ensureId = typeof o.ensureAssetId === 'function' ? o.ensureAssetId : idOf;
+    const nmOf = () => (typeof o.assetName === 'function' ? o.assetName() : o.assetName);
+    const sizeIdp = o.sizeIdp || 'ip';
+    const sizeHost = o.sizeHost || q('#ipSizeHost');
     const box = q('#ipBox'), body = q('#ipBody'), foot = q('#ipFoot');
     const stateEl = q('#ipState'), usageEl = q('#ipUsage'), cmpEl = q('#ipCmp');
     const historyEl = q('#ipHistoryList');
@@ -4059,8 +4416,13 @@
 
     async function refreshHistory() {
       if (!historyEl || disposed) return;
+      /* 还没建资产的入口（新建素材弹窗）：没有 id 就没有历史可读，
+         这里直接给空态，**不能**为了读历史去建素材。 */
+      const aid = await idOf();
+      if (disposed) return;
+      if (!aid) { historyJobs = []; historyEl.innerHTML = '<p class="hint-sm">还没有生成过的图片。</p>'; return; }
       try {
-        const r = await Api.listImageJobs(assetId);
+        const r = await Api.listImageJobs(aid);
         if (disposed) return;
         historyJobs = (r.jobs || []).filter((item) => item.previewUrl && ['ready', 'applied'].includes(item.state));
         historyEl.innerHTML = historyJobs.length ? historyJobs.slice().reverse().map((item) => {
@@ -4070,7 +4432,7 @@
             /* 下载钮是 <img> 的**兄弟**，不是把 <img> 包进 <a>：包起来会把"点图=全屏看细节"
                变成"点图=下载"，而全屏才是这里点图的主操作。点击委托先判 [data-ipzoom]，
                这个 <a> 不携带 data-ipzoom / data-iphistory，所以两条既有逻辑都不会被它触发。 */
-            '<a class="fs-btn" href="' + esc(url) + '" download="' + esc(imageDownloadName(o.assetName, item.previewUrl, item.createdAt)) + '"' +
+            '<a class="fs-btn" href="' + esc(url) + '" download="' + esc(imageDownloadName(nmOf(), item.previewUrl, item.createdAt)) + '"' +
               ' title="下载这张图片" aria-label="下载这张图片">' + I.download + '</a>' +
             '<figcaption><span>' + esc(item.createdAt ? fmtWhen(item.createdAt) : '') + '</span>' +
               '<button type="button" class="btn-outline" data-iphistory="' + esc(item.jobId) + '"' +
@@ -4079,17 +4441,18 @@
       } catch (e) { if (!disposed) historyEl.innerHTML = '<p class="hint-sm">历史图片读取失败，重新打开详情可重试。</p>'; }
     }
     /* 尺寸控件（2026-09-25）：与面板同生命周期。降级（无规格）时 get() 回 null，
-       提交体保持与旧版一致（不带尺寸字段）。 */
-    const sizeHost = q('#ipSizeHost');
-    let szCtl = sizeHost ? wireImageSizeControl(sizeHost, 'ip', (S.settings && S.settings.imageDefaults) || null) : null;
+       提交体保持与旧版一致（不带尺寸字段）。
+       0.48.0：宿主与 id 前缀可换 —— 新建素材弹窗把尺寸行画在自己那一行里（见 openAssetCreate），
+       它传 opts.sizeHost / opts.sizeIdp，面板就不再往 #ipSizeHost 里插第二份。 */
+    let szCtl = sizeHost ? wireImageSizeControl(sizeHost, sizeIdp, (S.settings && S.settings.imageDefaults) || null) : null;
     /* 选模型后必须同时换该模型的尺寸规格；旧控件节点随 innerHTML 移除，
        事件监听也一起消失，避免重复提交或把前一模型的比例发给新模型。 */
     if (sizeHost) sizeHost.addEventListener('change', (e) => {
       if (!e.target.matches('[data-iszprovidersel]')) return;
       const key = e.target.value;
       const previous = szCtl && szCtl.get();
-      sizeHost.innerHTML = imageSizeControlHTML('ip', previous, key);
-      szCtl = wireImageSizeControl(sizeHost, 'ip', previous);
+      sizeHost.innerHTML = imageSizeControlHTML(sizeIdp, previous, key);
+      szCtl = wireImageSizeControl(sizeHost, sizeIdp, previous);
       const picker = sizeHost.querySelector('[data-iszprovidersel]');
       if (picker) picker.focus();
       refreshSubmitButton();
@@ -4098,7 +4461,7 @@
     let pollTimer = null;
     let disposed = false;
     let submitting = false;
-    const genButton = q('#asGen') || q('#bpGen');
+    const genButton = (o.genButtonId ? q('#' + o.genButtonId) : null) || q('#asGen') || q('#bpGen');
     const genLabel = genButton ? genButton.innerHTML : '';
 
     function refreshSubmitButton() {
@@ -4197,8 +4560,12 @@
     /* 读一次当前任务（初次打开 / 轮询都用它）。 */
     async function refresh() {
       if (disposed) return;
+      const aid = await idOf();
+      if (disposed) return;
+      /* 还没有资产（新建素材弹窗未生成过）：没有任务可读，也不必轮询。 */
+      if (!aid) { job = null; render(); return; }
       try {
-        const r = await Api.currentImageJob(assetId);
+        const r = await Api.currentImageJob(aid);
         if (disposed) return;
         const changed = !job || !r.job || r.job.jobId !== job.jobId || r.job.state !== job.state || r.job.updatedAt !== job.updatedAt;
         job = r.job;
@@ -4245,7 +4612,7 @@
           if (!okDiscard) return;
           try {
             btn.disabled = true;
-            await Api.discardImageJob(assetId, job.jobId);
+            await Api.discardImageJob(await idOf(), job.jobId);
             toast('已放弃生成结果', 'ok');
             await refresh();
           } catch (e) { btn.disabled = false; fail(e); }
@@ -4262,7 +4629,7 @@
     async function doApply(btn, target, confirmSelection) {
       try {
         btn.disabled = true;
-        const usage = await Api.assetUsage(assetId).catch(() => ({ count: 0 }));
+        const usage = await Api.assetUsage(await idOf()).catch(() => ({ count: 0 }));
         const msg = [
           '将更新素材库里的这张资产，以及所有引用它的分镜。',
           Number(usage && usage.count) > 0
@@ -4272,7 +4639,7 @@
         ].join('\n');
         const okApply = confirmSelection === false ? true : await uiConfirm('使用这张生成的图片', msg);
         if (!okApply) { btn.disabled = false; return; }
-        const r = await Api.applyImageJob(assetId, (target || job).jobId);
+        const r = await Api.applyImageJob(await idOf(), (target || job).jobId);
         toast('已采用生成的图片' + (r && r.impact && r.impact.count ? '（影响 ' + r.impact.count + ' 条分镜）' : ''), 'ok');
         await notifyApplied(r.job);
         await refresh();
@@ -4311,7 +4678,7 @@
             ? (sz.width + ' × ' + sz.height + ' px（精确像素）')
             : (sz.ratio === 'auto' ? '自动' : sz.ratio + (sz.resolution ? '（' + sz.resolution + '）' : '')));
       const confirmed = await uiConfirm('确认发起付费生图',
-        '资产：' + (o.assetName || '(未命名)') + '\n' +
+        '资产：' + (nmOf() || '(未命名)') + '\n' +
         '服务商：' + (((S.imageProvidersList || []).find((p) => p.providerId === providerId) || {}).label || providerId) + '\n' +
         '模型：' + (selected ? selected.label : modelId) + '\n' +
         '张数：1 张 · 尺寸：' + szText + '\n' +
@@ -4322,7 +4689,9 @@
       if (!confirmed) return { ok: false, canceled: true };
 
       try {
-        const r = await Api.submitImageJob(assetId, prompt, sz, providerId, modelId);
+        /* 0.48.0：新建素材弹窗走这里 —— ensureId() 会在**点下按钮的这一刻**才把素材建出来
+           （此前打开弹窗、翻历史都不会建），随后照常提交任务；提示词也由服务端存回该素材。 */
+        const r = await Api.submitImageJob(await ensureId(), prompt, sz, providerId, modelId);
         /* created=false 表示已有活动任务（后端拦住第二次提交，防重复扣费） */
         const failed = r && (r.failed || (r.job && r.job.state === 'failed'));
         if (failed) {
@@ -7089,7 +7458,7 @@
               '<button data-toggle="slotmode" data-slotmode-val="scroll"' + (slotMode() === 'scroll' ? ' class="on"' : '') + '>横向滚动</button>' +
             '</span></div>' +
           '<p class="hint-sm">「堆叠牌组」点一下摊开成浮层，点外面收起；「横向滚动」单行左右滑</p>' +
-          /* 0.47.0：分镜表列显隐。筛选口径 = COLUMN_TOGGLES（constants.js 里除 fixed 骨架列
+          /* 0.48.0：分镜表列显隐。筛选口径 = COLUMN_TOGGLES（constants.js 里除 fixed 骨架列
              以外的全部列），**不在界面里另写一份列名清单** —— 加了新列就自动出现在这里。
              选中态：亮色（.on）= 显示；虚线（.dashed）= 隐藏（沿用「提示词分隔符」的 chips 组件）。 */
           '<div class="colhide"><span class="k">分镜表列</span>' +
@@ -7112,6 +7481,9 @@
       '<section class="scard">' +
         '<div class="scard-hd">' +
           '<div class="scard-hd-t"><h3>生成引擎与账号</h3></div>' +
+          '<span class="grow" style="flex:1"></span>' +
+          /* 0.48.0：环境体检的**手动入口**（首启只自动弹一次，之后来这里）。 */
+          '<button class="btn-mini" data-envact="open" title="逐项检查创作 CLI、ffmpeg、ffprobe 与数据目录，缺什么可一键装好">环境体检</button>' +
           '<button class="btn-mini" data-cliact="check"' + (S.cliBusy ? ' disabled' : '') + ' title="强探创作 CLI：读取登录态、账号与最新积分（强制重探，不受缓存影响）">' + (S.cliBusy === 'check' ? '检测中…' : '检测连接状态') + '</button>' +
         '</div>' +
         '<div class="scard-bd">' +
@@ -7515,6 +7887,10 @@
     /* 0.42.0 多服务商改造时误删了这组既有事件委托：按钮仍被渲染，却无人接收点击。
        集中保留设置项的派发，重绘 settingsBody 后仍能操作新节点。 */
     $('#settingsBody').addEventListener('click', (e) => {
+      /* 环境体检的手动入口（0.48.0）：要排在 data-cliact 之前 ——
+         两者都用 data-* 属性，顺序错了会被 CLI 那条先截走。 */
+      const envOpen = e.target.closest('[data-envact="open"]');
+      if (envOpen) { closeSettings(); openEnvWizard({ auto: false }); return; }
       const cliact = e.target.closest('[data-cliact]');
       if (cliact) { runCliAction(cliact.dataset.cliact); return; }
       const updact = e.target.closest('[data-updact]');
@@ -7550,7 +7926,7 @@
         renderSettings();
       }
     });
-    /* 分镜表列显隐（0.47.0）：纯显示偏好，点一下即时生效、不落服务端配置。
+    /* 分镜表列显隐（0.48.0）：纯显示偏好，点一下即时生效、不落服务端配置。
        ⚠ 只重绘设置面板（更新 chip 选中态）——**不重绘分镜表**：列的显隐由 CSS 按
          <html data-colhide> 处理，重绘整表会把正在编辑的提示词文本框与牌堆摊开态打断。 */
     $('#settingsBody').addEventListener('click', (e) => {
@@ -7846,6 +8222,10 @@
        又赶在用户点开设置之前（点击一般发生在启动数秒后）。 */
     const whenIdle = window.requestIdleCallback || ((f) => setTimeout(f, 1200));
     whenIdle(() => warmCompositor(), { timeout: 3000 });
+    /* 环境体检（0.48.0）：首启那一次才弹，且排在**首屏落定之后** ——
+       新用户看到的第一屏应该是应用本体，不是"你要装东西"的弹层。
+       只弹一次（jmc.envWizard），之后可从「设置 → 生成引擎与账号 → 环境体检」手动打开。 */
+    whenIdle(() => { maybeOpenEnvWizard(); }, { timeout: 2500 });
   }
   boot();
 })();

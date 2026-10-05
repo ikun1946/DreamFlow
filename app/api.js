@@ -219,6 +219,12 @@
        request() 没有超时，所以慢网下它会一直等，不会中途被掐断。 */
     getCliStatus: ()          => request('GET', '/system/cli'),
     installCli:   ()          => request('POST', '/system/cli/install'),
+    /* 环境体检 / 一键配好（2026-10-05 新增，首次启动向导用，见 server/env-setup.js）。
+       ⚠ envInstall 是**长请求**：CLI 约 30 MB，ffmpeg 约 190 MB 且会断点续传重试若干次，
+         慢网下是分钟级 —— 调用方必须给进度（靠 getEnvReport 返回的 progress 字段轮询），
+         不能让用户以为点完没反应。request() 没有超时。 */
+    getEnvReport: (probe)     => request('GET', '/system/env' + (probe ? '?probe=1' : '')),
+    envInstall:   (component) => request('POST', '/system/env/install', { body: { component: component } }),
     /* 数据目录（系统级，2026-09-23 新增）。
        ⚠ setDataDir 只负责"校验 + 搬数据 + 写配置"，**改动要重启应用才生效** ——
        当前进程的 store 已经把旧目录的 db.json 读进内存了（见 server/data-dir.js 注释）。

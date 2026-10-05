@@ -105,7 +105,7 @@
   /* 分镜表列宽：.colhead（表头）与 .row（数据行）的**唯一列定义处**。
      合计 = 44+340+160+100+100+86+84+84+190+94+82 = 1364px，**必须与 --table-w 同步改**。
      ≤1364px 断点内会逐列覆写这些令牌做轻度压缩（见文件末尾响应式段）。
-     ⚠ 0.47.0 起**每列一个令牌**、--sb-grid 由它们组合：设置里的「分镜表列」显隐只需把
+     ⚠ 0.48.0 起**每列一个令牌**、--sb-grid 由它们组合：设置里的「分镜表列」显隐只需把
        对应列的令牌置 0（见下面的「列显隐」段），不必再维护第二份列宽表。
      ⚠ 令牌名 `--w-<key>` 里的 key 必须与 constants.js 的 COLUMNS.key 一致 ——
        test/19-columns.test.js 会逐个比对（拼错即该列点不动，是静默失效）。 */
@@ -430,7 +430,7 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .cell.prompt{flex-direction:column;align-items:stretch;justify-content:center;gap:5px;padding:0 14px 0 10px}
 .cell.result{flex-direction:column;justify-content:center;gap:7px;padding:0 10px}
 
-/* ============================ 列显隐（0.47.0） ============================
+/* ============================ 列显隐（0.48.0） ============================
    设置 →「个性化 → 分镜表列」把分镜表里不想看的列收起来（序号 / 结果与进度 / 操作
    是骨架列，不参与）。唯一事实来源：<html data-colhide>（空格分隔的列 key 列表），
    由 app.js 的 applyColHide() 写、localStorage 只做启动镜像 —— 与主题 / 素材槽位同构，
@@ -986,6 +986,36 @@ html[data-slotmode="scroll"] .slots::-webkit-scrollbar-thumb{background:var(--ch
 
 /* ============================ 素材详情弹窗：提示词编辑 / 无图占位 ============================ */
 .asset-promptwrap{position:relative}
+/* --- 环境体检向导（0.48.0）---
+   逐项列出「好了没有」：绿点 = 就绪，琥珀点 = 缺（右侧有可一键装好的按钮）。 */
+.env-wiz .modal-body{padding-top:16px}
+.env-item{
+  display:flex;align-items:flex-start;gap:10px;
+  padding:9px 0;border-bottom:1px solid var(--divider);
+}
+.env-item:last-child{border-bottom:0}
+.env-dot{
+  flex:none;width:8px;height:8px;border-radius:999px;margin-top:5px;
+  background:var(--warn);            /* 缺：琥珀 */
+}
+.env-item.ok .env-dot{background:var(--ok-dot)}
+.env-txt{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px}
+.env-txt b{font-size:13px;font-weight:600;color:var(--ink)}
+.env-txt .hint-sm{line-height:1.55;overflow-wrap:anywhere}
+.env-item > button{flex:none;align-self:center}
+.env-prog{margin-top:12px}
+.env-prog .imgjob-bar{margin-bottom:6px}
+.hint-sm.err{color:var(--err)}
+
+/* --- 新建素材弹窗的「生成图片」行（0.48.0）---
+   参数（服务商 / 模型、比例、分辨率）在左、「生成图片」按钮在右。
+   为什么不跟素材详情一样把按钮放页脚：那个弹窗的页脚是"取消 / 生成图片 / 保存"，
+   放得下；新建弹窗的页脚是"取消 / 创建"，而"生成"与"创建"是两件不同的事
+   （生成会在提交时先把素材建出来），挤在同一行会让人以为是同一个动作。 */
+.na-gen{display:flex;align-items:center;gap:12px;margin-top:10px}
+.na-gen-params{flex:1 1 auto;min-width:0}
+.na-gen-params .isz{margin-top:0}                 /* 尺寸块自己那层外边距在行内是多余的 */
+.na-gen > button{flex:none;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .asset-prompt{
   width:100%;min-height:190px;resize:vertical;
   font-family:var(--mono);font-size:11.5px;line-height:1.65;color:var(--ink);

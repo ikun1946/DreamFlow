@@ -19,7 +19,7 @@ function ui() {
     esc: (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
   });
   vm.runInContext(source.slice(source.indexOf('  function configuredImageModels()'),
-    source.indexOf('  /* 渲染「生图区」')), context);
+    source.indexOf('  /* 把生图区接到弹窗上')), context);
   return context;
 }
 
@@ -121,6 +121,85 @@ test('Seedream 切换后只显示分辨率，上游自动比例不会沿用旧�
   assert.doesNotMatch(html, /data-iszmode|data-iszratiosel/);
   const value = context.imageSizeValue(context.imgSizeSpec('seedream-v5-flash-t2i'), { sizeMode: 'pixels', ratio: '16:9', resolution: '4k' });
   assert.equal(value.ratio, 'auto'); assert.equal(value.resolution, '1k'); assert.equal(value.sizeMode, 'ratio');
+});
+
+/* ============================================================
+   新建素材弹窗里的生图行（0.48.0，静态 + 行为混合）
+   ⚠ 只做"形状 + 关键守卫"断言（读源码 + 正则 + 直接跑尺寸控件），理由与上面同一取舍：
+     真渲染另由 smoke:web / 人工兜底。这里盯的是**改一次就静默坏掉**的那几处：
+     参数行的 id 前缀（na）、按钮 id、按需创建的两条路径（只读不建 / 提交才建）。
+   ============================================================ */
+describe('新建素材弹窗：生成图片行', () => {
+  const REPO = path.join(__dirname, '..');
+  const appJs = fs.readFileSync(path.join(REPO, 'app', 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(REPO, 'app', 'styles.css'), 'utf8');
+
+  test('尺寸行（前缀 na）也带服务商 / 模型选择器，设置页（isz）不带', () => {
+    const context = ui();
+    const na = context.imageSizeControlHTML('na', { sizeMode: 'ratio', ratio: '1:1', resolution: '1k' });
+    assert.match(na, /id="naModel"/, '新建弹窗的尺寸行要能选模型');
+    assert.match(na, /data-iszprovidersel/, '复用同一套模型下拉');
+    assert.match(na, /data-iszratio="1:1"/, '比例按钮同源');
+    const isz = context.imageSizeControlHTML('isz', { sizeMode: 'ratio', ratio: '1:1', resolution: '1k' });
+    assert.doesNotMatch(isz, /data-iszprovidersel/,
+      '设置页管的是默认尺寸，模型在它上面那张卡里选 —— 这里再放一个就是两处真相');
+  });
+
+  test('bare 形态：仍出进度与历史，但**不再画第二份尺寸块**', () => {
+    /* 这条必须跑真函数（不是只看调用方传了 bare）——
+       只断言"调用处写了 bare:true"抓不到"实现里没认这个开关"：
+       面板照样画一份自己的尺寸块，与新建弹窗那行参数各持一套选中值，
+       用户改了上面那份、提交却用下面那份。 */
+    const context = ui();
+    const full = context.imagePanelHTML({}, {});
+    const bare = context.imagePanelHTML({}, { bare: true });
+    assert.match(full, /id="ipSizeHost"/, '默认形态（素材详情）仍要带尺寸块');
+    assert.match(full, /尺寸/);
+    assert.doesNotMatch(bare, /ipSizeHost/, 'bare 不得出现尺寸宿主');
+    assert.doesNotMatch(bare, /图片生成/, 'bare 也不重复标题（标题由调用方画在参数行上方）');
+    assert.match(bare, /id="ipBox"/, 'bare 仍要出进度条容器');
+    assert.match(bare, /id="ipCmp"/, 'bare 仍要出对比区');
+    assert.match(bare, /id="ipHistoryList"/, 'bare 仍要出历史图片');
+  });
+
+  test('参数行在左、生成按钮在右，并复用生图面板（bare）出进度与历史', () => {
+    assert.match(appJs, /'<div class="na-gen">'/);
+    assert.match(appJs, /'<div class="na-gen-params" id="naSizeHost">'/);
+    assert.match(appJs, /imageSizeControlHTML\('na', S\.settings && S\.settings\.imageDefaults\)/);
+    assert.match(appJs, /class="btn-outline" id="naGen"[^>]*>'\s*\+\s*\n?\s*I\.spark \+ ' 生成图片/);
+    assert.match(appJs, /imagePanelHTML\(\{\}, \{ bare: true \}\)/, '面板只出状态/对比/历史，不再画第二份尺寸块');
+    assert.match(appJs, /sizeIdp: 'na'/);
+    assert.match(appJs, /genButtonId: 'naGen'/);
+    /* CSS：一行两列，按钮不被压缩 */
+    assert.match(css, /^\.na-gen\{display:flex;align-items:center;gap:12px/m);
+    assert.match(css, /^\.na-gen-params\{flex:1 1 auto;min-width:0\}$/m);
+    assert.match(css, /^\.na-gen > button\{flex:none/m);
+    /* 提示词为空时先在弹窗里拦下，不做付费调用 */
+    assert.match(appJs, /hint\('提示词不能为空 —— 生成图片用的就是上面的「文生图提示词」', 'err'\)/);
+  });
+
+  test('素材按需创建：只读路径不建、提交时才建、建完再点不会多出第二条', () => {
+    /* ① 只读路径（历史 / 当前任务）拿到 null 必须直接跳过 ——
+       否则"打开弹窗看一眼"就会凭空多出一条素材 */
+    assert.match(appJs, /const aid = await idOf\(\);\s*\n\s*if \(disposed\) return;\s*\n\s*if \(!aid\) \{ historyJobs = \[\]/,
+      '历史读取：还没资产就不读、不建');
+    assert.match(appJs, /if \(!aid\) \{ job = null; render\(\); return; \}/,
+      '当前任务读取：还没资产就不读、不建');
+    /* ② 提交路径才建（ensureId 只在 submitImageJob 处出现一次） */
+    assert.match(appJs, /const r = await Api\.submitImageJob\(await ensureId\(\), prompt, sz, providerId, modelId\)/);
+    assert.match(appJs, /const ensureId = typeof o\.ensureAssetId === 'function' \? o\.ensureAssetId : idOf;/);
+    /* ③ 幂等：已有 createdAsset / 正在创建，都不再建第二条 */
+    assert.match(appJs, /async function ensureCreated\(\) \{\s*\n\s*if \(createdAsset\) return createdAsset\.id;\s*\n\s*if \(creatingAsset\) return creatingAsset;/,
+      '重复点击 / 并发提交不得建出两条同名素材');
+    /* ④ 建完之后的语义：创建 → 完成、取消 → 关闭，且"完成"只 PATCH 不新建 */
+    assert.match(appJs, /if \(okBtn\) okBtn\.textContent = '完成'/);
+    assert.match(appJs, /if \(cancelBtn\) cancelBtn\.textContent = '关闭'/);
+    assert.match(appJs, /if \(createdAsset\) \{\s*\n\s*const patch = \{\}/, '已建过就只改名字 / 提示词');
+    /* ⑤ 调用方（createAssetFlow）见到 created 只刷新，不再建 */
+    assert.match(appJs, /if \(r\.created\) \{/, '弹窗内已创建时不能再建一条');
+    assert.match(appJs, /const cancel = \(\) => done\(createdAsset \? \{ created: createdAsset \} : null\);/,
+      '取消也要把"已创建"如实告诉调用方，否则用户回列表看不见它');
+  });
 });
 
 /* ============================================================

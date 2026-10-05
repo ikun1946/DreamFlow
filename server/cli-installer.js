@@ -171,7 +171,11 @@ function headBinary() {
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 
 /* ---------------- 流式下载到临时文件 ---------------- */
-function downloadToFile(url, dest, onProgress) {
+/* opts.get：可注入的 GET（形状与 https.get 一致）。默认直连 —— 官方 CDN 在国内可直连，
+   所以这里一直不需要代理；但同一份实现也被上游源（GitHub）复用，那里必须走系统代理，
+   传 net-proxy.get 即可（见 server/net-proxy.js 与 env-setup.js）。 */
+function downloadToFile(url, dest, onProgress, opts) {
+  const getFn = (opts && opts.get) || https.get;
   return new Promise((resolve) => {
     const tmp = dest + '.part-' + process.pid;
     let settled = false;
@@ -188,7 +192,7 @@ function downloadToFile(url, dest, onProgress) {
     const go = (u, redirects) => {
       let req;
       try {
-        req = https.get(u, { headers: { 'User-Agent': 'dreamflow' } }, (res) => {
+        req = getFn(u, { headers: { 'User-Agent': 'dreamflow' } }, (res) => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             res.resume();
             if (redirects >= 5) { cleanup(); return done({ ok: false, error: '重定向次数过多' }); }

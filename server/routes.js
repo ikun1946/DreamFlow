@@ -115,6 +115,14 @@ function makeRouter(cfg, adapter) {
     ['GET', /^\/runtime\/paths$/, async (ctx) => ok(ctx.res, DD.describe())],
     ['POST', /^\/runtime\/data-dir$/, async (ctx) => ok(ctx.res, DD.change(ctx.db, ctx.body))],
     ['POST', /^\/system\/cli\/install$/, async (ctx) => ok(ctx.res, await S.cliInstall(adapter))],
+
+    /* 环境体检 / 一键配好（0.48.0，首次启动向导）。
+       ⚠ 两点与 CLI 那条并列的纪律同样适用：
+       ① install 是**长请求**（ffmpeg 上游包 190 MB+，慢网要几分钟）—— 前端必须给进度，
+          靠下面的 progress 字段轮询显示百分比，不要只转圈；
+       ② probe=1 才真去连上游（打开向导时传），否则只读缓存，免得每次开页面都等 4 秒。 */
+    ['GET', /^\/system\/env$/, async (ctx) => ok(ctx.res, await S.envReport(adapter, ctx.query.probe === '1'))],
+    ['POST', /^\/system\/env\/install$/, async (ctx) => ok(ctx.res, await S.envInstall(adapter, String((ctx.body && ctx.body.component) || '').trim()))],
     // CLI 账户操作（长耗时：check 秒级；登录/切换含轮询等待，受 loginTimeoutMs 约束）
     // 画布 CLI 已移除，故不再有 /system/adapter/login 与 /switch 两个画布专用入口。
     ['POST', /^\/system\/adapter\/check$/, async (ctx) => ok(ctx.res, await S.adapterCheck(ctx.db, adapter))],

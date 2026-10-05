@@ -18,6 +18,7 @@ const path = require('path');
 const { loadConfig } = require('./config');
 const PATHS = require('./paths');    // 磁盘布局与资源 URL 形状的唯一事实来源
 const CLI = require('./cli-installer');   // 创作 CLI 的下载 / 安装 / 更新（官方 CDN）
+const ENV = require('./env-setup');      // 环境体检 / 一键配好（首次启动向导的底座）
 /* ⚠ 注意与上面的 `P`（= ./projects，项目/工作区数据层）区分开：两个 P 会重名。 */
 
 /* 素材上传允许的扩展名（创建/批量导入共用） */
@@ -2462,6 +2463,58 @@ async function cliInstall(adapter) {
   };
 }
 
+/* ---------------- 环境体检 / 一键配好（0.48.0） ----------------
+   首次启动「开箱即用」向导背后的两个接口（实现见 server/env-setup.js）。
+   放在这一层而不是 routes 里直接 require，是因为体检要用到只有这里才拿得到的实时状态：
+   CLI 装没装 = 探测结果、登录态 = 探测缓存、数据目录 = runtime 快照。 */
+
+/* 体检。probe=true 会真去连上游（打开向导 / 用户点"重新检测"时）；
+   启动那一次刻意用 false（只读缓存）—— 否则每次开应用都白等 4 秒以上。 */
+async function envReport(adapter, probe) {
+  const cfg = loadConfig();
+  const D = adapter && adapter.dreamina;
+  const dp = (D && typeof D.lastProbe === 'function') ? D.lastProbe() : null;
+  const out = await ENV.report(cfg, {
+    cliStatus: () => CLI.status(cfg),
+    /* 登录态只读探测缓存，**不强制重探**：体检不是「检测连接状态」那个按钮，
+       不该在用户没点任何东西时就去真打一次 CLI（那条路实测要好几秒）。 */
+    cliAuth: dp ? { available: dp.available === true, account: dp.account || null, message: dp.message || null } : null,
+    dataDir: runtime.getDataDir(),
+    probe: !!probe
+  });
+  out.progress = ENV.progressOf();
+  return out;
+}
+
+/* 配好一件东西。component: 'cli' | 'ffmpeg'（后者同时装 ffprobe）。
+   ⚠ 装完必须**立刻**生效而不要求重启：默认配置里 ffmpeg/ffprobe 是裸命令名（靠 PATH 解析），
+     而 PATH 在已启动的进程里不会刷新。所以除写回内存配置外，抽帧 / 读时长一律走
+     env-setup.resolvedTool() 现算 —— 它会优先用"一键配好"装到 bin 目录里的那份。 */
+async function envInstall(adapter, component) {
+  const cfg = loadConfig();
+  const res = await ENV.installComponent(cfg, component, {});
+  if (!res.ok) throw new ApiError(ERR.INTERNAL, res.error || '安装失败');
+
+  if (component === 'cli') {
+    /* 与 cliInstall 同理：把绝对路径写回配置，PATH 在已启动进程里不会刷新。 */
+    cfg.dreaminaCliPath = res.path;
+    const D = adapter && adapter.dreamina;
+    if (D && typeof D.invalidate === 'function') D.invalidate();
+    const dp = D ? await D.probe(true).catch(() => null) : null;
+    return { ok: true, component: 'cli', path: res.path, bytes: res.bytes, steps: res.steps || [], cliAvailable: !!(dp && dp.available) };
+  }
+  if (component === 'ffmpeg') {
+    cfg.ffmpegPath = ENV.resolvedTool(cfg, 'ffmpeg');
+    cfg.ffprobePath = ENV.resolvedTool(cfg, 'ffprobe');
+    return {
+      ok: true, component: 'ffmpeg', dir: res.dir, files: res.files, versions: res.versions,
+      steps: res.steps || [],
+      patched: { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath }
+    };
+  }
+  return { ok: false, component: component, error: '未知的组件：' + component, steps: [] };
+}
+
 /* 创作 CLI（dreamina）的登录与切换账号。
    与画布 CLI 的关键差别：**没有 --force 之类的"软"重登，切换必须先退出当前账号**，
    所以路由注释与界面文案都要把"会先退出"说在前面（前端另有二次确认弹层）。 */
@@ -2526,6 +2579,7 @@ Object.assign(module.exports, {
   applyImageJob, discardImageJob, resaveImageJob,
   getSettings, putSettings, resetSettings, getOptions, adapterStatus, adapterCheck,
   cliStatus, cliInstall,
+  envReport, envInstall,
   adapterDreaminaLogin, adapterDreaminaSwitch,
   /* 记录域：转发到 records-layer.js（行为不变，只是换位置） */
   listRecords: recordsLayer.listRecords,
