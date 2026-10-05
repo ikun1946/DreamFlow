@@ -839,6 +839,11 @@ async function setupUpdaterTransport() {
   updaterMod.setTransport(
     transportMod.makeElectronTransport(net, updaterSession, { onConnectionFail: disableProxyOnce })
   );
+  /* 共享代理出口的 API 配额耗尽也算"代理不可用"（2026-10-05 用户实测）：
+     公开库经代理出去时 GitHub 按出口 IP 计数，共享节点被别的用户耗光就返回 403。
+     那个 403 不是连接级失败，传输层的 retryable 通道看不见它，所以在这里补一条
+     HTTP 级的钩子：命中限流就切直连重发一次。 */
+  updaterMod.setProxyUnusableHook(disableProxyOnce);
   console.log('[desktop] 更新器已接入 Chromium 网络栈（自动使用系统代理，无则直连）');
 }
 

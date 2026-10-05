@@ -256,6 +256,12 @@ function defaultTransport() {
   };
 }
 
+/* 代理不可用时的回调：返回 Promise<boolean>（true = 已切成直连、值得重发）。
+   由 main.js 注入（它是唯一能碰 Electron session 的地方）；纯 Node 下为 null，
+   于是行为退回"直接报错"—— 单测与 verify:release 走的就是这条。 */
+let onProxyUnusableHook = null;
+function setProxyUnusableHook(fn) { onProxyUnusableHook = typeof fn === 'function' ? fn : null; }
+
 function transport() { return transportOverride || defaultTransport(); }
 function setTransport(t) { transportOverride = t || null; }
 
@@ -298,7 +304,8 @@ function request(url, opts, cb) {
 
   /* 重发**最多一次**。只有传输层明确标了 retryable 才重发 ——
      那个标记的含义是"代理已切成直连，刚才那次失败不算数"。
-     不设这个上限的话，"代理一直不可用"会变成无限重试。 */
+     不设这个上限的话，"代理一直不可用"会变成无限重试。
+     ② 共享代理出口的 API 配额耗尽也走这条路（见 rateLimitedByProxy 的注释）。 */
   const fire = (retried) => {
     transport().request(url, {
       method: o.method || 'GET',
@@ -308,7 +315,21 @@ function request(url, opts, cb) {
         if (e && e.retryable === true && !retried) return fire(true);
         done(e);
       }
-    }, onResponse);
+    }, (res) => {
+      /* 收到响应后才可能判定"配额耗尽"，而这**不是**连接级失败 ——
+         传输层不会替我们发错误。所以在这里就地判一次：命中就请代理切换直连再重发。
+         ⚠ 钩子取「调用方传进来的」或「模块级那个」—— 不能只认传参：fetchManifest 之外的
+           入口（以及单测直接调 fetchText）就永远拿不到钩子，回退逻辑会静默失效。 */
+      const switchProxy = (typeof o.onProxyUnusable === 'function') ? o.onProxyUnusable : onProxyUnusableHook;
+      if (!retried && switchProxy && isRateLimited(res)) {
+        switchProxy().then((switched) => {
+          if (switched) return fire(true);
+          onResponse(res);
+        }).catch(() => onResponse(res));
+        return;
+      }
+      onResponse(res);
+    });
   };
 
   try { fire(false); } catch (e) { return done(e); }
@@ -326,17 +347,68 @@ function readAll(stream, limitBytes, cb) {
   stream.on('error', cb);
 }
 
+/* 这个响应是不是「GitHub 匿名 API 配额用尽」？
+   ⚠ 2026-10-05 用户实测踩到：应用报的是
+     「取 GitHub release 失败：HTTP 403（私有仓库需要访问令牌，或更新源地址不对）」——
+     而仓库是**公开的**、谁都能拉。那句提示把人带偏了（要去申请令牌，其实完全不需要）。
+     真实原因：应用走系统代理，GitHub API 按**出口 IP** 计数（匿名 60 次/小时），
+     共享代理节点的出口 IP 被别的用户耗光 → 403 + `X-RateLimit-Remaining: 0`。
+     证据：同机直连 200（剩 58），经代理 403 且 body 写明
+     `API rate limit exceeded for 54.179.5.44`。
+   所以判据要**看响应头**（剩余配额为 0 / 限流资源），而不是"403 就当成私有库"。
+   body 只有在头缺失时才读（有些网关会抹掉头）。 */
+function isRateLimited(res) {
+  if (!res || res.statusCode !== 403) return false;
+  const h = res.headers || {};
+  const remain = h['x-ratelimit-remaining'];
+  if (remain !== undefined && Number(remain) <= 0) return true;
+  if (h['retry-after'] !== undefined) return true;
+  return res.__bodyMentionsRateLimit === true;   // 由 fetchText 读 body 后回填
+}
+
+/* 给「取 GitHub release 失败」配上**能指路的**说明。
+   401/404 才是"要令牌 / 仓库不对"；403 在公开库上绝大多数是配额耗尽。 */
+function ghErrorHint(res) {
+  if (!res) return '';
+  const code = res.statusCode;
+  if (code === 401) return '（更新源需要访问令牌）';
+  if (code === 404) return '（仓库或 Release 不存在，或该版本还没有发布）';
+  if (code === 403) {
+    if (isRateLimited(res)) {
+      const reset = (res.headers || {})['x-ratelimit-reset'];
+      const when = reset ? new Date(Number(reset) * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : null;
+      return '（GitHub 匿名接口配额用尽 —— 公开库不需要令牌。这台机器当前经**系统代理**出去，' +
+        '而 GitHub 按出口 IP 计数（匿名 60 次/小时，共享代理节点很容易被耗光）' +
+        (when ? ('，约 ' + when + ' 恢复') : '') +
+        '。应用会自动改用直连重试一次；仍未成功请稍后再试，或临时关闭系统代理）';
+    }
+    return '（公开库不需要令牌；403 多为出口 IP 被限流，稍后再试）';
+  }
+  return '';
+}
+
 /* 拉一个小文本（latest.yml / GitHub release JSON）。 */
-function fetchText(url, headers, limitBytes) {
+function fetchText(url, headers, limitBytes, opts) {
   return new Promise((resolve) => {
-    request(url, { headers, timeoutMs: META_TIMEOUT_MS }, (err, res) => {
+    request(url, Object.assign({ headers, timeoutMs: META_TIMEOUT_MS }, opts || {}), (err, res) => {
       if (err) return resolve({ ok: false, error: err.message });
       if (res.statusCode !== 200) {
-        res.resume();
-        /* 401/404 在私有库场景下最常见 —— 单独给出可行动的提示，别让用户去猜 */
-        const hint = (res.statusCode === 404 || res.statusCode === 401 || res.statusCode === 403)
-          ? '（私有仓库需要访问令牌，或更新源地址不对）' : '';
-        return resolve({ ok: false, status: res.statusCode, error: 'HTTP ' + res.statusCode + hint });
+        /* 403 的判据可能要读 body（网关会抹掉限流头），所以这里**不能**直接 resume 就返回：
+           先把正文收下来（上限 4 KB，足够认出 "rate limit exceeded"），收完再定提示。
+           ⚠ 只在"可能是限流"时才多这一次读；401/404 等直接 resume 走人。 */
+        const mayBeRateLimit = res.statusCode === 403;
+        if (!mayBeRateLimit) {
+          res.resume();
+          return resolve({ ok: false, status: res.statusCode, error: 'HTTP ' + res.statusCode + ghErrorHint(res) });
+        }
+        readAll(res, 4 * 1024, (e2, buf) => {
+          if (!e2 && buf && /rate limit exceeded/i.test(buf.toString('utf8'))) res.__bodyMentionsRateLimit = true;
+          resolve({
+            ok: false, status: res.statusCode,
+            error: 'HTTP ' + res.statusCode + ghErrorHint(res)
+          });
+        });
+        return;
       }
       readAll(res, limitBytes || 256 * 1024, (e2, buf) => {
         if (e2) return resolve({ ok: false, error: e2.message });
@@ -511,7 +583,10 @@ async function fetchManifest(source) {
   /* GitHub。先拿 release 元数据，再从里面取 latest.yml 的正文 ——
      不直接拼 releases/latest/download/xxx，因为私有库那条路需要 cookie 鉴权。 */
   const api = 'https://api.github.com/repos/' + encodeURIComponent(source.owner) + '/' + encodeURIComponent(source.repo);
-  const r = await fetchText(api + '/releases/latest', ghHeaders(source.token), 512 * 1024);
+  /* onProxyUnusable：命中"共享代理出口配额耗尽"时，调用方把代理切成直连再重发一次
+     （main.js 注入 disableProxyOnce）。这条是 2026-10-05 用户实测 403 之后加的：
+     公开库不需要令牌，403 绝大多数是出口 IP 被限流，而直连往往正常。 */
+  const r = await fetchText(api + '/releases/latest', ghHeaders(source.token), 512 * 1024, { onProxyUnusable: onProxyUnusableHook });
   if (!r.ok) {
     return { ok: false, error: '取 GitHub release 失败：' + r.error, needsToken: !source.token };
   }
@@ -814,5 +889,8 @@ module.exports = {
   progressOf, check, download, install,
   isDownloading, cleanupStaleTemp,
   /* 传输层：给 Electron 主进程注入 Chromium 实现用；makeOnce 供幂等性单测 */
-  setTransport, makeOnce
+  setTransport, makeOnce,
+  /* 共享代理出口的 API 配额耗尽 → 请求把代理切成直连再重发（2026-10-05）。
+     isRateLimited / ghErrorHint 一并导出，好让单测直接钉住"403 不能再说成私有仓库"。 */
+  setProxyUnusableHook, isRateLimited, ghErrorHint
 };
