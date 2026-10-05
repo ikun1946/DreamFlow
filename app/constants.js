@@ -85,9 +85,17 @@
     firstFrame: '首帧图', storyboard: '分镜图', audio: '音频'
   };
 
-  /* ---------- 分镜表列定义 ---------- */
+  /* ---------- 分镜表列定义 ----------
+     ⚠ `w` 只是**文档性质的**列宽记录，界面真正的列宽在 styles.css 的 `--w-<key>` 令牌
+     （表头 .colhead 与数据行 .row 的唯一列定义处）—— 两处必须对同一份数字。
+     ⚠ `fixed: true` 的列是骨架列（序号 / 结果与进度 / 操作），**不可隐藏**；
+     其余列由「设置 → 个性化 → 分镜表列」逐列显示 / 隐藏（0.47.0）。
+     新增一列时必须同步四处（漏一处该列"点不动"或整体错位一格，都是静默失效）：
+     ① 这里；② window.APP_COLUMN_TOGGLES 自动跟着走；③ styles.css 的 `--w-<key>` 令牌；
+     ④ styles.css 的 `html[data-colhide~="<key>"]` 两条规则（零宽轨道 + 内容不渲染）。
+     test/19-columns.test.js 把 ①③④ 的对齐情况钉住。 */
   const COLUMNS = [
-    { key: 'rail',   w: 44 },
+    { key: 'rail',   w: 44, label: '序号', fixed: true },
     { key: 'prompt', w: 340, label: '分镜 / 提示词', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>' },
     { key: 'character', w: 160, label: '角色', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6" stroke="currentColor" stroke-width="1.9" fill="none"/><path d="M5 20c1.2-3.6 3.8-5.4 7-5.4s5.8 1.8 7 5.4" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round"/></svg>' },
     { key: 'scene', w: 100, label: '场景', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5" stroke="currentColor" stroke-width="1.9" fill="none"/><circle cx="8.5" cy="10" r="1.6" stroke="currentColor" stroke-width="1.7" fill="none"/></svg>' },
@@ -95,10 +103,14 @@
     { key: 'firstFrame', w: 86, label: '首帧图', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M5 3.5v17" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M5 5.5h13l-2.6 3.8L18 13H5" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linejoin="round"/></svg>' },
     { key: 'storyboard', w: 84, label: '分镜图', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.9" fill="none"/><rect x="13" y="13" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.9" fill="none"/></svg>' },
     { key: 'audio', w: 84, label: '音频', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M9.5 4v10.1a2.9 2.9 0 1 1-1.5-2.55V6.2h7.4v5.4a2.9 2.9 0 1 1-1.5-2.55V4z" fill="currentColor"/></svg>' },
-    { key: 'result', w: 190, label: '结果与进度', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="2.5" y="5" width="13.5" height="14" rx="2.5" stroke="currentColor" stroke-width="1.9" fill="none"/><path d="M16.5 10.2l5-2.7v9l-5-2.7z" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linejoin="round"/></svg>' },
+    { key: 'result', w: 190, label: '结果与进度', fixed: true, icon: '<svg width="13" height="13" viewBox="0 0 24 24"><rect x="2.5" y="5" width="13.5" height="14" rx="2.5" stroke="currentColor" stroke-width="1.9" fill="none"/><path d="M16.5 10.2l5-2.7v9l-5-2.7z" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linejoin="round"/></svg>' },
     { key: 'status', w: 94, label: '状态', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.9" fill="none"/><path d="M8.5 12.2l2.6 2.6 4.6-5" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
-    { key: 'acts', w: 82, label: '操作', icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="16" cy="8" r="2" stroke="currentColor" stroke-width="1.9" fill="none"/><circle cx="10" cy="16" r="2" stroke="currentColor" stroke-width="1.9" fill="none"/></svg>' }
+    { key: 'acts', w: 82, label: '操作', fixed: true, icon: '<svg width="13" height="13" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="16" cy="8" r="2" stroke="currentColor" stroke-width="1.9" fill="none"/><circle cx="10" cy="16" r="2" stroke="currentColor" stroke-width="1.9" fill="none"/></svg>' }
   ];
+
+  /* 可显隐的列（不含 fixed 骨架构）。设置面板按此渲染开关；app.js 的列显隐白名单
+     也由它派生 —— 界面能点的、CSS 能藏的、localStorage 认的，必须是同一份清单。 */
+  const COLUMN_TOGGLES = COLUMNS.filter((c) => !c.fixed).map((c) => ({ key: c.key, label: c.label }));
 
   /* 暴露在 window 上 —— app.js 的 IIFE 内 `const I = window.APP_ICONS;` 接住。 */
   window.APP_ICONS = ICONS;
@@ -107,4 +119,5 @@
   window.APP_ASSET_TABS = ASSET_TABS;
   window.APP_ASSET_TAB_LABEL = ASSET_TAB_LABEL;
   window.APP_COLUMNS = COLUMNS;
+  window.APP_COLUMN_TOGGLES = COLUMN_TOGGLES;
 })();

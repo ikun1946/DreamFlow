@@ -78,6 +78,9 @@
   const ASSET_TABS     = window.APP_ASSET_TABS;
   const ASSET_TAB_LABEL = window.APP_ASSET_TAB_LABEL;
   const COLUMNS        = window.APP_COLUMNS;
+  /* 可显隐的列（不含 fixed 骨架构）。列表来自 constants.js 的 COLUMNS，**不在这里另抄一份** ——
+     「设置里能点的」「CSS 能藏的」「localStorage 认的」必须是同一份清单（见 applyColHide）。 */
+  const COLUMN_TOGGLES = window.APP_COLUMN_TOGGLES;
   /* ---------------------------------------------------------- 状态 */
   const S = {
     /* ---------------- 多项目上下文（指令 §25：只有前端能有"当前项目"这个概念） ----------------
@@ -248,11 +251,13 @@
     renderTable(); renderPanel(); renderStatusbar();
   }
   function renderColhead() {
+    /* data-col：列显隐（0.47.0）的挂载点 —— CSS 用 [data-col="<key>"] 定位要隐藏的那一格。
+       表头与数据行**必须都带**：少一处就只剩表头消失（或只剩数据消失），列宽仍在，看着像错行。 */
     $('#colhead').innerHTML = COLUMNS.map((c) => {
       if (c.key === 'rail') {
-        return '<div class="c-rail"><span>序号</span><button class="cbx" data-checkall="1" title="全选 / 取消全选">' + I.tick + '</button></div>';
+        return '<div class="c-rail" data-col="rail"><span>序号</span><button class="cbx" data-checkall="1" title="全选 / 取消全选">' + I.tick + '</button></div>';
       }
-      return '<div>' + c.icon + '<span>' + c.label + '</span></div>';
+      return '<div data-col="' + c.key + '">' + c.icon + '<span>' + c.label + '</span></div>';
     }).join('');
     const ca = document.querySelector('[data-checkall]');
     if (ca) ca.addEventListener('click', toggleCheckAll);
@@ -389,18 +394,20 @@
   }
 
   /* 素材槽位单元格（0.39.0）：cell-slots 类供堆叠模式的 overflow:visible 使用；
-     deck-open 按行+角色记录（轮询整表重绘后摊开状态不丢）。 */
-  const slotCell = (s, role) => '<div class="cell cell-slots"><span class="slots' +
+     deck-open 按行+角色记录（轮询整表重绘后摊开状态不丢）。
+     data-col（0.47.0）取 role —— 槽位角色名与列 key 是同一套名字（见 constants.js 的
+     COLUMNS 与 ROLE_META），列显隐的 CSS 规则正是按它定位。 */
+  const slotCell = (s, role) => '<div class="cell cell-slots" data-col="' + role + '"><span class="slots' +
     (S.deckOpen && S.deckOpen[s.id + ':' + role] ? ' deck-open' : '') +
     '" data-deckkey="' + s.id + ':' + role + '">' + slotsHTML(s, role) + '</span></div>';
   function rowHTML(s) {
     const sel = S.sel.has(s.id);
     return '<div class="row' + (sel ? ' sel' : '') + '" data-id="' + s.id + '">' +
-      '<div class="cell rail">' +
+      '<div class="cell rail" data-col="rail">' +
         '<span class="rail-num">' + s.seq + '</span>' +
         '<button class="cbx' + (sel ? ' on' : '') + '" data-check="1" title="选择">' + I.tick + '</button>' +
       '</div>' +
-      '<div class="cell prompt">' +
+      '<div class="cell prompt" data-col="prompt">' +
         '<span class="titleline"><span class="shotno">分镜 ' + s.seq + '</span>' + durHTML(s) +
           '<span class="grow"></span>' +
         '</span>' +
@@ -429,9 +436,9 @@
       slotCell(s, 'firstFrame') +
       slotCell(s, 'storyboard') +
       slotCell(s, 'audio') +
-      '<div class="cell result">' + resultHTML(s) + '</div>' +
-      '<div class="cell"><span class="badge ' + s.status + '"><i class="bdot"></i>' + STATUS_TEXT[s.status] + '</span></div>' +
-      '<div class="cell acts">' + actsHTML(s) + '</div>' +
+      '<div class="cell result" data-col="result">' + resultHTML(s) + '</div>' +
+      '<div class="cell" data-col="status"><span class="badge ' + s.status + '"><i class="bdot"></i>' + STATUS_TEXT[s.status] + '</span></div>' +
+      '<div class="cell acts" data-col="acts">' + actsHTML(s) + '</div>' +
     '</div>';
   }
 
@@ -651,6 +658,55 @@
     clearTimeout(deckResizeTimer);
     deckResizeTimer = setTimeout(layoutDecks, 120);   // 防抖：拖拽窗口时避免频繁重排
   });
+
+  /* ---------------------------------------------------------- 分镜表列显隐（0.47.0） */
+  /* 「设置 → 个性化 → 分镜表列」把分镜表里不想看的列收起来（序号 / 结果与进度 / 操作
+     是骨架列，constants.js 里 marked fixed:true，不参与）。
+     做法与主题 / 素材槽位**完全同构**：唯一事实来源是 <html data-colhide>（空格分隔的
+     列 key），localStorage 只做启动镜像；CSS 按 html[data-colhide~="<key>"] 分支，
+     绝不写进 S.settings（显示偏好，与生成参数无关，也就不会触发 settingsDirty 与保存）。
+     为什么不在这里重排 DOM：列的显隐是纯 CSS 的事（轨道宽置 0 + 内容不渲染，见
+     styles.css 的「列显隐」段），改属性即刻生效 —— 不需要重绘表头 / 整表，
+     因此轮询重绘、牌堆摊开状态、正在编辑的提示词文本框都不会被打断。 */
+  const COLHIDE_KEY = 'jmc.hiddenCols';
+  const COL_TOGGLE_KEYS = COLUMN_TOGGLES.map((c) => c.key);
+  /* 归一化：只留白名单内的 key，去重，并按 COLUMNS 的列序输出。
+     为什么要归一化：localStorage 是用户可改的，旧版本或手改留下的未知 key
+     不该让界面进入"这条规则谁也不认识"的状态；顺序固定则让存储值可读、可 diff。 */
+  function normColHide(v) {
+    const raw = Array.isArray(v) ? v : String(v == null ? '' : v).split(/\s+/);
+    const set = new Set();
+    raw.forEach((x) => { const k = String(x).trim(); if (COL_TOGGLE_KEYS.indexOf(k) >= 0) set.add(k); });
+    return COLUMN_TOGGLES.filter((c) => set.has(c.key)).map((c) => c.key);
+  }
+  /* 当前隐藏了哪些列（运行期真相 = <html data-colhide>，不是 localStorage）。 */
+  function hiddenCols() { return normColHide(document.documentElement.dataset.colhide || ''); }
+  function colHidden(key) { return hiddenCols().indexOf(key) >= 0; }
+  function storedColHide() {
+    try { return normColHide(localStorage.getItem(COLHIDE_KEY) || ''); } catch (e) { return []; }
+  }
+  /* 写 <html data-colhide>：空列表时**移除属性**（不是写空串）—— CSS 的
+     [data-colhide~="x"] 对空串同样匹配不上，但"没有这个属性"才是干净状态，
+     也让 test/19 的断言有唯一可判的形态。 */
+  function applyColHide(list) {
+    const keys = normColHide(list);
+    const el = document.documentElement;
+    if (keys.length) el.dataset.colhide = keys.join(' ');
+    else delete el.dataset.colhide;
+  }
+  function persistColHide(keys) {
+    try { localStorage.setItem(COLHIDE_KEY, keys.join(' ')); } catch (e) { /* 隐私模式忽略 */ }
+  }
+  /* 点一颗 chip：翻转该列的显隐。返回翻转后的完整隐藏列表（调用方拿去重绘设置面板）。 */
+  function toggleColHide(key) {
+    if (COL_TOGGLE_KEYS.indexOf(key) < 0) return hiddenCols();   // 未知 key：什么也不做（防御）
+    const cur = hiddenCols();
+    const next = cur.indexOf(key) >= 0 ? cur.filter((k) => k !== key) : cur.concat([key]);
+    applyColHide(next);
+    persistColHide(normColHide(next));
+    return normColHide(next);
+  }
+  function initColHide() { applyColHide(storedColHide()); }
 
   /* 「设置」按钮上主题图标的可读文案（往 title 后追加括号后缀）。
      ⚠ 图标本身**不由这里切** —— 太阳/月亮是 index.html 里叠放的两个 svg，由 CSS 按
@@ -6930,8 +6986,8 @@
     /* 结构：卡片（.scard → .scard-hd 标题/说明 + .scard-bd 内容）→ 子块（.sblock，一个 CLI 一组）
        → 设置行（.srow）。顺序按使用频次递减：最常改的生成参数在前，状态与账号操作这些
        低频、高风险的内容集中在末尾的「生成引擎与账号」里，且各自的状态与按钮收进同一个子块。
-       所有事件钩子（data-sdl / data-set / data-conc / data-toggle / data-cliact / #setDelim /
-       .example .in / #cliActMsg）保持不变，交互逻辑零改动。 */
+       所有事件钩子（data-sdl / data-set / data-conc / data-toggle / data-coltoggle / data-cliact /
+       #setDelim / .example .in / #cliActMsg）保持不变，交互逻辑零改动。 */
     $('#settingsBody').innerHTML =
       /* —— 卡片 1 · 生成参数默认值 —— */
       '<section class="scard">' +
@@ -7033,6 +7089,19 @@
               '<button data-toggle="slotmode" data-slotmode-val="scroll"' + (slotMode() === 'scroll' ? ' class="on"' : '') + '>横向滚动</button>' +
             '</span></div>' +
           '<p class="hint-sm">「堆叠牌组」点一下摊开成浮层，点外面收起；「横向滚动」单行左右滑</p>' +
+          /* 0.47.0：分镜表列显隐。筛选口径 = COLUMN_TOGGLES（constants.js 里除 fixed 骨架列
+             以外的全部列），**不在界面里另写一份列名清单** —— 加了新列就自动出现在这里。
+             选中态：亮色（.on）= 显示；虚线（.dashed）= 隐藏（沿用「提示词分隔符」的 chips 组件）。 */
+          '<div class="colhide"><span class="k">分镜表列</span>' +
+            '<span class="chips">' +
+              COLUMN_TOGGLES.map((c) => {
+                const hidden = colHidden(c.key);
+                return '<button data-coltoggle="' + esc(c.key) + '"' + (hidden ? ' class="dashed"' : ' class="on"') +
+                  ' title="' + (hidden ? '点击在分镜表里显示这一列' : '点击在分镜表里隐藏这一列') + '">' + esc(c.label) + '</button>';
+              }).join('') +
+            '</span>' +
+            '<span class="hint-sm">亮色 = 在分镜表里显示；点一下切换，即时生效（保存在本机）</span>' +
+          '</div>' +
         '</div>' +
       '</section>' +
       /* —— 卡片 5 · 生成引擎与账号（全局的「检测」升到卡片头）——
@@ -7435,9 +7504,14 @@
 
     /* 「抽屉先显示、数据后刷新」的配套守卫（见 openSettings）：抽屉一打开就可交互，
        只要用户在后台刷新返回之前碰过任何设置项，就标记 dirty，后续不再用服务端旧值覆盖。
-       用捕获阶段挂一次，避免逐个处理器去加。 */
+       用捕获阶段挂一次，避免逐个处理器去加。
+       ⚠ 唯独「分镜表列」显隐不算：它是纯显示偏好、不写服务端，点它没有"会被旧值盖回"的
+      风险；若也标 dirty，反而会把刚取回的最新设置整份丢掉（用户改列的代价不该是这个）。 */
     ['click', 'change', 'input'].forEach((ev) =>
-      $('#settingsBody').addEventListener(ev, () => { S.settingsDirty = true; }, true));
+      $('#settingsBody').addEventListener(ev, (e) => {
+        if (e.target && e.target.closest && e.target.closest('[data-coltoggle]')) return;
+        S.settingsDirty = true;
+      }, true));
     /* 0.42.0 多服务商改造时误删了这组既有事件委托：按钮仍被渲染，却无人接收点击。
        集中保留设置项的派发，重绘 settingsBody 后仍能操作新节点。 */
     $('#settingsBody').addEventListener('click', (e) => {
@@ -7475,6 +7549,15 @@
         }
         renderSettings();
       }
+    });
+    /* 分镜表列显隐（0.47.0）：纯显示偏好，点一下即时生效、不落服务端配置。
+       ⚠ 只重绘设置面板（更新 chip 选中态）——**不重绘分镜表**：列的显隐由 CSS 按
+         <html data-colhide> 处理，重绘整表会把正在编辑的提示词文本框与牌堆摊开态打断。 */
+    $('#settingsBody').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-coltoggle]');
+      if (!b) return;
+      toggleColHide(b.dataset.coltoggle);
+      renderSettings(); return;
     });
     // 默认参数下拉在本地修改，保存设置时统一提交。
     $('#settingsBody').addEventListener('change', (e) => {
@@ -7739,6 +7822,7 @@
   async function boot() {
     initTheme();   // 主题先于一切：解析持久化偏好 → 写 <html data-theme>，避免首屏闪色
     initSlotMode();   // 素材槽位显示模式（deck/scroll）：同为主题类的本地显示偏好
+    initColHide();    // 分镜表列显隐：同上，必须在 renderColhead() 之前（首屏就要是对的列）
     bindStatic();
     renderColhead();
     render();

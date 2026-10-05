@@ -102,10 +102,17 @@
   --thumb-h:52px; --thumb-w:40px;
   --vid-w:76px;   --vid-h:48px;
   --panel-w:336px;
-  /* 分镜表列宽：.colhead（表头）与 .row（数据行）的**唯一列定义处**，改列只改这一处。
+  /* 分镜表列宽：.colhead（表头）与 .row（数据行）的**唯一列定义处**。
      合计 = 44+340+160+100+100+86+84+84+190+94+82 = 1364px，**必须与 --table-w 同步改**。
-     ≤1364px 断点内会覆写本令牌做轻度压缩（见文件末尾响应式段）。 */
-  --sb-grid:44px 340px 160px 100px 100px 86px 84px 84px 190px 94px 82px;
+     ≤1364px 断点内会逐列覆写这些令牌做轻度压缩（见文件末尾响应式段）。
+     ⚠ 0.47.0 起**每列一个令牌**、--sb-grid 由它们组合：设置里的「分镜表列」显隐只需把
+       对应列的令牌置 0（见下面的「列显隐」段），不必再维护第二份列宽表。
+     ⚠ 令牌名 `--w-<key>` 里的 key 必须与 constants.js 的 COLUMNS.key 一致 ——
+       test/19-columns.test.js 会逐个比对（拼错即该列点不动，是静默失效）。 */
+  --w-rail:44px; --w-prompt:340px; --w-character:160px; --w-scene:100px; --w-prop:100px;
+  --w-firstFrame:86px; --w-storyboard:84px; --w-audio:84px; --w-result:190px;
+  --w-status:94px; --w-acts:82px;
+  --sb-grid:var(--w-rail) var(--w-prompt) var(--w-character) var(--w-scene) var(--w-prop) var(--w-firstFrame) var(--w-storyboard) var(--w-audio) var(--w-result) var(--w-status) var(--w-acts);
   --table-w:1364px;
 }
 
@@ -422,6 +429,59 @@ h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.2px}
 .cell.rail{flex-direction:column;justify-content:center;gap:8px;padding:0}
 .cell.prompt{flex-direction:column;align-items:stretch;justify-content:center;gap:5px;padding:0 14px 0 10px}
 .cell.result{flex-direction:column;justify-content:center;gap:7px;padding:0 10px}
+
+/* ============================ 列显隐（0.47.0） ============================
+   设置 →「个性化 → 分镜表列」把分镜表里不想看的列收起来（序号 / 结果与进度 / 操作
+   是骨架列，不参与）。唯一事实来源：<html data-colhide>（空格分隔的列 key 列表），
+   由 app.js 的 applyColHide() 写、localStorage 只做启动镜像 —— 与主题 / 素材槽位同构，
+   绝不写进服务端 S.settings（显示偏好，与生成参数无关）。
+
+   ⚠ 隐藏**绝不能用 display:none**：被 display:none 的网格项不再参与自动排布，
+     它后面所有列会整体左移一格、与表头错行。本方案是「轨道宽 0 + 单元格内不渲染」：
+     单元格仍占着自己那条轨道（只是宽度为 0），列序与对齐完全不变。
+   ⚠ 必须同时清掉 padding（第 3 行）：`*{box-sizing:border-box}` 下，
+     padding 之和大于 width 时，盒子会被撑到"padding 之和"那么大 —— 只置 0 轨道宽的话，
+     隐藏列仍会以 20px 宽的姿态溢出到相邻列上，把那一列左侧 20px 的点击吃掉。
+   ⚠ 内容必须真的不渲染（`> * {display:none}`）：牌组模式下 .cell-slots 是
+     overflow:visible（摊开的浮层要盖过相邻列），只靠 overflow:hidden 关不住它，
+     隐藏后仍会有素材格浮在别的列上。
+   ⚠ 新增可显隐列时必须同步四处（漏一处该列"点不动"或整体错位，都是静默失效）：
+     ① constants.js 的 COLUMNS（不带 fixed:true）；② 上面的 --w-<key> 令牌；
+     ③ 下面这两条规则；④ 响应式段里那一份被压缩的令牌。
+     test/19-columns.test.js 会把 ①②③④ 的对齐情况钉住。
+   ⚠ 每列**各自一条规则**（不写成一条逗号合并的选择器列表）：合并后本文件就不再"可 grep
+     到某一列的完整处置"，而这三行恰恰是新增列时唯一需要照抄的模板。 */
+/* ① 轨道宽置 0（列宽来自逐列令牌，见 :root） */
+html[data-colhide~="prompt"]{--w-prompt:0px}
+html[data-colhide~="character"]{--w-character:0px}
+html[data-colhide~="scene"]{--w-scene:0px}
+html[data-colhide~="prop"]{--w-prop:0px}
+html[data-colhide~="firstFrame"]{--w-firstFrame:0px}
+html[data-colhide~="storyboard"]{--w-storyboard:0px}
+html[data-colhide~="audio"]{--w-audio:0px}
+html[data-colhide~="status"]{--w-status:0px}
+/* ② 单元格清 padding：不清的话 padding 会把 0 宽的格子撑成 20px，压在邻列上吃掉点击 */
+html[data-colhide~="prompt"] :is(.colhead,.row) > [data-col="prompt"]{padding:0}
+html[data-colhide~="character"] :is(.colhead,.row) > [data-col="character"]{padding:0}
+html[data-colhide~="scene"] :is(.colhead,.row) > [data-col="scene"]{padding:0}
+html[data-colhide~="prop"] :is(.colhead,.row) > [data-col="prop"]{padding:0}
+html[data-colhide~="firstFrame"] :is(.colhead,.row) > [data-col="firstFrame"]{padding:0}
+html[data-colhide~="storyboard"] :is(.colhead,.row) > [data-col="storyboard"]{padding:0}
+html[data-colhide~="audio"] :is(.colhead,.row) > [data-col="audio"]{padding:0}
+html[data-colhide~="status"] :is(.colhead,.row) > [data-col="status"]{padding:0}
+/* ③ 单元格内容不渲染（牌组模式的 .cell-slots 是 overflow:visible，裁剪关不住它） */
+html[data-colhide~="prompt"] :is(.colhead,.row) > [data-col="prompt"] > *{display:none}
+html[data-colhide~="character"] :is(.colhead,.row) > [data-col="character"] > *{display:none}
+html[data-colhide~="scene"] :is(.colhead,.row) > [data-col="scene"] > *{display:none}
+html[data-colhide~="prop"] :is(.colhead,.row) > [data-col="prop"] > *{display:none}
+html[data-colhide~="firstFrame"] :is(.colhead,.row) > [data-col="firstFrame"] > *{display:none}
+html[data-colhide~="storyboard"] :is(.colhead,.row) > [data-col="storyboard"] > *{display:none}
+html[data-colhide~="audio"] :is(.colhead,.row) > [data-col="audio"] > *{display:none}
+html[data-colhide~="status"] :is(.colhead,.row) > [data-col="status"] > *{display:none}
+
+/* 「设置 → 个性化 → 分镜表列」的 chips 块：标签单独一行，8 个列名按抽屉宽度自然折行 */
+.colhide{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.colhide > .k{font-size:13px;color:var(--ink80)}
 
 /* 序号栏 */
 .rail-num{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ink48)}
@@ -1745,7 +1805,9 @@ html.nav-back::view-transition-new(root){animation:nav-in-left .24s cubic-bezier
 @media (max-width:1364px){
   :root{
     --table-w:100%;
-    --sb-grid:40px minmax(240px,1fr) 150px 92px 92px 80px 78px 78px 176px 86px 78px;
+    --w-rail:40px; --w-prompt:minmax(240px,1fr); --w-character:150px; --w-scene:92px; --w-prop:92px;
+    --w-firstFrame:80px; --w-storyboard:78px; --w-audio:78px; --w-result:176px;
+    --w-status:86px; --w-acts:78px;
   }
 }
 
