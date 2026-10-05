@@ -82,6 +82,34 @@ describe('环境体检：逐项与文案', () => {
     assert.match(fp.detail, /不允许绑定/, '要说清"时长未知"的连带后果');
   });
 
+  test('账号是对象不是字符串：不得拼出「[object Object]」', async () => {
+    /* 探测层给的 account 是 { userId, vipLevel }（dreamina-cli.js），
+       直接字符串拼接会显示成「已登录：[object Object]」—— 2026-10-05 真实出现过。 */
+    const obj = await ENV.report({}, Object.assign({}, base, {
+      cliStatus: () => Promise.resolve({ installed: true, path: 'p' }),
+      cliAuth: { available: true, account: { userId: 'u_12345', vipLevel: 'vip_3' } }
+    }));
+    const it = obj.items.find((i) => i.id === 'cliLogin');
+    assert.doesNotMatch(it.detail, /\[object Object\]/, '对象不能直接拼进文案');
+    assert.match(it.detail, /u_12345/);
+    assert.match(it.detail, /vip_3/);
+
+    /* 万一将来形状变了（变成字符串）也不能崩 */
+    const str = await ENV.report({}, Object.assign({}, base, {
+      cliStatus: () => Promise.resolve({ installed: true, path: 'p' }),
+      cliAuth: { available: true, account: 'someone@example.com' }
+    }));
+    assert.match(str.items.find((i) => i.id === 'cliLogin').detail, /someone@example\.com/);
+
+    /* 没有账号信息时也不该出现空的「已登录：」 */
+    const none = await ENV.report({}, Object.assign({}, base, {
+      cliStatus: () => Promise.resolve({ installed: true, path: 'p' }),
+      cliAuth: { available: true, account: null }
+    }));
+    const d = none.items.find((i) => i.id === 'cliLogin').detail;
+    assert.equal(/已登录：$/.test(d), false, '没有账号时别留个悬空的冒号：' + d);
+  });
+
   test('probe=1 才查上游连通性；CLI 已装且已登录时不报问题', async () => {
     let probed = 0;
     const okDeps = Object.assign({}, base, {
@@ -271,6 +299,31 @@ describe('一键配好：整条链（假下载 / 假解压）', () => {
     /* 结束后 active 必须清掉 —— 否则界面永远停在"正在安装" */
     const p = ENV.progressOf();
     assert.equal(!p || p.active === false, true, '装完要清 active');
+  });
+});
+
+describe('环境体检：服务层能真的跑起来（0.48.1 回归）', () => {
+  test('S.envReport 不许抛 —— 缺一个 require 就够首启向导报「服务内部错误」', async () => {
+    /* 2026-10-05 真实故障：envReport 里写了 `runtime.getDataDir()`，而 services.js
+       **漏了** runtime 模块的 require（写成字面量会被 lint §4 的正则当成真 require 扫，
+       所以这里不写出来）→ ReferenceError → 500「检测失败：服务内部错误」。
+       为什么没被别的测试挡住：本仓库**业务失败也返回 HTTP 200**，错误码在响应信封的
+       `code` 里 —— 冒烟日志那条 `env?probe=1=200` 是假绿；而单测此前只测了
+       env-setup.js 本身，**没让 services 这层真的调一次**。
+       所以这条用例的价值就在于：把整条调用真跑一遍。 */
+    const os2 = require('node:os');
+    const prev = process.env.JC_DATA_DIR;
+    process.env.JC_DATA_DIR = os2.tmpdir();
+    let S;
+    try { S = require('../server/services'); }
+    finally { if (prev === undefined) delete process.env.JC_DATA_DIR; else process.env.JC_DATA_DIR = prev; }
+    const r = await S.envReport(null, false);
+    assert.equal(Array.isArray(r.items), true, '要真的返回体检结果');
+    assert.equal(r.items.length >= 5, true, '五项体检一个都不能少');
+    const dataDir = r.items.find((i) => i.id === 'dataDir');
+    assert.ok(dataDir, '数据目录那项必须在（它就是踩到缺 require 的那处）');
+    assert.equal(dataDir.ok, true, '临时目录应当可写：' + dataDir.detail);
+    assert.equal(typeof r.summary.fixable, 'number');
   });
 });
 

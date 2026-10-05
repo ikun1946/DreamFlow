@@ -259,11 +259,27 @@ async function report(cfg, deps) {
       : '未安装 —— 视频生成全靠它，不装这一项就没法出片',
     installable: cliInstalled ? (cli.needsUpdate ? '可更新' : null) : '可一键安装'
   });
+  /* 账号字段的形状：探测层给的是**对象** { userId, vipLevel }（见 dreamina-cli.js 的
+     `account: creditData ? { userId, vip_level, ... }`），不是字符串。
+     ⚠ 直接 `'：' + account` 会拼出「已登录：[object Object]」—— 2026-10-05 真实出现过，
+     用户一眼看到就以为坏了。这里显式取字段，并兼容"万一将来是字符串"的情况。 */
+  const accountText = (acc) => {
+    if (!acc) return '';
+    if (typeof acc === 'string') return acc;
+    if (typeof acc === 'object') {
+      const id = acc.userId || acc.user_id || acc.id || '';
+      const vip = acc.vipLevel || acc.vip_level || '';
+      if (id && vip) return id + '（' + vip + '）';
+      return id || vip || '';
+    }
+    return String(acc);
+  };
+  const accText = accountText(auth && auth.account);
   items.push({
     id: 'cliLogin', label: '即梦账号登录', group: 'engine',
     ok: !!(auth && auth.available), fixable: false, action: null,
     detail: (auth && auth.available)
-      ? ('已登录' + (auth.account ? '：' + auth.account : ''))
+      ? ('已登录' + (accText ? '：' + accText : ''))
       : '未登录 —— 登录要打开浏览器授权（设备码），这一步只能你自己点',
     installable: null
   });

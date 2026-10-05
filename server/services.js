@@ -19,6 +19,15 @@ const { loadConfig } = require('./config');
 const PATHS = require('./paths');    // 磁盘布局与资源 URL 形状的唯一事实来源
 const CLI = require('./cli-installer');   // 创作 CLI 的下载 / 安装 / 更新（官方 CDN）
 const ENV = require('./env-setup');      // 环境体检 / 一键配好（首次启动向导的底座）
+/* runtime 只为了取"数据根"（envReport 判数据目录可写要用）。
+   ⚠ 2026-10-05 踩过：这一行**漏了**，而 envReport 里写了 `runtime.getDataDir()` ——
+     于是首启向导一打开就报「检测失败：服务内部错误」（ReferenceError → 500）。
+     难发现的原因有两条，都值得记：① 本仓库**业务失败也返回 HTTP 200**，
+     错误码在响应信封的 `code` 里 —— 冒烟日志里那条 `env?probe=1=200` 因此是**假绿**；
+     ② `runtime` 这个名字在 data-dir.js / paths.js / server.js 里都有，谁也不会想到
+     "services.js 里那个 runtime 是谁"。
+     修法就是补上 require；test/20 里有条用例直接把 envReport 跑一遍，钉住它。 */
+const runtime = require('./runtime');
 /* ⚠ 注意与上面的 `P`（= ./projects，项目/工作区数据层）区分开：两个 P 会重名。 */
 
 /* 素材上传允许的扩展名（创建/批量导入共用） */
